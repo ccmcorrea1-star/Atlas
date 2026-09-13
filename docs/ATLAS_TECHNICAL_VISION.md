@@ -1,6 +1,6 @@
 # Atlas — Visão Técnica e Arquitetura
 
-**Versão 0.5 — Setembro de 2026**
+**Versão 0.6 — Setembro de 2026**
 
 > Este documento é a fonte de verdade para a visão, os princípios e as fronteiras arquiteturais do Atlas.
 
@@ -75,28 +75,7 @@ uso
 
 Esse padrão se aplica a tools, skills, memória e conhecimento.
 
-## 3. Disponibilidade e conhecimento
-
-Uma capacidade pode existir sem estar materializada no contexto do modelo.
-
-```text
-AVAILABLE / UNAVAILABLE
-KNOWN / UNKNOWN
-```
-
-`AVAILABLE` indica que a capacidade existe e está operacional.
-
-`KNOWN` indica que o modelo recebeu informação suficiente para saber que ela existe e para que serve.
-
-Discovery transforma principalmente:
-
-```text
-UNKNOWN → KNOWN
-```
-
-Uma capacidade pode permanecer `KNOWN` mesmo quando seus detalhes completos deixam de estar no contexto atual.
-
-## 4. Recursos descobríveis
+## 3. Recursos descobríveis
 
 Nem tudo que pode ser descoberto é uma capacidade executável.
 
@@ -113,7 +92,7 @@ Discoverable Resource
 
 Discovery pesquisa recursos descobríveis. O Capability Registry administra capacidades executáveis e procedurais.
 
-## 5. Discovery
+## 4. Discovery
 
 Discovery permite que o Agent conheça capacidades progressivamente, sem receber todos os schemas e instruções antecipadamente.
 
@@ -175,6 +154,69 @@ docker.container.logs
 
 Assim, Discovery oferece exploração quando o Agent ainda não sabe exatamente o que precisa e acesso rápido quando a intenção já está clara.
 
+### Como o Agent busca e executa
+
+O Agent mantém uma capability mínima de Discovery disponível:
+
+```text
+discover({ path?, query? })
+```
+
+A navegação hierárquica usa `path`:
+
+```text
+discover({ path: "docker" })
+  ↓
+docker.container
+docker.image
+docker.network
+docker.volume
+docker.system
+```
+
+O aprofundamento continua somente quando necessário:
+
+```text
+discover({ path: "docker.container" })
+  ↓
+docker.container.list
+docker.container.inspect
+docker.container.logs
+docker.container.restart
+```
+
+Quando a intenção já é específica, a busca direta usa `query`:
+
+```text
+discover({ query: "logs de container docker" })
+  ↓
+docker.container.logs
+```
+
+O Discovery consulta o Capability Registry. Ao encontrar uma tool relevante, o Runtime carrega sua definição completa e disponibiliza o schema dessa tool ao modelo. O Agent então chama a tool diretamente.
+
+```text
+Agent
+  ↓ discover(...)
+Capability Registry
+  ↓
+docker.container.logs
+  ↓ materialização
+schema da tool
+  ↓
+Agent chama docker.container.logs(...)
+  ↓
+Runtime resolve a implementação
+  ↓
+execução
+  ↓
+resultado
+```
+
+Discovery não executa a capability. Ele apenas permite que o Agent a encontre e obtenha o nível de detalhe necessário.
+
+Para skills, o fluxo é semelhante até a materialização: Discovery encontra a skill, o Runtime materializa o procedimento e o Agent segue esse procedimento chamando as tools necessárias.
+
 ### Materialização progressiva
 
 O fluxo conceitual é:
@@ -189,11 +231,11 @@ detalhes do recurso relevante
 schema ou procedimento completo
 ```
 
-Uma capacidade pode permanecer `KNOWN` enquanto continuar relevante. Compaction pode remover seus detalhes do contexto sem torná-la indisponível ou obrigar uma nova descoberta ampla.
+Compaction pode remover detalhes já materializados do contexto. Se a capacidade voltar a ser necessária, o Agent pode aprofundar o Discovery novamente sem carregar todo o catálogo antecipadamente.
 
 O paper não fixa neste momento a implementação interna de índices, ranking, embeddings ou armazenamento do estado de Discovery. Esses detalhes pertencem ao design técnico da implementação.
 
-## 6. Tools
+## 5. Tools
 
 Tools representam ações executáveis e estruturadas.
 
@@ -250,7 +292,7 @@ Depois que uma tool é escolhida, sua execução deve ser direta e determinísti
 
 > **Descobrir de forma ampla, materializar de forma estreita e executar de forma determinística.**
 
-## 7. Skills
+## 6. Skills
 
 Skills representam procedimentos reutilizáveis para combinar capacidades.
 
@@ -286,7 +328,6 @@ Exemplo:
 
 ```text
 Skill: deploy-service
-
 1. verificar estado do repositório
 2. executar testes
 3. gerar build
@@ -315,7 +356,7 @@ Tool = fazer alguma coisa
 Skill = saber como fazer alguma coisa
 ```
 
-## 8. Contexto, conversa, memória e conhecimento
+## 7. Contexto, conversa, memória e conhecimento
 
 Esses conceitos são distintos.
 
@@ -347,7 +388,7 @@ Modelo
 
 > **Nada entra no contexto do modelo apenas porque existe.**
 
-## 9. Memória
+## 8. Memória
 
 A memória é recuperada sob demanda; não é despejada integralmente no prompt.
 
@@ -379,7 +420,7 @@ armazenar / atualizar / descartar
 
 Quando uma informação nova contradiz uma memória existente, o sistema deve atualizar, versionar, invalidar ou representar explicitamente o conflito.
 
-## 10. Capability Registry e Capability Factory
+## 9. Capability Registry e Capability Factory
 
 Toda capacidade conhecida pela plataforma deve entrar em um Registry unificado e independente da linguagem de implementação.
 
@@ -430,7 +471,7 @@ improvisação do LLM
 
 Capacidades geradas precisam de identidade, versão, origem, testes, dependências e provenance.
 
-## 11. Tasks e Workers
+## 10. Tasks e Workers
 
 Tasks existem para trabalho que se beneficia de execução desacoplada do turno principal. Elas não são o caminho obrigatório para toda ação.
 
@@ -455,7 +496,7 @@ Invariantes:
 - retries não podem duplicar silenciosamente efeitos;
 - recovery deve ser possível quando a operação permitir.
 
-## 12. Eventos, provenance e estado
+## 11. Eventos, provenance e estado
 
 O Runtime deve produzir eventos estruturados para tornar o trabalho observável.
 
@@ -490,7 +531,7 @@ artefato / efeito
 
 O estado persistente do Atlas não deve depender estruturalmente de tipos internos de um provider ou Agent SDK específico.
 
-## 13. MCP, dispositivos e clientes
+## 12. MCP, dispositivos e clientes
 
 MCP é uma fronteira de integração, não o mecanismo interno obrigatório de Discovery.
 
@@ -526,7 +567,7 @@ Clientes
 
 A interface apresenta estado e coleta interação. O Runtime mantém execução e estado operacional. O Agent conduz o trabalho cognitivo.
 
-## 14. Local-first e independência de infraestrutura
+## 13. Local-first e independência de infraestrutura
 
 Atlas é local-first, não necessariamente local-only.
 
@@ -546,13 +587,13 @@ Model Provider
 
 Atlas deve possuir contratos próprios. Tipos internos de um SDK não devem definir a API pública central do produto.
 
-## 15. Workstation e trabalho observável
+## 14. Workstation e trabalho observável
 
 Atlas Workstation não deve ser apenas um chat maior. É um espaço visual compartilhado onde usuário e Agent trabalham sobre os mesmos objetos, aplicações e estado do mundo.
 
 O usuário deve conseguir acompanhar o trabalho sem receber raciocínio privado.
 
-## 16. Invariantes arquiteturais
+## 15. Invariantes arquiteturais
 
 1. O Agent age diretamente por meio de tools quando isso é suficiente.
 2. Delegação para Tasks e Workers é opcional e usada quando houver benefício operacional.
@@ -577,7 +618,7 @@ O usuário deve conseguir acompanhar o trabalho sem receber raciocínio privado.
 21. Delegação nunca deve ser introduzida apenas por arquitetura quando a execução direta é suficiente.
 22. MCP é uma fonte de capacidades, não uma dependência estrutural do núcleo do Discovery.
 
-## 17. Objetivo de longo prazo
+## 16. Objetivo de longo prazo
 
 Atlas deve evoluir de `assistant` para `resident intelligence`.
 
@@ -587,7 +628,7 @@ No estado final, o usuário trabalha normalmente enquanto Atlas permanece presen
 
 **Esse é o Atlas.**
 
-## 18. Referências da implementação atual
+## 17. Referências da implementação atual
 
 - Repositório: https://github.com/ccmcorrea1-star/Atlas
 - OpenAI Agents SDK: https://openai.github.io/openai-agents-js/
