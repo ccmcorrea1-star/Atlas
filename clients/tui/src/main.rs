@@ -47,9 +47,8 @@ async fn run(
     runtime: RuntimeClient,
     events: &mut EventHandler,
 ) -> io::Result<()> {
+    terminal.draw(|frame| ui::draw(frame, app))?;
     while !app.should_quit() {
-        terminal.draw(|frame| ui::draw(frame, app))?;
-
         let Some(event) = events.next().await else {
             break;
         };
@@ -60,6 +59,10 @@ async fn run(
             Event::Mouse(mouse) => handle_mouse(app, mouse),
             Event::Tick => {}
             Event::Resize => {}
+        }
+
+        if !app.should_quit() {
+            terminal.draw(|frame| ui::draw(frame, app))?;
         }
     }
 

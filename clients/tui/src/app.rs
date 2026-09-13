@@ -1,4 +1,4 @@
-use crate::presentation::normalize_tool_output;
+use crate::presentation::parse_tool_output;
 use crate::runtime::RuntimeEvent;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
@@ -9,17 +9,6 @@ pub enum MessageRole {
     Atlas,
     Tool,
     System,
-}
-
-impl MessageRole {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::User => "Você",
-            Self::Atlas => "Atlas",
-            Self::Tool => "Tool",
-            Self::System => "System",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,18 +29,22 @@ impl Message {
         }
     }
 
-    fn tool(name: impl Into<String>) -> Self {
+    fn tool_with_id(id: impl Into<String>, name: impl Into<String>) -> Self {
+        let id = id.into();
         let name = name.into();
         Self {
             role: MessageRole::Tool,
             content: String::new(),
-            id: None,
+            id: Some(id.clone()),
             tool: Some(ToolCall {
+                id,
                 name,
                 output: None,
+                stderr: None,
                 started_at: Some(Instant::now()),
                 duration: None,
                 completed: false,
+                success: true,
             }),
         }
     }
@@ -59,11 +52,14 @@ impl Message {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolCall {
+    pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) output: Option<String>,
+    pub(crate) stderr: Option<String>,
     pub(crate) started_at: Option<Instant>,
     pub(crate) duration: Option<Duration>,
     pub(crate) completed: bool,
+    pub(crate) success: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +265,7 @@ impl App {
                     message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
                 }) {
                     message.content.push_str(&delta);
+                    self.history_changed();
                 } else {
                     self.messages
                         .push(Message::new(MessageRole::Atlas, delta, Some(message_id)));
@@ -284,22 +281,29 @@ impl App {
                     message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
                 }) {
                     message.content = content;
+                    self.history_changed();
                 } else {
                     self.messages
                         .push(Message::new(MessageRole::Atlas, content, Some(message_id)));
                     self.history_changed();
                 }
             }
-            RuntimeEvent::ToolStarted { tool_name } => {
+            RuntimeEvent::ToolStarted { tool_id, tool_name } => {
                 self.status = Status::Tool(tool_name.clone());
-                self.messages.push(Message::tool(tool_name));
+                self.messages
+                    .push(Message::tool_with_id(tool_id.clone(), tool_name));
                 self.history_changed();
             }
-            RuntimeEvent::ToolCompleted { tool_name, output } => {
+            RuntimeEvent::ToolCompleted {
+                tool_id,
+                tool_name,
+                output,
+            } => {
                 self.status = Status::Thinking;
-                let normalized_output = output
-                    .as_deref()
-                    .map(normalize_tool_output)
+                let parsed_output = output.as_deref().map(parse_tool_output);
+                let normalized_output = parsed_output
+                    .as_ref()
+                    .map(|output| output.display_text())
                     .filter(|output| !output.is_empty());
                 let mut completed = false;
                 if let Some(message) = self.messages.iter_mut().rev().find(|message| {
@@ -307,31 +311,56 @@ impl App {
                         && message
                             .tool
                             .as_ref()
-                            .is_some_and(|tool| tool.name == tool_name && !tool.completed)
+                            .is_some_and(|tool| tool.id == tool_id && !tool.completed)
                 }) {
                     if let Some(tool) = message.tool.as_mut() {
-                        tool.output = normalized_output.clone();
+                        tool.output = parsed_output
+                            .as_ref()
+                            .map(|output| output.stdout.clone())
+                            .filter(|output| !output.is_empty());
+                        tool.stderr = parsed_output
+                            .as_ref()
+                            .map(|output| output.stderr.clone())
+                            .filter(|output| !output.is_empty());
                         tool.duration = Some(
-                            tool.started_at
-                                .map(|started_at| started_at.elapsed())
+                            parsed_output
+                                .as_ref()
+                                .and_then(|output| output.duration)
+                                .or_else(|| tool.started_at.map(|started_at| started_at.elapsed()))
                                 .unwrap_or_default(),
                         );
                         tool.completed = true;
+                        tool.success = parsed_output
+                            .as_ref()
+                            .and_then(|output| output.success)
+                            .unwrap_or(true);
                     }
                     message.content = normalized_output.clone().unwrap_or_default();
                     completed = true;
                 }
                 if !completed {
-                    let mut message = Message::tool(tool_name);
+                    let mut message = Message::tool_with_id(tool_id.clone(), tool_name);
                     if let Some(tool) = message.tool.as_mut() {
-                        tool.output = normalized_output.clone();
+                        tool.output = parsed_output
+                            .as_ref()
+                            .map(|output| output.stdout.clone())
+                            .filter(|output| !output.is_empty());
+                        tool.stderr = parsed_output
+                            .as_ref()
+                            .map(|output| output.stderr.clone())
+                            .filter(|output| !output.is_empty());
                         tool.started_at = None;
+                        tool.duration = parsed_output.as_ref().and_then(|output| output.duration);
                         tool.completed = true;
+                        tool.success = parsed_output
+                            .as_ref()
+                            .and_then(|output| output.success)
+                            .unwrap_or(true);
                     }
                     message.content = normalized_output.unwrap_or_default();
                     self.messages.push(message);
-                    self.history_changed();
                 }
+                self.history_changed();
             }
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
@@ -383,6 +412,7 @@ fn position_at_display_column(text: &str, offset: usize, target: usize) -> usize
 mod tests {
     use super::{App, MessageRole, Status};
     use crate::runtime::RuntimeEvent;
+    use std::time::Duration;
 
     #[test]
     fn keeps_input_and_cursor_consistent_for_unicode() {
@@ -446,20 +476,22 @@ mod tests {
     fn keeps_tool_start_and_completion_in_one_transcript_cell() {
         let mut app = App::new("conversation".to_owned());
         app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
             tool_name: "process.exec".to_owned(),
         });
         app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
             tool_name: "process.exec".to_owned(),
-            output: Some(r#"{\"ok\":true}"#.to_owned()),
+            output: Some(r#"{\"stdout\":\"ok\",\"exit_code\":0,\"duration_ms\":10}"#.to_owned()),
         });
 
         assert_eq!(app.messages().len(), 1);
         let message = &app.messages()[0];
         assert_eq!(message.role, MessageRole::Tool);
-        assert_eq!(message.content, "{\n  \"ok\": true\n}");
+        assert_eq!(message.content, "ok");
         let tool = message.tool.as_ref().expect("tool cell");
         assert!(tool.completed);
-        assert!(tool.duration.is_some());
+        assert_eq!(tool.duration, Some(Duration::from_millis(10)));
     }
 
     #[test]
@@ -474,6 +506,33 @@ mod tests {
         assert_eq!(app.history_scroll(), 4);
         app.scroll_down(4);
         assert_eq!(app.history_scroll(), 0);
+    }
+
+    #[test]
+    fn matches_same_named_tools_by_id() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "process.exec".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-2".to_owned(),
+            tool_name: "process.exec".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "process.exec".to_owned(),
+            output: Some(r#"{\"stdout\":\"first\"}"#.to_owned()),
+        });
+
+        assert_eq!(app.messages()[0].content, "first");
+        assert!(
+            !app.messages()[1]
+                .tool
+                .as_ref()
+                .expect("tool cell")
+                .completed
+        );
     }
 
     #[test]

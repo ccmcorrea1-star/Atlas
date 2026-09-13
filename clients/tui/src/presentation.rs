@@ -2,6 +2,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
+use std::time::Duration;
 
 const ANSI_ESCAPE: char = '\x1b';
 
@@ -10,32 +11,205 @@ const ANSI_ESCAPE: char = '\x1b';
 /// adapted here to Atlas messages and events. The component cues were informed by
 /// studying the Codex CLI TUI (Apache-2.0), without copying its source or architecture.
 
-pub(crate) fn normalize_tool_output(output: &str) -> String {
-    let output = sanitize_terminal_text(output.trim());
-    if output.is_empty() {
-        return String::new();
-    }
-
-    normalize_jsonish(&output, 0).unwrap_or(output)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ToolOutput {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) duration: Option<Duration>,
+    pub(crate) success: Option<bool>,
 }
 
-fn normalize_jsonish(value: &str, depth: usize) -> Option<String> {
-    if let Ok(parsed) = serde_json::from_str::<Value>(value) {
-        return match parsed {
-            Value::String(text) if depth < 2 => normalize_jsonish(&text, depth + 1).or(Some(text)),
-            Value::String(text) => Some(text),
-            parsed => serde_json::to_string_pretty(&parsed).ok(),
-        };
+impl ToolOutput {
+    pub(crate) fn display_text(&self) -> String {
+        [self.stdout.as_str(), self.stderr.as_str()]
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// Extracts human-readable streams from the serialized result returned by a capability.
+///
+/// Capabilities currently return a JSON envelope, but that envelope is an execution detail and
+/// must not leak into the transcript. Nested strings are decoded because the model SDK can add a
+/// second serialization layer around tool output.
+pub(crate) fn parse_tool_output(raw: &str) -> ToolOutput {
+    let value = decode_output_value(raw, 0);
+    let mut output = ToolOutput::default();
+    collect_tool_output(&value, &mut output);
+    output.stdout = clean_output(&output.stdout);
+    output.stderr = clean_output(&output.stderr);
+    output
+}
+
+fn decode_output_value(raw: &str, depth: usize) -> Value {
+    let raw = sanitize_terminal_text(raw.trim());
+    if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+        if let Value::String(text) = &value
+            && depth < 3
+            && let Some(nested) = decode_nested_string(text, depth + 1)
+        {
+            return nested;
+        }
+        return value;
     }
 
-    if depth < 2 && value.contains('\\') {
-        let quoted = format!("\"{value}\"");
+    if depth < 3 && raw.contains('\\') {
+        let quoted = format!("\"{raw}\"");
         if let Ok(Value::String(decoded)) = serde_json::from_str(&quoted) {
-            return normalize_jsonish(&decoded, depth + 1).or(Some(decoded));
+            if let Some(nested) = decode_nested_string(&decoded, depth + 1) {
+                return nested;
+            }
+            return Value::String(decoded);
         }
     }
 
-    None
+    Value::String(raw)
+}
+
+fn decode_nested_string(value: &str, depth: usize) -> Option<Value> {
+    if depth > 3 {
+        return None;
+    }
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+        serde_json::from_str(trimmed).ok()
+    } else {
+        None
+    }
+}
+
+fn collect_tool_output(value: &Value, output: &mut ToolOutput) {
+    match value {
+        Value::String(text) => {
+            if output.stdout.is_empty() {
+                output.stdout = text.clone();
+            }
+        }
+        Value::Object(object) => {
+            let mut has_display_output = false;
+            if let Some(stdout) = object.get("stdout").and_then(display_value_text) {
+                output.stdout = stdout;
+                has_display_output = true;
+            }
+            if let Some(stderr) = object.get("stderr").and_then(display_value_text) {
+                output.stderr = stderr;
+                has_display_output = true;
+            }
+            if output.stdout.is_empty() && output.stderr.is_empty() {
+                for key in ["text", "message", "content", "output", "error"] {
+                    if let Some(value) = object.get(key) {
+                        let text = display_value_text(value).unwrap_or_default();
+                        if !text.is_empty() {
+                            output.stdout = text;
+                            has_display_output = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if output.stderr.is_empty()
+                && let Some(error) = object.get("error").and_then(display_value_text)
+                && !error.is_empty()
+            {
+                output.stderr = error;
+                has_display_output = true;
+            }
+            if !has_display_output {
+                output.stdout = human_value_lines(value, 0).join("\n");
+            }
+            output.duration = object
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis);
+            output.success = object
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| status == "success")
+                .or_else(|| {
+                    object
+                        .get("exit_code")
+                        .and_then(Value::as_i64)
+                        .map(|code| code == 0)
+                });
+        }
+        Value::Array(values) => {
+            let text = values
+                .iter()
+                .filter_map(value_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                output.stdout = text;
+            }
+        }
+        Value::Number(number) => output.stdout = number.to_string(),
+        Value::Bool(value) => output.stdout = value.to_string(),
+        Value::Null => {}
+    }
+}
+
+fn display_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => match decode_output_value(text, 1) {
+            Value::String(decoded) => Some(decoded),
+            decoded => value_text(&decoded),
+        },
+        value => value_text(value),
+    }
+}
+
+fn human_value_lines(value: &Value, indent: usize) -> Vec<String> {
+    let prefix = " ".repeat(indent);
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .flat_map(|(key, value)| match value {
+                Value::Object(_) | Value::Array(_) => {
+                    let mut lines = vec![format!("{prefix}{key}:")];
+                    lines.extend(human_value_lines(value, indent + 2));
+                    lines
+                }
+                _ => vec![format!(
+                    "{prefix}{key}: {}",
+                    value_text(value).unwrap_or_default()
+                )],
+            })
+            .collect(),
+        Value::Array(values) => values
+            .iter()
+            .flat_map(|value| match value {
+                Value::Object(_) | Value::Array(_) => human_value_lines(value, indent),
+                _ => vec![format!("{prefix}{}", value_text(value).unwrap_or_default())],
+            })
+            .collect(),
+        _ => value_text(value).map_or_else(Vec::new, |text| vec![format!("{prefix}{text}")]),
+    }
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(values) => {
+            let text = values
+                .iter()
+                .filter_map(value_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(object) => ["text", "message", "content", "output", "stdout", "stderr"]
+            .into_iter()
+            .find_map(|key| object.get(key).and_then(value_text)),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Null => None,
+    }
+}
+
+fn clean_output(output: &str) -> String {
+    sanitize_terminal_text(output.trim()).trim_end().to_owned()
 }
 
 pub(crate) fn sanitize_terminal_text(text: &str) -> String {
@@ -313,7 +487,7 @@ impl<'a> MarkdownRenderer<'a> {
         }
         if self.quote_depth > 0 {
             self.current.push(Span::styled(
-                format!("{}", "│ ".repeat(self.quote_depth)),
+                "│ ".repeat(self.quote_depth),
                 Style::default().fg(Color::Green).dim(),
             ));
         }
@@ -353,14 +527,17 @@ fn heading_style(level: HeadingLevel) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_tool_output, render_markdown, sanitize_terminal_text};
+    use super::{parse_tool_output, render_markdown, sanitize_terminal_text};
 
     #[test]
     fn formats_quoted_and_structured_tool_output_for_humans() {
-        assert_eq!(normalize_tool_output(r#"\"ready\\nnow\""#), "ready\nnow");
         assert_eq!(
-            normalize_tool_output(r#"{\"ok\":true,\"items\":[1,2]}"#),
-            "{\n  \"items\": [\n    1,\n    2\n  ],\n  \"ok\": true\n}"
+            parse_tool_output(r#"\"ready\\nnow\""#).display_text(),
+            "ready\nnow"
+        );
+        assert_eq!(
+            parse_tool_output(r#"{\"ok\":true,\"items\":[1,2]}"#).display_text(),
+            "items:\n  1\n  2\nok: true"
         );
     }
 
@@ -370,6 +547,18 @@ mod tests {
             sanitize_terminal_text("\x1b[31mred\x1b[0m\nnext\tline"),
             "red\nnext  line"
         );
+    }
+
+    #[test]
+    fn separates_nested_process_streams_without_rendering_the_envelope() {
+        let output = parse_tool_output(
+            r#"{\"stdout\":\"ready\\nnow\",\"stderr\":\"warn\",\"status\":\"failure\",\"exit_code\":1}"#,
+        );
+
+        assert_eq!(output.stdout, "ready\nnow");
+        assert_eq!(output.stderr, "warn");
+        assert_eq!(output.success, Some(false));
+        assert_eq!(output.display_text(), "ready\nnow\nwarn");
     }
 
     #[test]

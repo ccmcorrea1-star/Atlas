@@ -21,9 +21,11 @@ pub enum RuntimeEvent {
         content: String,
     },
     ToolStarted {
+        tool_id: String,
         tool_name: String,
     },
     ToolCompleted {
+        tool_id: String,
         tool_name: String,
         output: Option<String>,
     },
@@ -241,14 +243,17 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
             content: string_field("content")?,
         })),
         "tool.started" => Ok(Some(RuntimeEvent::ToolStarted {
+            tool_id: string_field("tool_id")?,
             tool_name: string_field("name")?,
         })),
         "tool.completed" => Ok(Some(RuntimeEvent::ToolCompleted {
+            tool_id: string_field("tool_id")?,
             tool_name: string_field("name")?,
-            output: data
-                .get("output")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
+            output: data.get("output").and_then(|value| match value {
+                Value::String(text) => Some(text.clone()),
+                Value::Null => None,
+                value => serde_json::to_string(value).ok(),
+            }),
         })),
         "turn.completed" => Ok(Some(RuntimeEvent::TurnCompleted)),
         "error" => Err(RuntimeError::Remote(string_field("message")?)),
@@ -311,7 +316,10 @@ impl RuntimeClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeClient, RuntimeEvent, RuntimeEventSender, RuntimeFuture, RuntimeTransport};
+    use super::{
+        RuntimeClient, RuntimeEnvelope, RuntimeEvent, RuntimeEventSender, RuntimeFuture,
+        RuntimeTransport, runtime_event,
+    };
     use serde_json::Value;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixListener;
@@ -363,6 +371,31 @@ mod tests {
             events.recv().await,
             Some(RuntimeEvent::TurnCompleted)
         ));
+    }
+
+    #[test]
+    fn parses_tool_identity_and_structured_output() {
+        let envelope = RuntimeEnvelope {
+            protocol: "atlas-runtime".to_owned(),
+            version: 1,
+            message_type: "tool.completed".to_owned(),
+            request_id: None,
+            conversation_id: None,
+            data: serde_json::json!({
+                "tool_id": "tool-1",
+                "name": "process.exec",
+                "output": {"stdout": "ready", "exit_code": 0}
+            }),
+        };
+
+        assert_eq!(
+            runtime_event(envelope).unwrap(),
+            Some(RuntimeEvent::ToolCompleted {
+                tool_id: "tool-1".to_owned(),
+                tool_name: "process.exec".to_owned(),
+                output: Some(r#"{"exit_code":0,"stdout":"ready"}"#.to_owned()),
+            })
+        );
     }
 
     #[tokio::test]
