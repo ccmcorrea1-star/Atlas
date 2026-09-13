@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod presentation;
 mod runtime;
 mod ui;
 
@@ -56,6 +57,8 @@ async fn run(
         match event {
             Event::Key(key) => handle_key(app, &runtime, key),
             Event::Runtime(runtime_event) => app.handle_runtime_event(runtime_event),
+            Event::Mouse(mouse) => handle_mouse(app, mouse),
+            Event::Tick => {}
             Event::Resize => {}
         }
     }
@@ -70,7 +73,9 @@ fn handle_key(app: &mut App, runtime: &RuntimeClient, key: crossterm::event::Key
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
         KeyCode::Esc => app.quit(),
         KeyCode::Enter => {
-            if !app.turn_active()
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.insert_newline();
+            } else if !app.turn_active()
                 && let Some(message) = app.submit_input()
             {
                 let runtime = runtime.clone();
@@ -80,9 +85,26 @@ fn handle_key(app: &mut App, runtime: &RuntimeClient, key: crossterm::event::Key
             }
         }
         KeyCode::Backspace => app.backspace(),
+        KeyCode::Delete => app.delete_forward(),
         KeyCode::Left => app.move_cursor_left(),
         KeyCode::Right => app.move_cursor_right(),
+        KeyCode::Up => app.move_cursor_up(),
+        KeyCode::Down => app.move_cursor_down(),
+        KeyCode::Home => app.move_cursor_home(),
+        KeyCode::End => app.move_cursor_end(),
+        KeyCode::PageUp => app.scroll_up(5),
+        KeyCode::PageDown => app.scroll_down(5),
         KeyCode::Char(character) => app.insert_character(character),
+        _ => {}
+    }
+}
+
+fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    use crossterm::event::MouseEventKind;
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
         _ => {}
     }
 }

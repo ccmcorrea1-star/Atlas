@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::runtime::{RuntimeEvent, RuntimeEventReceiver};
@@ -9,7 +9,9 @@ use crate::runtime::{RuntimeEvent, RuntimeEventReceiver};
 #[derive(Debug)]
 pub enum Event {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize,
+    Tick,
     Runtime(RuntimeEvent),
 }
 
@@ -45,10 +47,19 @@ fn spawn_terminal_events(sender: UnboundedSender<Event>) {
                             break;
                         }
                     }
+                    Ok(CrosstermEvent::Mouse(mouse)) => {
+                        if sender.send(Event::Mouse(mouse)).is_err() {
+                            break;
+                        }
+                    }
                     Ok(_) => {}
                     Err(_) => break,
                 },
-                Ok(false) => {}
+                Ok(false) => {
+                    if sender.send(Event::Tick).is_err() {
+                        break;
+                    }
+                }
                 Err(_) => break,
             }
         }

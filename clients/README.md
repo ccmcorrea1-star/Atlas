@@ -22,8 +22,14 @@ npm run runtime
 Durante a execução:
 
 - `Enter` envia a mensagem;
+- `Shift+Enter` insere uma nova linha;
 - `Esc` ou `Ctrl-C` encerra o cliente;
-- `Backspace` e as setas esquerda/direita editam o campo de entrada.
+- `Backspace`, `Delete`, `Home`, `End` e as setas editam o campo de entrada;
+- `PageUp`/`PageDown` e a roda do mouse navegam pelo transcript.
+
+O transcript usa uma apresentação densa, com Markdown estilizado, tool calls agrupadas e previews
+de saída normalizados para leitura humana. Os limites entre componentes foram adaptados após estudo
+do TUI do Codex CLI, sem copiar sua arquitetura ou código-fonte.
 
 O `RuntimeClient` é a única fronteira entre o TUI e o Atlas. Ele usa o contrato
 público em [`protocol/runtime/v1`](../protocol/runtime/v1/) sobre o Unix Socket
