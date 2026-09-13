@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "smoke": "tsx src/smoke.ts",
     "test": "node --test"
   },
   "repository": {
@@ -23,7 +24,12 @@
   },
   "homepage": "https://github.com/ccmcorrea1-star/Atlas#readme",
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.53",
+    "@ai-sdk/openai": "^4.0.66",
+    "@ai-sdk/openai-compatible": "^3.0.48",
     "@openai/agents": "^0.18.0",
+    "@openai/agents-extensions": "^0.18.0",
+    "ai": "^7.0.99",
     "zod": "^4.6.3"
   },
   "devDependencies": {
