@@ -52,7 +52,7 @@ cmake --build .native-cmake
 ctest --test-dir .native-cmake --output-on-failure
 ```
 
-O build instala o runtime executável compartilhado usado por `process.exec` junto do manifesto quando usado com `cmake --install`.
+O build instala o runtime executável compartilhado usado por `process.exec` e o bridge do Capability Runtime junto dos manifestos quando usado com `cmake --install`.
 
 Para executar a saída compilada:
 

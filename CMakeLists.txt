@@ -31,6 +31,15 @@ set_target_properties(atlas-process-exec-runtime PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/process/exec"
 )
 
+add_executable(atlas-capability-bridge-runtime
+  src/capabilities/runtime/bridge/main.cpp
+)
+target_link_libraries(atlas-capability-bridge-runtime PRIVATE atlas-capabilities-core)
+set_target_properties(atlas-capability-bridge-runtime PROPERTIES
+  OUTPUT_NAME runtime
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/runtime/bridge"
+)
+
 enable_testing()
 
 add_executable(atlas-process-exec-test tests/native/process_exec_test.cpp)
@@ -49,6 +58,7 @@ foreach(target
     atlas-capabilities-executable-runtime
     atlas-capabilities-core
     atlas-process-exec-runtime
+    atlas-capability-bridge-runtime
     atlas-process-exec-test
     atlas-capability-loader-test
     atlas-capability-executor-test)
@@ -67,6 +77,9 @@ set_tests_properties(
 
 install(TARGETS atlas-process-exec-runtime
   RUNTIME DESTINATION capabilities/tools/process/exec
+)
+install(TARGETS atlas-capability-bridge-runtime
+  RUNTIME DESTINATION capabilities/runtime/bridge
 )
 install(FILES src/capabilities/tools/process/exec/capability.json
   DESTINATION capabilities/tools/process/exec

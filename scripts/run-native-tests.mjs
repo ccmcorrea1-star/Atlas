@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,15 +7,26 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
 const processExecutable = resolve(outputDirectory, 'process-exec-test');
 const capabilityExecutable = resolve(projectRoot, 'src/capabilities/tools/process/exec/runtime');
+const bridgeExecutable = resolve(projectRoot, 'src/capabilities/runtime/bridge/runtime');
 const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const coreDirectory = resolve(capabilitiesDirectory, 'core');
 const executableRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/executable');
+const bridgeRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/bridge');
 const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
 const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
 const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
+
+function collectTestFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = resolve(directory, entry.name);
+      return entry.isDirectory() ? collectTestFiles(path) : path.endsWith('.test.ts') ? [path] : [];
+    })
+    .sort();
+}
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -47,6 +58,26 @@ try {
     resolve(sourceDirectory, 'exec.cpp'),
     '-o',
     capabilityExecutable,
+  ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'discovery.cpp'),
+    resolve(coreDirectory, 'executor.cpp'),
+    resolve(coreDirectory, 'loader.cpp'),
+    resolve(executableRuntimeDirectory, 'protocol.cpp'),
+    resolve(bridgeRuntimeDirectory, 'main.cpp'),
+    '-o',
+    bridgeExecutable,
+  ]);
+  run(resolve(projectRoot, 'node_modules/.bin/tsx'), [
+    '--test',
+    ...collectTestFiles(resolve(projectRoot, 'tests')),
   ]);
   run('g++', [
     '-std=c++23',
@@ -98,5 +129,4 @@ try {
   run(executorExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });
-  rmSync(capabilityExecutable, { force: true });
 }

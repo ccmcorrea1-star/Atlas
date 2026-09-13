@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Agent, MemorySession, Runner } from '@openai/agents';
+import { Agent, MemorySession, Runner, type FunctionTool } from '@openai/agents';
 
 import {
   OpenCodeGoProvider,
@@ -8,24 +8,35 @@ import {
   OPENCODE_GO_MODEL,
   withOpenCodeGoSession,
 } from './opencode-go.js';
+import {
+  createCapabilityRuntime,
+  type CapabilityDefinition,
+  type CapabilityDiscoveryRequest,
+  type CapabilityDiscoveryResult,
+  type CapabilityRuntime,
+} from './capability-runtime.js';
 
-// O Agent define a identidade e as instrucoes; a execucao concreta fica no Runner configurado abaixo.
+const ATLAS_INSTRUCTIONS =
+  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform.';
+
+// O Agent base define a identidade; cada turno recebe um clone com capabilities isoladas.
 export const Atlas = new Agent({
   name: 'Atlas',
-  instructions:
-    'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform.',
+  instructions: ATLAS_INSTRUCTIONS,
   model: OPENCODE_GO_MODEL,
 });
 
 export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
+  capabilityRuntime?: CapabilityRuntime;
 };
 
 // Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
 type AtlasRuntime = {
   runner: Runner;
   sessions: Map<string, MemorySession>;
+  capabilityRuntime: CapabilityRuntime;
 };
 
 // A chave e a configuracao do provider, nao o ID da conversa.
@@ -78,9 +89,112 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
   const runtime: AtlasRuntime = {
     runner: createAtlasRunner(options),
     sessions: new Map(),
+    capabilityRuntime: createCapabilityRuntime(),
   };
   atlasRuntimes.set(key, runtime);
   return runtime;
+}
+
+function parseObjectInput(input: string, toolName: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input) as unknown;
+  } catch (error) {
+    throw new Error(
+      `${toolName} received invalid JSON arguments: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${toolName} arguments must be a JSON object.`);
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+function schemaForTool(definition: CapabilityDefinition): FunctionTool['parameters'] {
+  return definition.schema as FunctionTool['parameters'];
+}
+
+function materializeTool(
+  definition: CapabilityDefinition,
+  capabilityRuntime: CapabilityRuntime,
+): FunctionTool {
+  return {
+    type: 'function',
+    name: definition.id,
+    description: definition.description,
+    parameters: schemaForTool(definition),
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input) => {
+      const arguments_ = parseObjectInput(input, definition.id);
+      const result = await capabilityRuntime.execute(definition.id, 'local', arguments_);
+      return JSON.stringify(result);
+    },
+  };
+}
+
+function discoveryTool(
+  capabilityRuntime: CapabilityRuntime,
+  addTool: (definition: CapabilityDefinition) => void,
+): FunctionTool {
+  const parameters = {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'caminho hierarquico opcional' },
+      query: { type: 'string', description: 'consulta textual opcional' },
+    },
+    required: [],
+    additionalProperties: false,
+  } as FunctionTool['parameters'];
+
+  return {
+    type: 'function',
+    name: 'discover',
+    description: 'encontra grupos e capabilities disponíveis sem executar uma capability',
+    parameters,
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input) => {
+      const request = parseObjectInput(input, 'discover') as CapabilityDiscoveryRequest;
+      const results = await capabilityRuntime.discover(request);
+      for (const result of results) {
+        if (result.type !== 'tool') {
+          continue;
+        }
+        const definition = await capabilityRuntime.getDefinition(result.id);
+        if (definition !== undefined) {
+          addTool(definition);
+        }
+      }
+      return JSON.stringify(results satisfies CapabilityDiscoveryResult[]);
+    },
+  };
+}
+
+function createAtlasAgent(
+  capabilityRuntime: CapabilityRuntime,
+  rootGroups: readonly CapabilityDiscoveryResult[],
+): Agent {
+  const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
+  const agent = Atlas.clone({
+    instructions: `${ATLAS_INSTRUCTIONS}\n\nAvailable capability groups:\n${catalog}`,
+    tools: [],
+  });
+  const materialized = new Set<string>();
+  const addTool = (definition: CapabilityDefinition) => {
+    if (materialized.has(definition.id)) {
+      return;
+    }
+    materialized.add(definition.id);
+    agent.tools.push(materializeTool(definition, capabilityRuntime));
+  };
+  const discover = discoveryTool(capabilityRuntime, addTool);
+  agent.tools.push(discover);
+  return agent;
 }
 
 export function getAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runner {
@@ -105,13 +219,20 @@ function getConversationId(options: AtlasRunOptions): string {
 
 export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   // O ID de conversa nao participa da chave do runtime, apenas da sessao de historico.
-  const { conversationId: _conversationId, ...providerOptions } = options;
+  const {
+    conversationId: _conversationId,
+    capabilityRuntime: requestedCapabilityRuntime,
+    ...providerOptions
+  } = options;
   const runtime = getAtlasRuntime(providerOptions);
   const sessionId = getConversationId(options);
+  const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
+  const rootGroups = await capabilityRuntime.discover();
+  const agent = createAtlasAgent(capabilityRuntime, rootGroups);
   // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
 
   runtime.sessions.set(sessionId, session);
 
-  return withOpenCodeGoSession(sessionId, () => runtime.runner.run(Atlas, input, { session }));
+  return withOpenCodeGoSession(sessionId, () => runtime.runner.run(agent, input, { session }));
 }

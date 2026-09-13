@@ -2,6 +2,17 @@
 export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './atlas.js';
 export type { AtlasRunOptions } from './atlas.js';
 
+// O runtime de capabilities permanece independente do Agent SDK e pode ser substituido em testes.
+export { createCapabilityRuntime, NativeCapabilityRuntime } from './capability-runtime.js';
+export type {
+  CapabilityDefinition,
+  CapabilityDiscoveryRequest,
+  CapabilityDiscoveryResult,
+  CapabilityExecutionResult,
+  CapabilityRuntime,
+  NativeCapabilityRuntimeOptions,
+} from './capability-runtime.js';
+
 // O provider e a sessao ficam publicos para configuracao e integracao com o OpenCode Go.
 export {
   ATLAS_USER_AGENT,

@@ -10,6 +10,7 @@ tests/
 ├── support/
 │   └── open-code-go-test-server.ts
 └── unit/
+    ├── atlas-capabilities.test.ts
     ├── atlas-conversations.test.ts
     └── opencode-go-provider.test.ts
 ```
@@ -52,7 +53,8 @@ Ele exercita o fluxo público de conversas, incluindo endpoint, autenticação, 
 sessão, preservação de contexto e reutilização do Runner.
 
 Os testes nativos em `tests/native/` validam o Registry, o Loader, o Discovery, o Executor e a execução direta de
-`process.exec` pelo runtime executável compartilhado definido em seu manifesto. `npm test` compila esses testes com C++23.
+`process.exec` pelo runtime executável compartilhado definido em seu manifesto. `npm test` compila esses testes com C++23
+e executa os testes TypeScript com o bridge nativo disponível.
 
 ## CI
 

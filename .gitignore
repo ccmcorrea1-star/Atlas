@@ -10,6 +10,7 @@ dist/
 coverage/
 .native-cmake/
 /src/capabilities/tools/process/exec/runtime
+/src/capabilities/runtime/bridge/runtime
 
 # Logs
 *.log

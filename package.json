@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && cmake -S . -B .native-cmake && cmake --build .native-cmake",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.tests.json --noEmit",
     "lint": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\"",
@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke": "tsx src/smoke.ts",
-    "test": "tsx --test tests/**/*.test.ts && node scripts/run-native-tests.mjs"
+    "test": "node scripts/run-native-tests.mjs"
   },
   "repository": {
     "type": "git",
