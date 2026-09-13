@@ -1,6 +1,6 @@
-#include "../../src/capabilities/discovery.hpp"
-#include "../../src/capabilities/loader.hpp"
-#include "../../src/capabilities/registry.hpp"
+#include "../../src/capabilities/core/discovery.hpp"
+#include "../../src/capabilities/core/loader.hpp"
+#include "../../src/capabilities/core/registry.hpp"
 
 #include <cstdlib>
 #include <filesystem>

@@ -1,5 +1,5 @@
-#include "../../src/capabilities/executor.hpp"
-#include "../../src/capabilities/tools/process/exec.hpp"
+#include "../../src/capabilities/core/executor.hpp"
+#include "../../src/capabilities/core/loader.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +19,7 @@ using atlas::capabilities::NativeRequest;
 using atlas::capabilities::Registry;
 using atlas::capabilities::StructuredArguments;
 using atlas::capabilities::StructuredValue;
+using atlas::capabilities::Loader;
 
 void require(bool condition, std::string_view message) {
   if (!condition) {
@@ -57,9 +58,10 @@ const std::string* stringOutput(const ExecutionResult& result, std::string_view 
 
 void testProcessExecution() {
   Registry registry;
+  Loader loader(registry);
   require(
-      atlas::capabilities::tools::process::registerCapability(registry),
-      "process.exec should be registered with its native entrypoint");
+      loader.load("src/capabilities/tools/process/exec/capability.json"),
+      "process.exec should be loaded from its manifest");
 
   Executor executor(registry);
   StructuredArguments arguments{
@@ -76,12 +78,20 @@ void testProcessExecution() {
       "process output should be structured under stdout");
   require(
       stringOutput(result, "status") != nullptr && *stringOutput(result, "status") == "success",
-      "structured output should expose the native status");
+      "structured output should expose the process status");
   const StructuredValue* exit_code = outputField(result, "exit_code");
   require(
       exit_code != nullptr && std::get_if<std::int64_t>(&exit_code->value) != nullptr &&
           *std::get_if<std::int64_t>(&exit_code->value) == 0,
       "structured output should expose the exit code");
+
+  StructuredArguments timeoutArguments{
+      {"program", "/bin/sleep"},
+      {"args", StructuredValue::Array{"2"}},
+      {"timeout_ms", 100},
+  };
+  const ExecutionResult timeout = executor.execute("process.exec", "local", std::move(timeoutArguments));
+  require(timeout.status == ExecutionStatus::timed_out, "process.exec should preserve executable timeouts");
 }
 
 void testMissingCapability() {
@@ -96,7 +106,7 @@ void testMissingCapability() {
 
 void testUnsupportedKinds() {
   Registry registry;
-  for (const std::string_view kind : {"executable", "python", "service", "mcp"}) {
+  for (const std::string_view kind : {"python", "service", "mcp"}) {
     const std::string id = "unsupported." + std::string(kind);
     require(
         registry.registerCapability(descriptor(id, std::string(kind), "not-used")),
@@ -120,6 +130,19 @@ void testInvalidEntrypoint() {
   require(
       result.error == "native entrypoint 'missing/native' is not registered",
       "invalid entrypoint should have a clear error");
+}
+
+void testExecutableFailure() {
+  Registry registry;
+  require(
+      registry.registerCapability(descriptor("failed.executable", "executable", "/bin/false")),
+      "executable capability should be registerable");
+
+  const ExecutionResult result = Executor(registry).execute("failed.executable", "local", {});
+  require(result.status == ExecutionStatus::failed, "a failed executable should return failed status");
+  require(
+      result.error.find("exited with code") != std::string::npos,
+      "failed executable should expose its exit code");
 }
 
 void testCapabilityError() {
@@ -161,6 +184,7 @@ int main() {
   testMissingCapability();
   testUnsupportedKinds();
   testInvalidEntrypoint();
+  testExecutableFailure();
   testCapabilityError();
   testInvalidImplementationIsNotRunnable();
   return EXIT_SUCCESS;

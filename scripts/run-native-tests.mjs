@@ -6,10 +6,15 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
 const processExecutable = resolve(outputDirectory, 'process-exec-test');
+const capabilityExecutable = resolve(
+  projectRoot,
+  'src/capabilities/tools/process/exec/implementation',
+);
 const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
-const sourceDirectory = resolve(projectRoot, 'src/capabilities/tools/process');
+const coreDirectory = resolve(capabilitiesDirectory, 'core');
+const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
 const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
 const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
@@ -38,8 +43,23 @@ try {
     '-Werror',
     '-pedantic',
     '-pthread',
-    resolve(capabilitiesDirectory, 'registry.cpp'),
-    resolve(capabilitiesDirectory, 'discovery.cpp'),
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'executor.cpp'),
+    resolve(sourceDirectory, 'implementation.cpp'),
+    resolve(sourceDirectory, 'exec.cpp'),
+    '-o',
+    capabilityExecutable,
+  ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'discovery.cpp'),
+    resolve(coreDirectory, 'loader.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     processTestSource,
     '-o',
@@ -52,9 +72,9 @@ try {
     '-Werror',
     '-pedantic',
     '-pthread',
-    resolve(capabilitiesDirectory, 'registry.cpp'),
-    resolve(capabilitiesDirectory, 'discovery.cpp'),
-    resolve(capabilitiesDirectory, 'loader.cpp'),
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'discovery.cpp'),
+    resolve(coreDirectory, 'loader.cpp'),
     loaderTestSource,
     '-o',
     loaderExecutable,
@@ -66,8 +86,9 @@ try {
     '-Werror',
     '-pedantic',
     '-pthread',
-    resolve(capabilitiesDirectory, 'registry.cpp'),
-    resolve(capabilitiesDirectory, 'executor.cpp'),
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'executor.cpp'),
+    resolve(coreDirectory, 'loader.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     executorTestSource,
     '-o',
@@ -78,4 +99,5 @@ try {
   run(executorExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });
+  rmSync(capabilityExecutable, { force: true });
 }

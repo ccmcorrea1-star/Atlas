@@ -6,6 +6,7 @@ Este documento descreve como instalar, validar e gerar o build do Atlas localmen
 
 - Node.js 22 ou superior
 - npm
+- CMake 3.20 ou superior e um compilador C++23 para as capabilities nativas
 
 As dependências do projeto utilizam o lockfile `package-lock.json`. Use `npm ci` para obter uma instalação
 reproduzível.
@@ -42,6 +43,16 @@ npm run build
 
 O TypeScript compila os arquivos de `src/` para `dist/`. O diretório `dist/` é artefato gerado e não deve ser
 versionado.
+
+## Build das capabilities nativas
+
+```bash
+cmake -S . -B .native-cmake
+cmake --build .native-cmake
+ctest --test-dir .native-cmake --output-on-failure
+```
+
+O build instala a implementação executável de `process.exec` junto do manifesto quando usado com `cmake --install`.
 
 Para executar a saída compilada:
 

@@ -8,6 +8,8 @@ node_modules/
 # Build and test output
 dist/
 coverage/
+.native-cmake/
+/src/capabilities/tools/process/exec/implementation
 
 # Logs
 *.log

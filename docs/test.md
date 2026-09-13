@@ -51,6 +51,9 @@ npm run smoke
 Ele exercita o fluxo público de conversas, incluindo endpoint, autenticação, User-Agent, headers de
 sessão, preservação de contexto e reutilização do Runner.
 
+Os testes nativos em `tests/native/` validam o Registry, o Loader, o Discovery, o Executor e a execução direta de
+`process.exec` pela implementação executável definida em seu manifesto. `npm test` compila esses testes com C++23.
+
 ## CI
 
 O GitHub Actions executa `npm test` e `npm run smoke` depois de format, lint, typecheck e build.

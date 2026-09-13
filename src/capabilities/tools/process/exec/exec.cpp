@@ -116,82 +116,6 @@ ExecResult requestError(
   return result;
 }
 
-const StructuredValue* argument(const NativeRequest& request, std::string_view name) {
-  const auto iterator = request.arguments.find(name);
-  return iterator == request.arguments.end() ? nullptr : &iterator->second;
-}
-
-ExecutionResult adapterError(const NativeRequest& request, std::string message) {
-  ExecutionResult result;
-  result.target = request.target;
-  result.status = ExecutionStatus::failed;
-  result.error = std::move(message);
-  return result;
-}
-
-// Adapta argumentos genericos para o contrato especifico do processo local.
-ExecutionResult executeNative(const NativeRequest& request) {
-  const StructuredValue* program_value = argument(request, "program");
-  const auto* program = program_value == nullptr
-      ? nullptr
-      : std::get_if<std::string>(&program_value->value);
-  if (program == nullptr || program->empty()) {
-    return adapterError(request, "argument 'program' must be a non-empty string");
-  }
-
-  ExecRequest process_request;
-  process_request.target = request.target;
-  process_request.program = *program;
-
-  if (const StructuredValue* args_value = argument(request, "args"); args_value != nullptr) {
-    const auto* args = std::get_if<StructuredValue::Array>(&args_value->value);
-    if (args == nullptr) {
-      return adapterError(request, "argument 'args' must be an array of strings");
-    }
-    process_request.args.reserve(args->size());
-    for (const StructuredValue& argument_value : *args) {
-      const auto* string_argument = std::get_if<std::string>(&argument_value.value);
-      if (string_argument == nullptr) {
-        return adapterError(request, "argument 'args' must be an array of strings");
-      }
-      process_request.args.push_back(*string_argument);
-    }
-  }
-
-  if (const StructuredValue* cwd_value = argument(request, "cwd"); cwd_value != nullptr) {
-    const auto* cwd = std::get_if<std::string>(&cwd_value->value);
-    if (cwd == nullptr) {
-      return adapterError(request, "argument 'cwd' must be a string");
-    }
-    process_request.cwd = *cwd;
-  }
-
-  if (const StructuredValue* timeout_value = argument(request, "timeout_ms"); timeout_value != nullptr) {
-    const auto* timeout = std::get_if<std::int64_t>(&timeout_value->value);
-    if (timeout == nullptr || *timeout < 0) {
-      return adapterError(request, "argument 'timeout_ms' must be a non-negative integer");
-    }
-    process_request.timeout = std::chrono::milliseconds(*timeout);
-  }
-
-  const ExecResult process_result = exec(process_request);
-  ExecutionResult result;
-  result.target = request.target;
-  result.status = process_result.status == ExecStatus::success
-      ? ExecutionStatus::success
-      : process_result.status == ExecStatus::timed_out ? ExecutionStatus::timed_out : ExecutionStatus::failed;
-  result.error = process_result.error;
-
-  StructuredValue::Object output;
-  output.emplace("stdout", process_result.stdout);
-  output.emplace("stderr", process_result.stderr);
-  output.emplace("exit_code", process_result.exit_code);
-  output.emplace("duration_ms", static_cast<std::int64_t>(process_result.duration.count()));
-  output.emplace("status", statusName(process_result.status));
-  result.output = std::move(output);
-  return result;
-}
-
 void writeChildError(int fd, ChildErrorStage stage, int error_code) noexcept {
   const ChildError child_error{static_cast<int>(stage), error_code};
   const char* bytes = reinterpret_cast<const char*>(&child_error);
@@ -610,29 +534,6 @@ const char* statusName(ExecStatus status) noexcept {
       return "timed_out";
   }
   return "failed";
-}
-
-Capability capability() {
-  return {
-      .id = "process.exec",
-      .type = "tool",
-      .summary = "executa um processo diretamente sem shell",
-      .parent = "process",
-      .aliases = {},
-      .implementation = CapabilityImplementation{"native", "atlas/capabilities/tools/process/exec"},
-  };
-}
-
-bool registerCapability(Registry& registry) {
-  const Capability descriptor = capability();
-  if (!registry.registerCapability(descriptor)) {
-    return false;
-  }
-  if (!registry.registerNativeEntrypoint(descriptor.implementation.entrypoint, executeNative)) {
-    registry.unregister(descriptor.id);
-    return false;
-  }
-  return true;
 }
 
 }  // namespace atlas::capabilities::tools::process

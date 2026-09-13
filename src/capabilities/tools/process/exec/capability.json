@@ -1,0 +1,11 @@
+{
+  "id": "process.exec",
+  "type": "tool",
+  "summary": "executa um processo diretamente sem shell",
+  "parent": "process",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "implementation"
+  }
+}

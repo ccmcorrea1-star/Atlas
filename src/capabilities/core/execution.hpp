@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -56,5 +57,9 @@ struct ExecutionResult {
 using NativeEntrypoint = std::function<ExecutionResult(const NativeRequest&)>;
 
 const char* executionStatusName(ExecutionStatus status) noexcept;
+
+// Codifica e decodifica o contrato JSON usado por implementacoes executaveis.
+std::string serializeJson(const StructuredValue& value);
+std::optional<StructuredValue> parseJson(std::string_view source, std::string& error);
 
 }  // namespace atlas::capabilities

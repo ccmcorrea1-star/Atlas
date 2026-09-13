@@ -1,6 +1,7 @@
-#include "../../src/capabilities/tools/process/exec.hpp"
-#include "../../src/capabilities/discovery.hpp"
-#include "../../src/capabilities/registry.hpp"
+#include "../../src/capabilities/tools/process/exec/exec.hpp"
+#include "../../src/capabilities/core/discovery.hpp"
+#include "../../src/capabilities/core/loader.hpp"
+#include "../../src/capabilities/core/registry.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -16,10 +17,10 @@ namespace {
 using atlas::capabilities::tools::process::ExecRequest;
 using atlas::capabilities::tools::process::ExecStatus;
 using atlas::capabilities::tools::process::exec;
-using atlas::capabilities::tools::process::registerCapability;
 using atlas::capabilities::Capability;
 using atlas::capabilities::Discovery;
 using atlas::capabilities::DiscoveryRequest;
+using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
 
 void require(bool condition, const std::string& message) {
@@ -114,10 +115,15 @@ DiscoveryRequest pathRequest(std::string path) {
 void testRegistryAndDiscovery() {
   Registry registry;
   Discovery discovery(registry);
+  Loader loader(registry);
 
   require(!registry.get("missing.capability").has_value(), "missing capability should not be returned");
-  require(registerCapability(registry), "process.exec should be registered initially");
-  require(!registerCapability(registry), "duplicate capability registration should fail");
+  require(
+      loader.load("src/capabilities/tools/process/exec/capability.json"),
+      "process.exec should be loaded from its manifest");
+  require(
+      !loader.load("src/capabilities/tools/process/exec/capability.json"),
+      "duplicate capability loading should fail");
 
   const auto registered = registry.get("process.exec");
   require(registered.has_value(), "registered capability should be returned");
@@ -126,7 +132,13 @@ void testRegistryAndDiscovery() {
       registered->summary == "executa um processo diretamente sem shell",
       "registered capability should expose its summary");
   require(registered->parent == "process", "registered capability should expose its parent");
-  require(!registered->implementation.empty(), "registered capability should expose its implementation reference");
+  require(
+      registered->implementation.kind == "executable",
+      "manifest should expose an executable implementation");
+  require(
+      registered->implementation.entrypoint.find("src/capabilities/tools/process/exec/implementation") !=
+          std::string::npos,
+      "manifest entrypoint should resolve relative to its capability");
 
   const auto listed = registry.list();
   require(listed.size() == 1 && listed.front().id == "process.exec", "list should contain process.exec");
@@ -189,6 +201,11 @@ void testRegistryAndDiscovery() {
       discovery.discover(queryRequest("repeat")).empty(),
       "removed capability should disappear from Discovery");
   require(!registry.unregister("missing.capability"), "unregister should fail for missing capability");
+  require(loader.unload("process.exec"), "unload should remove the manifest capability");
+  require(!registry.get("process.exec").has_value(), "unloaded manifest capability should leave Registry");
+  require(
+      discovery.discover(queryRequest("EXECUTA PROCESSO")).empty(),
+      "unloaded manifest capability should leave Discovery");
 }
 
 }  // namespace

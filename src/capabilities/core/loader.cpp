@@ -492,6 +492,12 @@ bool Loader::load(const std::filesystem::path& path) {
   if (!parseManifest(path, capability, error)) {
     return fail("failed to load manifest '" + path.string() + "': " + error);
   }
+  // Entry points executaveis sao relativos ao manifesto que os declara.
+  if (capability.implementation.kind == "executable" &&
+      std::filesystem::path(capability.implementation.entrypoint).is_relative()) {
+    capability.implementation.entrypoint =
+        (sourcePath(path).parent_path() / capability.implementation.entrypoint).lexically_normal().string();
+  }
   if (registry_.get(capability.id).has_value()) {
     return fail("capability '" + capability.id + "' is already registered");
   }
@@ -526,6 +532,11 @@ bool Loader::reload(std::string_view id) {
   std::string error;
   if (!parseManifest(source->second, capability, error)) {
     return fail("failed to reload capability '" + std::string(id) + "': " + error);
+  }
+  if (capability.implementation.kind == "executable" &&
+      std::filesystem::path(capability.implementation.entrypoint).is_relative()) {
+    capability.implementation.entrypoint =
+        (source->second.parent_path() / capability.implementation.entrypoint).lexically_normal().string();
   }
   if (capability.id != id) {
     return fail("reloaded manifest id '" + capability.id + "' does not match '" + std::string(id) + "'");
