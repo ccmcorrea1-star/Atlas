@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../registry.hpp"
+
 #include <chrono>
 #include <optional>
 #include <string>
@@ -62,5 +64,11 @@ ExecResult exec(const ExecRequest& request);
 
 // Converte o status para o valor estavel usado por adaptadores externos.
 const char* statusName(ExecStatus status) noexcept;
+
+// Fornece o descritor registravel sem expor a funcao de execucao ao Registry.
+atlas::capabilities::Capability capability();
+
+// Registra esta capability no Registry recebido pelo bootstrap do runtime.
+bool registerCapability(atlas::capabilities::Registry& registry);
 
 }  // namespace atlas::capabilities::tools::process

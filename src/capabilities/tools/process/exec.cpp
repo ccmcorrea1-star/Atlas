@@ -536,4 +536,19 @@ const char* statusName(ExecStatus status) noexcept {
   return "failed";
 }
 
+Capability capability() {
+  return {
+      .id = "process.exec",
+      .type = "tool",
+      .summary = "executa um processo diretamente sem shell",
+      .parent = "process",
+      .aliases = {},
+      .implementation = "native://atlas/capabilities/tools/process/exec",
+  };
+}
+
+bool registerCapability(Registry& registry) {
+  return registry.registerCapability(capability());
+}
+
 }  // namespace atlas::capabilities::tools::process

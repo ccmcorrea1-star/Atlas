@@ -1,9 +1,12 @@
 #include "../../src/capabilities/tools/process/exec.hpp"
+#include "../../src/capabilities/discovery.hpp"
+#include "../../src/capabilities/registry.hpp"
 
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <unistd.h>
@@ -13,6 +16,11 @@ namespace {
 using atlas::capabilities::tools::process::ExecRequest;
 using atlas::capabilities::tools::process::ExecStatus;
 using atlas::capabilities::tools::process::exec;
+using atlas::capabilities::tools::process::registerCapability;
+using atlas::capabilities::Capability;
+using atlas::capabilities::Discovery;
+using atlas::capabilities::DiscoveryRequest;
+using atlas::capabilities::Registry;
 
 void require(bool condition, const std::string& message) {
   if (!condition) {
@@ -84,6 +92,105 @@ void testStderrCapture() {
   require(!result.stderr.empty(), "stderr should be captured");
 }
 
+Capability runtimeCapability() {
+  return {
+      .id = "runtime.echo",
+      .type = "tool",
+      .summary = "repete um texto",
+      .parent = "runtime",
+      .aliases = {"echo"},
+      .implementation = "test://runtime/echo",
+  };
+}
+
+DiscoveryRequest queryRequest(std::string query) {
+  return {.path = std::nullopt, .query = std::move(query)};
+}
+
+DiscoveryRequest pathRequest(std::string path) {
+  return {.path = std::move(path), .query = std::nullopt};
+}
+
+void testRegistryAndDiscovery() {
+  Registry registry;
+  Discovery discovery(registry);
+
+  require(!registry.get("missing.capability").has_value(), "missing capability should not be returned");
+  require(registerCapability(registry), "process.exec should be registered initially");
+  require(!registerCapability(registry), "duplicate capability registration should fail");
+
+  const auto registered = registry.get("process.exec");
+  require(registered.has_value(), "registered capability should be returned");
+  require(registered->type == "tool", "registered capability should expose its type");
+  require(
+      registered->summary == "executa um processo diretamente sem shell",
+      "registered capability should expose its summary");
+  require(registered->parent == "process", "registered capability should expose its parent");
+  require(!registered->implementation.empty(), "registered capability should expose its implementation reference");
+
+  const auto listed = registry.list();
+  require(listed.size() == 1 && listed.front().id == "process.exec", "list should contain process.exec");
+
+  const auto processChildren = registry.children("process");
+  require(
+      processChildren.size() == 1 && processChildren.front().id == "process.exec",
+      "children should return direct children of a path");
+  require(
+      registry.children("unknown.path").empty(),
+      "children should be empty for an unknown path");
+
+  const auto processSearch = registry.search("EXECUTA PROCESSO");
+  require(
+      processSearch.size() == 1 && processSearch.front().id == "process.exec",
+      "search should match summary tokens case-insensitively");
+
+  Capability dynamic = runtimeCapability();
+  require(registry.registerCapability(dynamic), "runtime capability should be registered");
+  require(
+      discovery.discover(queryRequest("echo")).size() == 1,
+      "new capability should appear in Discovery search");
+  const auto runtimeChildren = discovery.discover(pathRequest("runtime"));
+  require(
+      runtimeChildren.size() == 1 && runtimeChildren.front().id == "runtime.echo" &&
+          runtimeChildren.front().type == "tool" &&
+          runtimeChildren.front().summary == "repete um texto",
+      "new capability should appear in Discovery children");
+
+  dynamic.summary = "repete texto atualizado";
+  dynamic.aliases = {"repeat"};
+  require(registry.update(dynamic), "existing capability should be updated");
+  const auto updated = registry.get("runtime.echo");
+  require(
+      updated.has_value() && updated->summary == "repete texto atualizado",
+      "get should return the updated capability");
+  require(
+      discovery.discover(queryRequest("repeat")).front().summary ==
+          "repete texto atualizado",
+      "Discovery should read updated Registry state");
+  require(
+      !registry.update(
+          "runtime.echo",
+          Capability{
+              .id = "other.id",
+              .type = "tool",
+              .summary = "invalid identity",
+              .parent = std::nullopt,
+              .aliases = {},
+              .implementation = "test://other",
+          }),
+      "update should not change a capability identity");
+  Capability missing = runtimeCapability();
+  missing.id = "missing.capability";
+  require(!registry.update(missing), "update should fail for a missing capability");
+
+  require(registry.unregister("runtime.echo"), "existing capability should be removed");
+  require(!registry.get("runtime.echo").has_value(), "removed capability should not be returned");
+  require(
+      discovery.discover(queryRequest("repeat")).empty(),
+      "removed capability should disappear from Discovery");
+  require(!registry.unregister("missing.capability"), "unregister should fail for missing capability");
+}
+
 }  // namespace
 
 int main() {
@@ -98,6 +205,7 @@ int main() {
   testWorkingDirectory(directory);
   testTimeout();
   testStderrCapture();
+  testRegistryAndDiscovery();
 
   std::filesystem::remove_all(directory);
   return EXIT_SUCCESS;

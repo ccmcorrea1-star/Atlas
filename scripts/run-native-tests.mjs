@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
 const executable = resolve(outputDirectory, 'process-exec-test');
+const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const sourceDirectory = resolve(projectRoot, 'src/capabilities/tools/process');
 const testSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 
@@ -32,6 +33,9 @@ try {
     '-Wextra',
     '-Werror',
     '-pedantic',
+    '-pthread',
+    resolve(capabilitiesDirectory, 'registry.cpp'),
+    resolve(capabilitiesDirectory, 'discovery.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     testSource,
     '-o',
