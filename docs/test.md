@@ -9,6 +9,8 @@ TypeScript e ficam separados do código de produção.
 tests/
 ├── support/
 │   └── open-code-go-test-server.ts
+├── integration/
+│   └── runtime-unix.test.ts
 └── unit/
     ├── atlas-capabilities.test.ts
     ├── atlas-conversations.test.ts
@@ -40,6 +42,10 @@ um servidor HTTP temporário em `127.0.0.1`.
 
 1. Um Runner criado diretamente usa a sessão configurada no provider.
 2. IDs de sessão vazios são rejeitados.
+
+`runtime-unix.test.ts` verifica o contrato público sobre Unix Socket, incluindo
+o `request_id`, o `conversation_id`, os eventos de turno e a resposta real
+produzida pelo `runAtlas()` através do provider local de teste.
 
 ## Smoke test
 

@@ -13,15 +13,22 @@ Crossterm, Tokio e Clap.
 cargo run --manifest-path clients/tui/Cargo.toml -- --conversation-id minha-conversa
 ```
 
+Em outro terminal, inicie o Runtime local primeiro:
+
+```bash
+npm run runtime
+```
+
 Durante a execução:
 
 - `Enter` envia a mensagem;
 - `Esc` ou `Ctrl-C` encerra o cliente;
 - `Backspace` e as setas esquerda/direita editam o campo de entrada.
 
-O `RuntimeClient` é a única fronteira entre o TUI e o Atlas. O transporte
-público IPC/API ainda não foi definido, então a implementação inicial informa
-essa indisponibilidade no próprio histórico sem simular respostas do Agent.
+O `RuntimeClient` é a única fronteira entre o TUI e o Atlas. Ele usa o contrato
+público em [`protocol/runtime/v1`](../protocol/runtime/v1/) sobre o Unix Socket
+`/tmp/atlas-runtime.sock`; o caminho pode ser alterado com
+`ATLAS_RUNTIME_SOCKET`.
 
 ## Verificação
 

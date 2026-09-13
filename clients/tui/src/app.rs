@@ -163,6 +163,20 @@ impl App {
                         .push(Message::new(MessageRole::Atlas, delta, Some(message_id)));
                 }
             }
+            RuntimeEvent::MessageCompleted {
+                message_id,
+                content,
+            } => {
+                self.status = Status::Thinking;
+                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+                    message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
+                }) {
+                    message.content = content;
+                } else {
+                    self.messages
+                        .push(Message::new(MessageRole::Atlas, content, Some(message_id)));
+                }
+            }
             RuntimeEvent::ToolStarted { tool_name } => {
                 self.status = Status::Tool(tool_name.clone());
                 self.messages.push(Message::new(

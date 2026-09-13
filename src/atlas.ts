@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import { Agent, MemorySession, Runner, type FunctionTool } from '@openai/agents';
+import {
+  Agent,
+  MemorySession,
+  Runner,
+  type FunctionTool,
+  type RunStreamEvent,
+} from '@openai/agents';
 
 import {
   OpenCodeGoProvider,
@@ -30,7 +36,32 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
   capabilityRuntime?: CapabilityRuntime;
+  onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
 };
+
+// Eventos neutros permitem observar a execucao sem expor tipos do Agent SDK.
+export type AtlasRunEvent =
+  | {
+      type: 'message.delta';
+      messageId: string;
+      delta: string;
+    }
+  | {
+      type: 'message.completed';
+      messageId: string;
+      content: string;
+    }
+  | {
+      type: 'tool.started';
+      toolId: string;
+      toolName: string;
+    }
+  | {
+      type: 'tool.completed';
+      toolId: string;
+      toolName: string;
+      output?: string;
+    };
 
 // Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
 type AtlasRuntime = {
@@ -197,6 +228,100 @@ function createAtlasAgent(
   return agent;
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+function publicText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return JSON.stringify(value);
+}
+
+function messageContent(item: Record<string, unknown>): string {
+  if (!Array.isArray(item.content)) {
+    return '';
+  }
+
+  return item.content
+    .map((content) => {
+      if (content === null || typeof content !== 'object') {
+        return '';
+      }
+
+      const contentRecord = content as Record<string, unknown>;
+      return stringValue(contentRecord.text) ?? stringValue(contentRecord.refusal) ?? '';
+    })
+    .join('');
+}
+
+async function publishRunEvent(
+  event: RunStreamEvent,
+  onEvent: (event: AtlasRunEvent) => void | Promise<void>,
+  fallbackMessageId: string,
+): Promise<void> {
+  if (event.type === 'raw_model_stream_event') {
+    if (event.data.type !== 'output_text_delta') {
+      return;
+    }
+
+    await onEvent({
+      type: 'message.delta',
+      messageId: event.data.itemId ?? fallbackMessageId,
+      delta: event.data.delta,
+    });
+    return;
+  }
+
+  if (event.type !== 'run_item_stream_event') {
+    return;
+  }
+
+  const item = event.item.rawItem as unknown as Record<string, unknown>;
+  const toolName = stringValue(item.name);
+  const toolId = stringValue(item.callId) ?? stringValue(item.call_id);
+
+  if (event.name === 'tool_called') {
+    // Discovery is an Agent implementation detail, not a client-facing tool.
+    if (toolName && toolName !== 'discover' && toolId) {
+      await onEvent({ type: 'tool.started', toolId, toolName });
+    }
+    return;
+  }
+
+  if (event.name === 'tool_output') {
+    if (toolName && toolName !== 'discover' && toolId) {
+      const output = publicText(item.output);
+      await onEvent({
+        type: 'tool.completed',
+        toolId,
+        toolName,
+        ...(output === undefined ? {} : { output }),
+      });
+    }
+    return;
+  }
+
+  if (event.name === 'message_output_created') {
+    const content = messageContent(item);
+    if (!content) {
+      return;
+    }
+
+    await onEvent({
+      type: 'message.completed',
+      messageId: stringValue(item.id) ?? fallbackMessageId,
+      content,
+    });
+  }
+}
+
 export function getAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runner {
   // Expor o mesmo Runner permite chamadas diretas e chamadas por runAtlas.
   return getAtlasRuntime(options).runner;
@@ -222,6 +347,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const {
     conversationId: _conversationId,
     capabilityRuntime: requestedCapabilityRuntime,
+    onEvent,
     ...providerOptions
   } = options;
   const runtime = getAtlasRuntime(providerOptions);
@@ -234,5 +360,20 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
   runtime.sessions.set(sessionId, session);
 
-  return withOpenCodeGoSession(sessionId, () => runtime.runner.run(agent, input, { session }));
+  return withOpenCodeGoSession(sessionId, async () => {
+    if (!onEvent) {
+      return runtime.runner.run(agent, input, { session });
+    }
+
+    const streamedResult = await runtime.runner.run(agent, input, {
+      session,
+      stream: true,
+    });
+    const fallbackMessageId = randomUUID();
+    for await (const event of streamedResult) {
+      await publishRunEvent(event, onEvent, fallbackMessageId);
+    }
+
+    return streamedResult;
+  });
 }

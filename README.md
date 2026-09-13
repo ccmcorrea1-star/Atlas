@@ -55,6 +55,7 @@ Use o mesmo `conversationId` para preservar o contexto entre turns. Um ID difere
 
 ```bash
 npm run dev
+npm run runtime
 npm run build
 npm test
 npm run smoke

@@ -69,6 +69,7 @@ npm start
 | Comando                | Finalidade                                               |
 | ---------------------- | -------------------------------------------------------- |
 | `npm run dev`          | Executa o TypeScript em modo watch                       |
+| `npm run runtime`      | Inicia o servidor local do Atlas Runtime                 |
 | `npm run format`       | Formata os arquivos com Prettier                         |
 | `npm run format:check` | Verifica a formatação sem alterar arquivos               |
 | `npm run lint`         | Executa o ESLint                                         |

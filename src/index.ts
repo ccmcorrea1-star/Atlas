@@ -1,6 +1,6 @@
 // Este e o ponto de entrada publico: consumidores importam o Agent e seu runtime daqui.
 export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './atlas.js';
-export type { AtlasRunOptions } from './atlas.js';
+export type { AtlasRunEvent, AtlasRunOptions } from './atlas.js';
 
 // O runtime de capabilities permanece independente do Agent SDK e pode ser substituido em testes.
 export { createCapabilityRuntime, NativeCapabilityRuntime } from './capability-runtime.js';
