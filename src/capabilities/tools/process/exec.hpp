@@ -11,8 +11,13 @@ namespace atlas::capabilities::tools::process {
 inline constexpr char kLocalTarget[] = "local";
 
 enum class ExecStatus {
+  // O processo iniciou e terminou com codigo zero.
   success,
+
+  // Houve falha de lancamento ou o processo terminou com codigo nao zero.
   failed,
+
+  // O limite foi atingido e o processo foi encerrado pelo Atlas.
   timed_out,
 };
 
@@ -20,7 +25,7 @@ struct ExecRequest {
   // Somente o target local e executado nesta primeira implementacao.
   std::string target;
 
-  // O programa e cada argumento seguem para execve sem interpretacao.
+  // O programa e cada argumento seguem para execve sem interpretacao ou expansao.
   std::string program;
   std::vector<std::string> args;
 

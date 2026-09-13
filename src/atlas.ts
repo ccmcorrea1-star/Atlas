@@ -9,6 +9,7 @@ import {
   withOpenCodeGoSession,
 } from './opencode-go.js';
 
+// O Agent define a identidade e as instrucoes; a execucao concreta fica no Runner configurado abaixo.
 export const Atlas = new Agent({
   name: 'Atlas',
   instructions:
@@ -17,16 +18,20 @@ export const Atlas = new Agent({
 });
 
 export type AtlasRunOptions = OpenCodeGoProviderOptions & {
+  // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
 };
 
+// Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
 type AtlasRuntime = {
   runner: Runner;
   sessions: Map<string, MemorySession>;
 };
 
+// A chave e a configuracao do provider, nao o ID da conversa.
 const atlasRuntimes = new Map<string, AtlasRuntime>();
 
+// Cria o Runner com tracing desabilitado para manter a execucao local e previsivel.
 export function createAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runner {
   return new Runner({
     modelProvider: new OpenCodeGoProvider(options),
@@ -35,6 +40,7 @@ export function createAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runn
 }
 
 function stableSerialize(value: unknown): string {
+  // Serializacao ordenada impede que a ordem das chaves gere runtimes duplicados.
   if (value === undefined) {
     return 'undefined';
   }
@@ -55,6 +61,7 @@ function stableSerialize(value: unknown): string {
 }
 
 function getRuntimeKey(options: OpenCodeGoProviderOptions): string {
+  // A sessao pertence a conversa; o Runner deve ser compartilhado entre elas.
   const { session: _session, sessionId: _sessionId, ...providerOptions } = options;
   return stableSerialize(providerOptions);
 }
@@ -64,6 +71,7 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
   const key = getRuntimeKey(options);
   const existingRuntime = atlasRuntimes.get(key);
   if (existingRuntime) {
+    // Reaproveita provider, cache de modelos e conexoes para a mesma configuracao.
     return existingRuntime;
   }
 
@@ -76,11 +84,13 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
 }
 
 export function getAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runner {
+  // Expor o mesmo Runner permite chamadas diretas e chamadas por runAtlas.
   return getAtlasRuntime(options).runner;
 }
 
 // Gera uma conversa nova quando o chamador não informa um identificador.
 function getConversationId(options: AtlasRunOptions): string {
+  // Mantem compatibilidade com as formas de sessao aceitas pelo provider.
   const requestedId = options.conversationId ?? options.sessionId ?? options.session?.id;
   if (requestedId !== undefined) {
     if (!requestedId.trim()) {
@@ -94,10 +104,11 @@ function getConversationId(options: AtlasRunOptions): string {
 }
 
 export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
+  // O ID de conversa nao participa da chave do runtime, apenas da sessao de historico.
   const { conversationId: _conversationId, ...providerOptions } = options;
   const runtime = getAtlasRuntime(providerOptions);
   const sessionId = getConversationId(options);
-  // A Session guarda o histórico; o contexto assíncrono aplica seu ID ao request.
+  // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
 
   runtime.sessions.set(sessionId, session);

@@ -288,7 +288,6 @@ bool drainChildError(
   return true;
 }
 
-// Expõe o codigo de saida normal e uma convencao deterministica para sinais.
 int exitCode(int wait_status) {
   if (WIFEXITED(wait_status)) {
     return WEXITSTATUS(wait_status);
@@ -432,6 +431,7 @@ ExecResult exec(const ExecRequest& request) {
   std::size_t child_error_bytes_read = 0;
   std::optional<ChildError> child_error;
 
+  // O pai alterna leitura dos pipes, waitpid e verificacao do timeout.
   while (!child_reaped) {
     drainOutput(pipes.stdout_read, result.stdout, capture_error);
     drainOutput(pipes.stderr_read, result.stderr, capture_error);
@@ -453,7 +453,6 @@ ExecResult exec(const ExecRequest& request) {
       child_reaped = true;
     }
 
-    // O timeout mata apenas o processo iniciado por esta chamada, nunca um shell.
     if (!child_reaped && deadline.has_value() &&
         std::chrono::steady_clock::now() >= deadline.value()) {
       if (kill(child_pid, SIGKILL) == -1 && errno != ESRCH) {
@@ -500,6 +499,7 @@ ExecResult exec(const ExecRequest& request) {
       capture_error);
   closeAllPipes(pipes);
 
+  // O erro recebido pelo pipe tem prioridade sobre o codigo 127 do filho.
   result.exit_code = exitCode(wait_status);
   if (child_error.has_value()) {
     result.status = ExecStatus::failed;

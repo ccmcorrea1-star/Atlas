@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { getAtlasRunner, runAtlas } from './index.js';
 
 type CapturedRequest = {
+  // O smoke usa apenas os dados necessários para verificar o contrato HTTP.
   body: Record<string, unknown>;
   headers: Record<string, string | string[] | undefined>;
   url: string | undefined;
@@ -24,6 +25,7 @@ const server = createServer(async (request, response) => {
   });
 
   response.writeHead(200, { 'content-type': 'application/json' });
+  // Respostas diferentes permitem verificar historico compartilhado e isolamento.
   const requestNumber = capturedRequests.length;
   const outputText =
     requestNumber === 1
@@ -58,6 +60,7 @@ const server = createServer(async (request, response) => {
 });
 
 function listen(): Promise<number> {
+  // Porta zero evita colisao com outros processos durante o smoke test.
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
@@ -73,6 +76,7 @@ function listen(): Promise<number> {
 }
 
 function close(): Promise<void> {
+  // Fecha o servidor mesmo quando uma assercao falha no fluxo principal.
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
@@ -81,7 +85,7 @@ function close(): Promise<void> {
 const port = await listen();
 
 try {
-  // Duas conversas comprovam continuidade e isolamento do histórico.
+  // Duas conversas comprovam continuidade e isolamento do historico.
   const providerOptions = {
     apiKey: 'atlas-smoke-key',
     baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
@@ -103,6 +107,7 @@ try {
   assert.equal(firstResult.finalOutput, 'First turn stored.');
   assert.equal(secondResult.finalOutput, 'Second turn saw the context.');
   assert.equal(independentResult.finalOutput, 'Independent conversation.');
+  // As assercoes cobrem endpoint, autenticacao, sessao, payload e reuso do Runner.
   assert.equal(capturedRequests.length, 3);
   assert.equal(capturedRequests[0]?.url, '/zen/go/v1/responses');
   assert.equal(capturedRequests[0]?.headers['user-agent'], 'Atlas/1.0.0');
