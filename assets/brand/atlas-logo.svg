@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Atlas</title>
+  <desc id="desc">Logotipo Atlas com símbolo A e órbita</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070809"/>
+      <stop offset="1" stop-color="#111316"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d7dbe0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+
+  <g transform="translate(145 58)">
+    <path d="M150 22 L292 272 H236 L150 119 L64 272 H8 Z" fill="url(#mark)"/>
+    <path d="M-14 225 C55 117 244 67 330 113 C384 142 359 222 286 259" fill="none" stroke="#cfd4da" stroke-width="3" opacity=".78"/>
+    <circle cx="302" cy="105" r="9" fill="#e8ebee"/>
+  </g>
+
+  <g fill="url(#mark)" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="118" font-weight="500" letter-spacing="30">
+    <text x="500" y="258">ATLAS</text>
+  </g>
+</svg>
