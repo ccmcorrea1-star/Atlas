@@ -1,6 +1,6 @@
 # Atlas — Visão Técnica e Arquitetura
 
-**Versão 0.7 — Setembro de 2026**
+**Versão 0.8 — Setembro de 2026**
 
 > Este documento é a fonte de verdade para a visão, os princípios e as fronteiras arquiteturais do Atlas.
 
@@ -96,7 +96,17 @@ Discovery pesquisa recursos descobríveis. O Capability Registry administra capa
 
 Discovery permite que o Agent conheça capacidades progressivamente, sem receber todos os schemas e instruções antecipadamente.
 
-O modelo deve suportar dois caminhos complementares:
+Antes de navegar, o Agent recebe apenas um catálogo compacto dos grupos de tools disponíveis. Esse catálogo fornece o mapa de alto nível do que Atlas pode fazer, sem expor as tools individuais nem seus schemas.
+
+```text
+process — executar e gerenciar processos
+filesystem — operar arquivos e diretórios
+docker — operar containers, imagens, redes e volumes
+git — operar repositórios Git
+system — consultar e operar o sistema
+```
+
+A partir desse mapa, o modelo deve suportar dois caminhos complementares:
 
 1. navegação hierárquica;
 2. busca direta.
@@ -136,7 +146,7 @@ docker.container.logs
 schema completo
 ```
 
-O primeiro nível deve ser compacto. Ao pedir `docker`, o Agent pode receber apenas os grupos principais. Ao pedir `docker.container`, recebe as capacidades daquela área. Ao chegar a uma capacidade executável, pode solicitar ou receber sua materialização completa.
+O primeiro nível conhecido pelo Agent é o grupo. Ao consultar `docker`, recebe apenas os subgrupos ou capacidades imediatamente relevantes daquela área. Ao consultar `docker.container`, recebe as tools daquele grupo. Ao chegar a uma capacidade executável, pode solicitar ou receber sua materialização completa.
 
 A hierarquia organiza o espaço de capacidades; ela não exige que todas as tools tenham exatamente três níveis. O nome deve refletir o domínio de forma clara, sem criar árvores artificialmente profundas.
 
@@ -219,16 +229,16 @@ Para skills, o fluxo é semelhante até a materialização: Discovery encontra a
 
 ### Materialização progressiva
 
-O fluxo conceitual é:
+O fluxo conceitual para tools é:
 
 ```text
-catálogo compacto
+grupos de tools
   ↓
-resumos dos candidatos
+subgrupos ou candidatas
   ↓
 detalhes do recurso relevante
   ↓
-schema ou procedimento completo
+schema completo
 ```
 
 Compaction pode remover detalhes já materializados do contexto. Se a capacidade voltar a ser necessária, o Agent pode aprofundar o Discovery novamente sem carregar todo o catálogo antecipadamente.
@@ -239,17 +249,29 @@ O paper não fixa neste momento a implementação interna de índices, ranking, 
 
 Tools representam ações executáveis e estruturadas.
 
-O Agent não recebe todos os schemas antecipadamente.
+O Agent não recebe todos os schemas nem a lista completa de tools antecipadamente.
 
-Primeiro recebe apenas informação suficiente para saber que uma área existe:
+Inicialmente, recebe apenas os grupos de tools e uma descrição curta de cada grupo:
 
 ```text
-files — ler, escrever e buscar arquivos
+process — executar e gerenciar processos
+filesystem — operar arquivos e diretórios
+docker — operar containers, imagens, redes e volumes
 git — operar repositórios Git
-docker — operar containers, imagens, redes, volumes e o estado do Docker
+system — consultar e operar o sistema
 ```
 
 Ao se aprofundar em Docker:
+
+```text
+docker.container
+docker.image
+docker.network
+docker.volume
+docker.system
+```
+
+Ao se aprofundar em `docker.container`:
 
 ```text
 docker.container.list — lista containers
@@ -698,7 +720,7 @@ O usuário deve conseguir acompanhar o trabalho sem receber raciocínio privado.
 
 1. O Agent age diretamente por meio de tools quando isso é suficiente.
 2. Delegação para Tasks e Workers é opcional e usada quando houver benefício operacional.
-3. Discovery permite exploração hierárquica e busca direta.
+3. O Agent começa conhecendo apenas os grupos de tools; Discovery permite aprofundamento hierárquico e busca direta.
 4. Discovery cria conhecimento sobre recursos; não cria autoridade.
 5. Somente o contexto necessário é materializado para o modelo.
 6. Tools usam materialização progressiva de schema.
