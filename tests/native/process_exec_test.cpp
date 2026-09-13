@@ -158,7 +158,7 @@ void testRegistryAndDiscovery() {
       registered->implementation.kind == "executable",
       "manifest should expose an executable implementation");
   require(
-      registered->implementation.entrypoint.find("src/capabilities/tools/process/exec/implementation") !=
+      registered->implementation.entrypoint.find("src/capabilities/tools/process/exec/runtime") !=
           std::string::npos,
       "manifest entrypoint should resolve relative to its capability");
   const StructuredValue* schemaProperties = objectField(registered->schema, "properties");

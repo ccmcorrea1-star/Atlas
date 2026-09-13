@@ -9,7 +9,7 @@ node_modules/
 dist/
 coverage/
 .native-cmake/
-/src/capabilities/tools/process/exec/implementation
+/src/capabilities/tools/process/exec/runtime
 
 # Logs
 *.log

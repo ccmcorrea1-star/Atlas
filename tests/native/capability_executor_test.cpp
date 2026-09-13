@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -61,6 +62,10 @@ const std::string* stringOutput(const ExecutionResult& result, std::string_view 
 void testProcessExecution() {
   Registry registry;
   Loader loader(registry);
+  const std::filesystem::path processDirectory = "src/capabilities/tools/process/exec";
+  require(
+      !std::filesystem::exists(processDirectory / "implementation.cpp"),
+      "process.exec should not have a tool-specific implementation.cpp");
   require(
       loader.load("src/capabilities/tools/process/exec/capability.json"),
       "process.exec should be loaded from its manifest");

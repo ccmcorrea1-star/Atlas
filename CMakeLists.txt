@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_library(atlas-capabilities-executable-runtime STATIC
+  src/capabilities/runtime/executable/adapter.cpp
+  src/capabilities/runtime/executable/protocol.cpp
+)
+target_include_directories(atlas-capabilities-executable-runtime PUBLIC src/capabilities)
+
 add_library(atlas-capabilities-core STATIC
   src/capabilities/core/discovery.cpp
   src/capabilities/core/executor.cpp
@@ -13,14 +19,15 @@ add_library(atlas-capabilities-core STATIC
   src/capabilities/core/registry.cpp
 )
 target_include_directories(atlas-capabilities-core PUBLIC src/capabilities/core)
+target_link_libraries(atlas-capabilities-core PUBLIC atlas-capabilities-executable-runtime)
 
-add_executable(atlas-process-exec-implementation
-  src/capabilities/tools/process/exec/implementation.cpp
+add_executable(atlas-process-exec-runtime
+  src/capabilities/runtime/executable/main.cpp
   src/capabilities/tools/process/exec/exec.cpp
 )
-target_link_libraries(atlas-process-exec-implementation PRIVATE atlas-capabilities-core)
-set_target_properties(atlas-process-exec-implementation PROPERTIES
-  OUTPUT_NAME implementation
+target_link_libraries(atlas-process-exec-runtime PRIVATE atlas-capabilities-core)
+set_target_properties(atlas-process-exec-runtime PROPERTIES
+  OUTPUT_NAME runtime
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/process/exec"
 )
 
@@ -29,18 +36,19 @@ enable_testing()
 add_executable(atlas-process-exec-test tests/native/process_exec_test.cpp)
 target_sources(atlas-process-exec-test PRIVATE src/capabilities/tools/process/exec/exec.cpp)
 target_link_libraries(atlas-process-exec-test PRIVATE atlas-capabilities-core)
-add_dependencies(atlas-process-exec-test atlas-process-exec-implementation)
+add_dependencies(atlas-process-exec-test atlas-process-exec-runtime)
 
 add_executable(atlas-capability-loader-test tests/native/capability_loader_test.cpp)
 target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-core)
 
 add_executable(atlas-capability-executor-test tests/native/capability_executor_test.cpp)
 target_link_libraries(atlas-capability-executor-test PRIVATE atlas-capabilities-core)
-add_dependencies(atlas-capability-executor-test atlas-process-exec-implementation)
+add_dependencies(atlas-capability-executor-test atlas-process-exec-runtime)
 
 foreach(target
+    atlas-capabilities-executable-runtime
     atlas-capabilities-core
-    atlas-process-exec-implementation
+    atlas-process-exec-runtime
     atlas-process-exec-test
     atlas-capability-loader-test
     atlas-capability-executor-test)
@@ -57,7 +65,7 @@ set_tests_properties(
   PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
-install(TARGETS atlas-process-exec-implementation
+install(TARGETS atlas-process-exec-runtime
   RUNTIME DESTINATION capabilities/tools/process/exec
 )
 install(FILES src/capabilities/tools/process/exec/capability.json

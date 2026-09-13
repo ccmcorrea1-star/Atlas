@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../../core/execution.hpp"
+
 #include <chrono>
 #include <optional>
 #include <string>
@@ -59,6 +61,9 @@ struct ExecResult {
 
 // Executa um processo local diretamente, sem shell e sem interpretar os argumentos.
 ExecResult exec(const ExecRequest& request);
+
+// Adapta os argumentos estruturados do runtime para a execucao deste processo.
+atlas::capabilities::ExecutionResult dispatch(const atlas::capabilities::NativeRequest& request);
 
 // Converte o status para o valor estavel usado por adaptadores externos.
 const char* statusName(ExecStatus status) noexcept;
