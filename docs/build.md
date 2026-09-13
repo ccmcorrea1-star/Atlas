@@ -7,6 +7,7 @@ Este documento descreve como instalar, validar e gerar o build do Atlas localmen
 - Node.js 22 ou superior
 - npm
 - CMake 3.20 ou superior e um compilador C++23 para as capabilities nativas
+- Rust e Cargo para o cliente TUI
 
 As dependências do projeto utilizam o lockfile `package-lock.json`. Use `npm ci` para obter uma instalação
 reproduzível.
@@ -27,6 +28,8 @@ npm run lint
 npm run typecheck
 npm test
 npm run smoke
+npm run build:client
+npm run test:client
 ```
 
 O smoke test usa um servidor HTTP local simulado. Ele não precisa de `OPENCODE_GO_API_KEY` nem faz requisições
@@ -39,6 +42,7 @@ iniciam processos Node separados e podem consumir memória e swap simultaneament
 
 ```bash
 npm run build
+npm run build:client
 ```
 
 O TypeScript compila os arquivos de `src/` para `dist/`. O diretório `dist/` é artefato gerado e não deve ser
@@ -73,6 +77,8 @@ npm start
 | `npm test`             | Executa os testes automatizados em `tests/unit/`         |
 | `npm run smoke`        | Executa o smoke test do provider e das conversas         |
 | `npm run build`        | Gera os arquivos JavaScript em `dist/`                   |
+| `npm run build:client` | Compila o cliente TUI em Rust                            |
+| `npm run test:client`  | Executa os testes unitários do cliente TUI               |
 
 ## CI
 
@@ -85,5 +91,6 @@ Actions:
 4. Build
 5. Testes automatizados
 6. Smoke test
+7. Build e testes do cliente TUI
 
 Uma mudança só deve ser considerada pronta quando todos esses comandos passarem localmente.

@@ -13,6 +13,8 @@
     "lint:fix": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "build:client": "cargo build --locked --manifest-path clients/tui/Cargo.toml",
+    "test:client": "cargo test --locked --manifest-path clients/tui/Cargo.toml",
     "smoke": "tsx src/smoke.ts",
     "test": "node scripts/run-native-tests.mjs"
   },

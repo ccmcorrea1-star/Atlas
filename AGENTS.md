@@ -15,6 +15,8 @@
 |   |-- opencode-go.ts           # provider OpenCode Go
 |   |-- smoke.ts                 # smoke test local
 |   `-- capabilities/            # capabilities nativas
+|-- clients/                     # clientes oficiais desacoplados do Runtime
+|   `-- tui/                     # cliente de terminal em Rust
 |-- tests/                       # testes TypeScript e C++
 |-- docs/                        # visão técnica, build e testes
 |-- scripts/                     # automações auxiliares

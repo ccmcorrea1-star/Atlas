@@ -9,6 +9,7 @@ node_modules/
 dist/
 coverage/
 .native-cmake/
+/clients/tui/target/
 /src/capabilities/tools/process/exec/runtime
 /src/capabilities/runtime/bridge/runtime
 

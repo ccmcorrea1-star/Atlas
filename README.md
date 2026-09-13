@@ -12,6 +12,9 @@ Não é apenas um chatbot ou copiloto. O objetivo é ser uma camada operacional 
 
 A visão técnica completa está em [`docs/ATLAS_TECHNICAL_VISION.md`](docs/ATLAS_TECHNICAL_VISION.md).
 
+Os clientes oficiais ficam separados do Runtime em [`clients/`](clients/). O primeiro é o TUI em Rust; consulte
+[`clients/README.md`](clients/README.md) para executar e verificar o cliente.
+
 ## Estado atual
 
 A implementação atual usa TypeScript/ESM, OpenAI Agents SDK e OpenCode Go. O projeto evolui incrementalmente em direção à arquitetura descrita na visão técnica, incluindo discovery progressivo, tools, skills, memória, tasks/workers, runtime local-first e clientes desacoplados.
@@ -19,6 +22,7 @@ A implementação atual usa TypeScript/ESM, OpenAI Agents SDK e OpenCode Go. O p
 ## Requisitos
 
 - Node.js 22 ou superior
+- Rust e Cargo para o cliente TUI
 - Uma chave do OpenCode Go
 
 ## Instalação
@@ -54,6 +58,8 @@ npm run dev
 npm run build
 npm test
 npm run smoke
+npm run build:client
+npm run test:client
 ```
 
 Para executar todos os checks de qualidade:
