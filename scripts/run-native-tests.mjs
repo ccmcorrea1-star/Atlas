@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
-const executable = resolve(outputDirectory, 'process-exec-test');
+const processExecutable = resolve(outputDirectory, 'process-exec-test');
+const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const sourceDirectory = resolve(projectRoot, 'src/capabilities/tools/process');
-const testSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
+const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
+const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -37,11 +39,26 @@ try {
     resolve(capabilitiesDirectory, 'registry.cpp'),
     resolve(capabilitiesDirectory, 'discovery.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
-    testSource,
+    processTestSource,
     '-o',
-    executable,
+    processExecutable,
   ]);
-  run(executable, []);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(capabilitiesDirectory, 'registry.cpp'),
+    resolve(capabilitiesDirectory, 'discovery.cpp'),
+    resolve(capabilitiesDirectory, 'loader.cpp'),
+    loaderTestSource,
+    '-o',
+    loaderExecutable,
+  ]);
+  run(processExecutable, []);
+  run(loaderExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });
 }

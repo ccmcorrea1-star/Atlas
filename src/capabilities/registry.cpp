@@ -57,7 +57,8 @@ bool Registry::isValid(const Capability& capability) {
   if (capability.id.empty() || capability.type.empty() || capability.summary.empty() ||
       capability.implementation.empty() || capability.id.find('\0') != std::string::npos ||
       capability.type.find('\0') != std::string::npos || capability.summary.find('\0') != std::string::npos ||
-      capability.implementation.find('\0') != std::string::npos) {
+      capability.implementation.kind.find('\0') != std::string::npos ||
+      capability.implementation.entrypoint.find('\0') != std::string::npos) {
     return false;
   }
   if (capability.parent.has_value() &&

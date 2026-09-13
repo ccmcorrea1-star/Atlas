@@ -543,7 +543,7 @@ Capability capability() {
       .summary = "executa um processo diretamente sem shell",
       .parent = "process",
       .aliases = {},
-      .implementation = "native://atlas/capabilities/tools/process/exec",
+      .implementation = CapabilityImplementation{"native", "atlas/capabilities/tools/process/exec"},
   };
 }
 

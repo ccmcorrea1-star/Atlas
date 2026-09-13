@@ -6,9 +6,32 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace atlas::capabilities {
+
+// Identifica a fronteira de execucao sem acoplar o Registry a uma linguagem.
+struct CapabilityImplementation {
+  std::string kind;
+  std::string entrypoint;
+
+  CapabilityImplementation() = default;
+
+  // Mantem a inicializacao simples das capabilities nativas existentes.
+  CapabilityImplementation(const char* legacyEntrypoint)
+      : kind("native"), entrypoint(legacyEntrypoint == nullptr ? "" : legacyEntrypoint) {}
+
+  // Interpreta referencias antigas como entrypoints nativos.
+  CapabilityImplementation(std::string legacyEntrypoint)
+      : kind("native"), entrypoint(std::move(legacyEntrypoint)) {}
+
+  // Permite construir diretamente a referencia lida de um manifesto.
+  CapabilityImplementation(std::string implementationKind, std::string implementationEntrypoint)
+      : kind(std::move(implementationKind)), entrypoint(std::move(implementationEntrypoint)) {}
+
+  bool empty() const noexcept { return kind.empty() || entrypoint.empty(); }
+};
 
 // Descreve uma capability sem depender da linguagem que a implementa.
 struct Capability {
@@ -17,7 +40,7 @@ struct Capability {
   std::string summary;
   std::optional<std::string> parent;
   std::vector<std::string> aliases;
-  std::string implementation;
+  CapabilityImplementation implementation;
 };
 
 // Mantem capabilities mutaveis em runtime e fornece snapshots ordenados.
