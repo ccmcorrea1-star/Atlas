@@ -64,6 +64,7 @@ pub struct App {
     input: String,
     cursor: usize,
     status: Status,
+    turn_active: bool,
     should_quit: bool,
 }
 
@@ -75,6 +76,7 @@ impl App {
             input: String::new(),
             cursor: 0,
             status: Status::Ready,
+            turn_active: false,
             should_quit: false,
         }
     }
@@ -107,6 +109,10 @@ impl App {
         self.should_quit
     }
 
+    pub fn turn_active(&self) -> bool {
+        self.turn_active
+    }
+
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
@@ -137,6 +143,10 @@ impl App {
     }
 
     pub fn submit_input(&mut self) -> Option<String> {
+        if self.turn_active {
+            return None;
+        }
+
         let message = self.input.trim().to_owned();
         if message.is_empty() {
             return None;
@@ -147,6 +157,7 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.status = Status::Sending;
+        self.turn_active = true;
         Some(message)
     }
 
@@ -198,12 +209,15 @@ impl App {
             }
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
+                self.turn_active = true;
             }
             RuntimeEvent::TurnCompleted => {
                 self.status = Status::Ready;
+                self.turn_active = false;
             }
             RuntimeEvent::Error { message } => {
                 self.status = Status::Error(message.clone());
+                self.turn_active = false;
                 self.messages.push(Message::new(
                     MessageRole::System,
                     format!("Error: {message}"),
@@ -247,5 +261,33 @@ mod tests {
         assert_eq!(app.messages()[0].role, MessageRole::Atlas);
         assert_eq!(app.messages()[0].content, "Hello world");
         assert_eq!(app.status(), &Status::Thinking);
+    }
+
+    #[test]
+    fn keeps_editing_input_but_ignores_enter_while_thinking() {
+        let mut app = App::new("conversation".to_owned());
+        app.insert_character('f');
+        app.insert_character('i');
+        app.insert_character('r');
+        app.insert_character('s');
+        app.insert_character('t');
+        assert_eq!(app.submit_input().as_deref(), Some("first"));
+
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.insert_character('s');
+        app.insert_character('e');
+        app.insert_character('c');
+        app.insert_character('o');
+        app.insert_character('n');
+        app.insert_character('d');
+
+        assert_eq!(app.submit_input(), None);
+        assert_eq!(app.submit_input(), None);
+        assert_eq!(app.input(), "second");
+        assert_eq!(app.messages().len(), 1);
+
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        assert_eq!(app.submit_input().as_deref(), Some("second"));
+        assert_eq!(app.messages().len(), 2);
     }
 }

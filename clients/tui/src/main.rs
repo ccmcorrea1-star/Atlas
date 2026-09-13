@@ -70,7 +70,9 @@ fn handle_key(app: &mut App, runtime: &RuntimeClient, key: crossterm::event::Key
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
         KeyCode::Esc => app.quit(),
         KeyCode::Enter => {
-            if let Some(message) = app.submit_input() {
+            if !app.turn_active()
+                && let Some(message) = app.submit_input()
+            {
                 let runtime = runtime.clone();
                 let _send_task = tokio::spawn(async move {
                     let _ = runtime.send_message(message).await;

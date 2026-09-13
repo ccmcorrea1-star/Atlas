@@ -107,7 +107,12 @@ export function runtimeErrorEvent(
     protocol: RUNTIME_PROTOCOL,
     version: RUNTIME_PROTOCOL_VERSION,
     type: 'error',
-    ...(request === undefined ? {} : request),
+    ...(request === undefined
+      ? {}
+      : {
+          request_id: request.request_id,
+          conversation_id: request.conversation_id,
+        }),
     data: {
       code: 'runtime_error',
       message,

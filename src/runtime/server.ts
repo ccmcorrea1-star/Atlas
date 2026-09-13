@@ -58,13 +58,24 @@ export class AtlasRuntimeServer {
     }
 
     const previous = this.conversationQueues.get(request.conversation_id) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(() => this.handleTurn(request, send));
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.handleTurn(request, send))
+      .catch((error) => {
+        // A fila nao pode deixar uma falha inesperada sem um evento terminal.
+        send(
+          serializeRuntimeMessage(
+            runtimeErrorEvent(error instanceof Error ? error.message : String(error), request),
+          ),
+        );
+      });
     this.conversationQueues.set(request.conversation_id, current);
-    void current.finally(() => {
+    const clearQueue = () => {
       if (this.conversationQueues.get(request.conversation_id) === current) {
         this.conversationQueues.delete(request.conversation_id);
       }
-    });
+    };
+    void current.then(clearQueue, clearQueue);
     return current;
   }
 

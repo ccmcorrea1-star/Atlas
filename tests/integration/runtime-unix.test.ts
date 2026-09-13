@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
 import type { CapabilityRuntime } from '../../src/capability-runtime.js';
+import { runAtlas } from '../../src/index.js';
 import { AtlasRuntimeServer } from '../../src/runtime/server.js';
 import { RUNTIME_PROTOCOL, RUNTIME_PROTOCOL_VERSION } from '../../src/runtime/protocol.js';
 
@@ -144,6 +145,47 @@ async function startStreamingModelServer(): Promise<{
   };
 }
 
+async function startFailingStreamingModelServer(): Promise<{
+  baseURL: string;
+  close: () => Promise<void>;
+}> {
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Consume the request before simulating a provider stream failure.
+    }
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(
+      `data: ${JSON.stringify({
+        type: 'error',
+        sequence_number: 1,
+        code: 'test_provider_error',
+        message: 'simulated provider failure',
+      })}\n\n`,
+    );
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Failing streaming model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    close: () =>
+      new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => (error ? rejectClose(error) : resolveClose()));
+      }),
+  };
+}
+
 function sendTurn(socketPath: string, conversationId: string): Promise<WireMessage[]> {
   return new Promise((resolveTurn, rejectTurn) => {
     const requestId = 'tui-integration-request';
@@ -173,7 +215,7 @@ function sendTurn(socketPath: string, conversationId: string): Promise<WireMessa
         if (line) {
           const event = JSON.parse(line) as WireMessage;
           events.push(event);
-          if (event.type === 'turn.completed') {
+          if (event.type === 'turn.completed' || event.type === 'error') {
             socket.destroy();
             resolveTurn(events);
             return;
@@ -211,6 +253,56 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
     assert.equal(model.requests.length, 1);
     assert.equal(model.requests[0]?.stream, true);
     assert.equal(model.requests[0]?.model, 'gpt-5.6-luna');
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('waits for a real streamed run before returning its final output', async () => {
+  const model = await startStreamingModelServer();
+
+  try {
+    const events: string[] = [];
+    const result = await runAtlas('stream this response', {
+      apiKey: 'atlas-streaming-integration-key',
+      baseURL: model.baseURL,
+      conversationId: 'streaming-integration-conversation',
+      capabilityRuntime,
+      onEvent: (event) => {
+        events.push(event.type);
+      },
+    });
+
+    assert.equal(result.finalOutput, 'v22.x.x');
+    assert.deepEqual(events, ['message.delta', 'message.completed']);
+    assert.equal(model.requests[0]?.stream, true);
+  } finally {
+    await model.close();
+  }
+});
+
+test('publishes provider stream failures as a terminal runtime error', async () => {
+  const model = await startFailingStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-stream-error-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-stream-error-key',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurn(socketPath, 'stream-error-conversation');
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['turn.started', 'error'],
+    );
+    assert.equal((events.at(-1)?.data as WireMessage).message, 'simulated provider failure');
   } finally {
     await runtime.close();
     await model.close();

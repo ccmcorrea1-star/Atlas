@@ -374,6 +374,8 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
       await publishRunEvent(event, onEvent, fallbackMessageId);
     }
 
+    // O iterador pode terminar antes da finalizacao interna do Runner.
+    await streamedResult.completed;
     return streamedResult;
   });
 }
