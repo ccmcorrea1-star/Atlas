@@ -1,3 +1,6 @@
 coverage/
 dist/
 node_modules/
+src/**/*.cpp
+src/**/*.hpp
+tests/**/*.cpp

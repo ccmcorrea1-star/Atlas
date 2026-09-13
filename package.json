@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke": "tsx src/smoke.ts",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts && node scripts/run-native-tests.mjs"
   },
   "repository": {
     "type": "git",
