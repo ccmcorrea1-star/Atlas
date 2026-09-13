@@ -131,6 +131,35 @@ std::optional<Capability> Registry::get(std::string_view id) const {
   return iterator->second;
 }
 
+bool Registry::registerNativeEntrypoint(std::string entrypoint, NativeEntrypoint function) {
+  if (entrypoint.empty() || entrypoint.find('\0') != std::string::npos || !function) {
+    return false;
+  }
+
+  std::unique_lock lock(mutex_);
+  return native_entrypoints_.try_emplace(std::move(entrypoint), std::move(function)).second;
+}
+
+// Copia o callback sob lock para permitir execucao sem reter o Registry bloqueado.
+std::optional<NativeEntrypoint> Registry::resolveNativeEntrypoint(std::string_view entrypoint) const {
+  std::shared_lock lock(mutex_);
+  const auto iterator = native_entrypoints_.find(entrypoint);
+  if (iterator == native_entrypoints_.end()) {
+    return std::nullopt;
+  }
+  return iterator->second;
+}
+
+bool Registry::unregisterNativeEntrypoint(std::string_view entrypoint) {
+  std::unique_lock lock(mutex_);
+  const auto iterator = native_entrypoints_.find(entrypoint);
+  if (iterator == native_entrypoints_.end()) {
+    return false;
+  }
+  native_entrypoints_.erase(iterator);
+  return true;
+}
+
 std::vector<Capability> Registry::list() const {
   std::shared_lock lock(mutex_);
   std::vector<Capability> result;

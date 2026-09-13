@@ -1,5 +1,7 @@
 #pragma once
 
+#include "execution.hpp"
+
 #include <functional>
 #include <map>
 #include <optional>
@@ -63,6 +65,15 @@ class Registry {
   // Busca por id. Aliases continuam sendo usados apenas pela busca textual.
   std::optional<Capability> get(std::string_view id) const;
 
+  // Registra a funcao que resolve um entrypoint de implementation.kind native.
+  bool registerNativeEntrypoint(std::string entrypoint, NativeEntrypoint function);
+
+  // Retorna uma copia segura do entrypoint nativo registrado.
+  std::optional<NativeEntrypoint> resolveNativeEntrypoint(std::string_view entrypoint) const;
+
+  // Remove um entrypoint nativo registrado explicitamente.
+  bool unregisterNativeEntrypoint(std::string_view entrypoint);
+
   // Todas as operacoes de consulta retornam dados independentes do Registry.
   std::vector<Capability> list() const;
   std::vector<Capability> children(std::string_view path) const;
@@ -73,6 +84,7 @@ class Registry {
 
   mutable std::shared_mutex mutex_;
   std::map<std::string, Capability, std::less<>> capabilities_;
+  std::map<std::string, NativeEntrypoint, std::less<>> native_entrypoints_;
 };
 
 using CapabilityRegistry = Registry;

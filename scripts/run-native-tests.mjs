@@ -7,10 +7,12 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
 const processExecutable = resolve(outputDirectory, 'process-exec-test');
 const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
+const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const sourceDirectory = resolve(projectRoot, 'src/capabilities/tools/process');
 const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
+const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -57,8 +59,23 @@ try {
     '-o',
     loaderExecutable,
   ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(capabilitiesDirectory, 'registry.cpp'),
+    resolve(capabilitiesDirectory, 'executor.cpp'),
+    resolve(sourceDirectory, 'exec.cpp'),
+    executorTestSource,
+    '-o',
+    executorExecutable,
+  ]);
   run(processExecutable, []);
   run(loaderExecutable, []);
+  run(executorExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });
 }
