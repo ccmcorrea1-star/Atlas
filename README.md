@@ -67,9 +67,3 @@ npm run smoke
 ```
 
 Consulte [`docs/build.md`](docs/build.md) para o fluxo completo de build, validação e CI.
-
----
-
-<p align="center">
-  <img src="assets/brand/atlas-logo.png" alt="Atlas" width="420">
-</p>
