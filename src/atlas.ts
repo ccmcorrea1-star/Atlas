@@ -39,7 +39,7 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
 };
 
-// Eventos neutros permitem observar a execucao sem expor tipos do Agent SDK.
+// Eventos publicos permitem observar a execucao sem expor tipos do Agent SDK.
 export type AtlasRunEvent =
   | {
       type: 'message.delta';
@@ -61,6 +61,25 @@ export type AtlasRunEvent =
       toolId: string;
       toolName: string;
       output?: string;
+    }
+  | {
+      type: 'execution.started';
+      executionId: string;
+      capability: 'process.exec';
+      program: string;
+      args: string[];
+      cwd?: string;
+      target?: string;
+    }
+  | {
+      type: 'execution.completed';
+      executionId: string;
+      capability: 'process.exec';
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      durationMs: number;
+      status: string;
     };
 
 // Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
@@ -260,6 +279,88 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function decodedJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function decodedToolOutput(value: unknown): unknown {
+  const decoded = decodedJsonValue(value);
+  if (Array.isArray(decoded)) {
+    const text = decoded
+      .map(recordValue)
+      .map((record) => record?.text)
+      .find((text): text is string => typeof text === 'string');
+    return text === undefined ? decoded : decodedJsonValue(text);
+  }
+
+  const record = recordValue(decoded);
+  if (typeof record?.text === 'string') {
+    return decodedJsonValue(record.text);
+  }
+  return decoded;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function processExecArguments(item: Record<string, unknown>):
+  | {
+      program: string;
+      args: string[];
+      cwd?: string;
+    }
+  | undefined {
+  const arguments_ = recordValue(decodedJsonValue(item.arguments));
+  const program = stringValue(arguments_?.program);
+  if (program === undefined) {
+    return undefined;
+  }
+
+  const args = Array.isArray(arguments_?.args)
+    ? arguments_.args.filter((argument): argument is string => typeof argument === 'string')
+    : [];
+  const cwd = stringValue(arguments_?.cwd);
+  return {
+    program,
+    args,
+    ...(cwd === undefined ? {} : { cwd }),
+  };
+}
+
+function processExecResult(value: unknown): {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  durationMs: number;
+  status: string;
+} {
+  const result = recordValue(decodedToolOutput(value));
+  const output = recordValue(decodedToolOutput(result?.output)) ?? result;
+  const stderr = stringValue(output?.stderr) ?? stringValue(result?.error) ?? '';
+  return {
+    stdout: stringValue(output?.stdout) ?? '',
+    stderr,
+    exitCode: numberValue(output?.exit_code) ?? numberValue(result?.exit_code) ?? -1,
+    durationMs: numberValue(output?.duration_ms) ?? numberValue(result?.duration_ms) ?? 0,
+    status: stringValue(result?.status) ?? stringValue(output?.status) ?? 'failed',
+  };
+}
+
 function publicText(value: unknown): string | undefined {
   if (typeof value === 'string') {
     return value;
@@ -323,7 +424,20 @@ async function publishRunEvent(
   if (event.name === 'tool_called') {
     // Discovery is an Agent implementation detail, not a client-facing tool.
     if (toolName && providerToolName !== 'discover' && toolId) {
-      await onEvent({ type: 'tool.started', toolId, toolName });
+      if (toolName === 'process.exec') {
+        const arguments_ = processExecArguments(item);
+        if (arguments_ !== undefined) {
+          await onEvent({
+            type: 'execution.started',
+            executionId: toolId,
+            capability: 'process.exec',
+            ...arguments_,
+            target: 'local',
+          });
+        }
+      } else {
+        await onEvent({ type: 'tool.started', toolId, toolName });
+      }
     }
     return;
   }
@@ -331,12 +445,21 @@ async function publishRunEvent(
   if (event.name === 'tool_output') {
     if (toolName && providerToolName !== 'discover' && toolId) {
       const output = publicText(item.output);
-      await onEvent({
-        type: 'tool.completed',
-        toolId,
-        toolName,
-        ...(output === undefined ? {} : { output }),
-      });
+      if (toolName === 'process.exec') {
+        await onEvent({
+          type: 'execution.completed',
+          executionId: toolId,
+          capability: 'process.exec',
+          ...processExecResult(item.output),
+        });
+      } else {
+        await onEvent({
+          type: 'tool.completed',
+          toolId,
+          toolName,
+          ...(output === undefined ? {} : { output }),
+        });
+      }
     }
     return;
   }

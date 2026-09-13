@@ -17,6 +17,46 @@ const capabilityRuntime: CapabilityRuntime = {
   execute: async () => ({ target: 'local', status: 'ok', error: '' }),
 };
 
+const processCapabilityRuntime: CapabilityRuntime = {
+  discover: async (request = {}) =>
+    request.path === undefined
+      ? [{ id: 'process', type: 'group', summary: 'process tools' }]
+      : [{ id: 'process.exec', type: 'tool', summary: 'execute a process' }],
+  getDefinition: async (id) =>
+    id === 'process.exec'
+      ? {
+          id,
+          type: 'tool',
+          summary: 'execute a process',
+          description: 'execute a process directly without a shell',
+          schema: {
+            type: 'object',
+            properties: {
+              program: { type: 'string' },
+              args: { type: 'array', items: { type: 'string' } },
+              cwd: { type: 'string' },
+            },
+            required: ['program'],
+            additionalProperties: false,
+          },
+        }
+      : undefined,
+  execute: async (_id, target, arguments_) => {
+    const failed = arguments_.program === 'false';
+    return {
+      target,
+      status: failed ? 'failed' : 'success',
+      error: failed ? 'permission denied' : '',
+      output: {
+        stdout: failed ? '' : 'v22.x.x\n',
+        stderr: failed ? 'permission denied' : '',
+        exit_code: failed ? 1 : 0,
+        duration_ms: failed ? 7 : 120,
+      },
+    };
+  },
+};
+
 function responseBody(status: string, output: WireMessage[] = []): WireMessage {
   return {
     id: 'runtime-integration-response',
@@ -31,6 +71,15 @@ function responseBody(status: string, output: WireMessage[] = []): WireMessage {
       total_tokens: 3,
     },
   };
+}
+
+function materializedToolName(request: WireMessage): string {
+  const tools = (request.tools as WireMessage[] | undefined) ?? [];
+  const tool = tools.find((candidate) => candidate.name !== 'discover');
+  if (!tool || typeof tool.name !== 'string') {
+    throw new Error('Process execution test did not receive a materialized tool.');
+  }
+  return tool.name;
 }
 
 async function startStreamingModelServer(): Promise<{
@@ -145,6 +194,185 @@ async function startStreamingModelServer(): Promise<{
   };
 }
 
+function functionCallStream(item: WireMessage): WireMessage[] {
+  return [
+    {
+      type: 'response.created',
+      sequence_number: 1,
+      response: responseBody('in_progress'),
+    },
+    {
+      type: 'response.output_item.added',
+      sequence_number: 2,
+      output_index: 0,
+      item: { ...item, status: 'in_progress', arguments: '' },
+    },
+    {
+      type: 'response.function_call_arguments.delta',
+      sequence_number: 3,
+      output_index: 0,
+      item_id: item.id,
+      delta: item.arguments,
+    },
+    {
+      type: 'response.function_call_arguments.done',
+      sequence_number: 4,
+      output_index: 0,
+      item_id: item.id,
+      arguments: item.arguments,
+    },
+    {
+      type: 'response.output_item.done',
+      sequence_number: 5,
+      output_index: 0,
+      item,
+    },
+    {
+      type: 'response.completed',
+      sequence_number: 6,
+      response: responseBody('completed', [item]),
+    },
+  ];
+}
+
+function messageStream(text: string): WireMessage[] {
+  const message = {
+    id: 'runtime-execution-message',
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [{ type: 'output_text', text, annotations: [] }],
+  };
+  return [
+    {
+      type: 'response.created',
+      sequence_number: 1,
+      response: responseBody('in_progress'),
+    },
+    {
+      type: 'response.output_item.added',
+      sequence_number: 2,
+      output_index: 0,
+      item: { ...message, status: 'in_progress', content: [] },
+    },
+    {
+      type: 'response.content_part.added',
+      sequence_number: 3,
+      output_index: 0,
+      content_index: 0,
+      item_id: message.id,
+      part: { type: 'output_text', text: '', annotations: [] },
+    },
+    {
+      type: 'response.output_text.delta',
+      sequence_number: 4,
+      output_index: 0,
+      content_index: 0,
+      item_id: message.id,
+      delta: text,
+    },
+    {
+      type: 'response.output_text.done',
+      sequence_number: 5,
+      output_index: 0,
+      content_index: 0,
+      item_id: message.id,
+      text,
+    },
+    {
+      type: 'response.content_part.done',
+      sequence_number: 6,
+      output_index: 0,
+      content_index: 0,
+      item_id: message.id,
+      part: message.content[0],
+    },
+    {
+      type: 'response.output_item.done',
+      sequence_number: 7,
+      output_index: 0,
+      item: message,
+    },
+    {
+      type: 'response.completed',
+      sequence_number: 8,
+      response: responseBody('completed', [message]),
+    },
+  ];
+}
+
+async function startProcessStreamingModelServer(): Promise<{
+  baseURL: string;
+  requests: WireMessage[];
+  close: () => Promise<void>;
+}> {
+  const requests: WireMessage[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage;
+    requests.push(body);
+
+    const failed = JSON.stringify(requests[0]?.input).includes('fail');
+    const output =
+      requests.length === 1
+        ? {
+            id: 'discover-call',
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'discover-call',
+            name: 'discover',
+            arguments: JSON.stringify({ path: 'process' }),
+          }
+        : requests.length === 2
+          ? {
+              id: 'execution-call',
+              type: 'function_call',
+              status: 'completed',
+              call_id: 'execution-call',
+              name: materializedToolName(body),
+              arguments: JSON.stringify({
+                program: failed ? 'false' : 'node',
+                args: failed ? [] : ['--version'],
+                cwd: '/tmp',
+              }),
+            }
+          : undefined;
+    const events = output
+      ? functionCallStream(output)
+      : messageStream(failed ? 'process failed' : 'Executed node --version: v22.x.x');
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of events) {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+    response.end();
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Process execution model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    requests,
+    close: () =>
+      new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+      }),
+  };
+}
+
 async function startFailingStreamingModelServer(): Promise<{
   baseURL: string;
   close: () => Promise<void>;
@@ -186,7 +414,11 @@ async function startFailingStreamingModelServer(): Promise<{
   };
 }
 
-function sendTurn(socketPath: string, conversationId: string): Promise<WireMessage[]> {
+function sendTurn(
+  socketPath: string,
+  conversationId: string,
+  input = 'execute node --version',
+): Promise<WireMessage[]> {
   return new Promise((resolveTurn, rejectTurn) => {
     const requestId = 'tui-integration-request';
     const socket = createConnection(socketPath, () => {
@@ -197,7 +429,7 @@ function sendTurn(socketPath: string, conversationId: string): Promise<WireMessa
           type: 'turn.request',
           request_id: requestId,
           conversation_id: conversationId,
-          input: 'execute node --version',
+          input,
         })}\n`,
       );
     });
@@ -278,6 +510,99 @@ test('waits for a real streamed run before returning its final output', async ()
     assert.deepEqual(events, ['message.delta', 'message.completed']);
     assert.equal(model.requests[0]?.stream, true);
   } finally {
+    await model.close();
+  }
+});
+
+test('publishes process execution lifecycle events over the public Unix protocol', async () => {
+  const model = await startProcessStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-process-execution-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-runtime-process-execution-key',
+      baseURL: model.baseURL,
+      capabilityRuntime: processCapabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurn(socketPath, 'process-execution-conversation');
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'turn.started',
+        'execution.started',
+        'execution.completed',
+        'message.delta',
+        'message.completed',
+        'turn.completed',
+      ],
+    );
+    const started = events[1]?.data as WireMessage;
+    const completed = events[2]?.data as WireMessage;
+    assert.deepEqual(started, {
+      execution_id: 'execution-call',
+      capability: 'process.exec',
+      program: 'node',
+      args: ['--version'],
+      cwd: '/tmp',
+      target: 'local',
+    });
+    assert.deepEqual(completed, {
+      execution_id: 'execution-call',
+      capability: 'process.exec',
+      stdout: 'v22.x.x\n',
+      stderr: '',
+      exit_code: 0,
+      duration_ms: 120,
+      status: 'success',
+    });
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('publishes failed process execution status and output over the public protocol', async () => {
+  const model = await startProcessStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-process-execution-failure-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-runtime-process-execution-failure-key',
+      baseURL: model.baseURL,
+      capabilityRuntime: processCapabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurn(
+      socketPath,
+      'process-execution-failure-conversation',
+      'please fail this process',
+    );
+
+    assert.equal(events[1]?.type, 'execution.started');
+    assert.equal(events[2]?.type, 'execution.completed');
+    assert.deepEqual(events[2]?.data, {
+      execution_id: 'execution-call',
+      capability: 'process.exec',
+      stdout: '',
+      stderr: 'permission denied',
+      exit_code: 1,
+      duration_ms: 7,
+      status: 'failed',
+    });
+    assert.equal(
+      events.some((event) => event.type === 'tool.started' || event.type === 'tool.completed'),
+      false,
+    );
+  } finally {
+    await runtime.close();
     await model.close();
   }
 });

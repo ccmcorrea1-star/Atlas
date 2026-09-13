@@ -627,6 +627,8 @@ O Runtime deve produzir eventos estruturados para tornar o trabalho observável.
 turn.started
 tool.started
 tool.completed
+execution.started
+execution.completed
 tool.failed
 context.discovered
 task.started

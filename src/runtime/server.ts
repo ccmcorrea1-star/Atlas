@@ -141,6 +141,25 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
         name: event.toolName,
         ...(event.output === undefined ? {} : { output: event.output }),
       });
+    case 'execution.started':
+      return runtimeEvent(request, 'execution.started', {
+        execution_id: event.executionId,
+        capability: event.capability,
+        program: event.program,
+        args: event.args,
+        ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
+        ...(event.target === undefined ? {} : { target: event.target }),
+      });
+    case 'execution.completed':
+      return runtimeEvent(request, 'execution.completed', {
+        execution_id: event.executionId,
+        capability: event.capability,
+        stdout: event.stdout,
+        stderr: event.stderr,
+        exit_code: event.exitCode,
+        duration_ms: event.durationMs,
+        status: event.status,
+      });
   }
 }
 

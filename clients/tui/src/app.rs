@@ -39,14 +39,38 @@ impl Message {
             tool: Some(ToolCall {
                 id,
                 name,
+                program: None,
+                args: Vec::new(),
+                cwd: None,
+                target: None,
                 output: None,
                 stderr: None,
                 started_at: Some(Instant::now()),
                 duration: None,
+                exit_code: None,
+                execution_status: None,
                 completed: false,
                 success: true,
             }),
         }
+    }
+
+    fn execution_with_id(
+        id: impl Into<String>,
+        capability: impl Into<String>,
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        target: Option<String>,
+    ) -> Self {
+        let mut message = Self::tool_with_id(id, capability);
+        if let Some(tool) = message.tool.as_mut() {
+            tool.program = Some(program);
+            tool.args = args;
+            tool.cwd = cwd;
+            tool.target = target;
+        }
+        message
     }
 }
 
@@ -54,10 +78,16 @@ impl Message {
 pub(crate) struct ToolCall {
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) program: Option<String>,
+    pub(crate) args: Vec<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) target: Option<String>,
     pub(crate) output: Option<String>,
     pub(crate) stderr: Option<String>,
     pub(crate) started_at: Option<Instant>,
     pub(crate) duration: Option<Duration>,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) execution_status: Option<String>,
     pub(crate) completed: bool,
     pub(crate) success: bool,
 }
@@ -73,6 +103,7 @@ pub enum Status {
 
 #[derive(Debug)]
 pub struct App {
+    #[allow(dead_code)]
     conversation_id: String,
     messages: Vec<Message>,
     input: String,
@@ -99,6 +130,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn conversation_id(&self) -> &str {
         &self.conversation_id
     }
@@ -294,6 +326,25 @@ impl App {
                     .push(Message::tool_with_id(tool_id.clone(), tool_name));
                 self.history_changed();
             }
+            RuntimeEvent::ExecutionStarted {
+                execution_id,
+                capability,
+                program,
+                args,
+                cwd,
+                target,
+            } => {
+                self.status = Status::Tool(capability.to_owned());
+                self.messages.push(Message::execution_with_id(
+                    execution_id,
+                    capability,
+                    program,
+                    args,
+                    cwd,
+                    target,
+                ));
+                self.history_changed();
+            }
             RuntimeEvent::ToolCompleted {
                 tool_id,
                 tool_name,
@@ -362,6 +413,25 @@ impl App {
                 }
                 self.history_changed();
             }
+            RuntimeEvent::ExecutionCompleted {
+                execution_id,
+                capability,
+                stdout,
+                stderr,
+                exit_code,
+                duration_ms,
+                status,
+            } => {
+                self.complete_execution(
+                    execution_id,
+                    capability,
+                    stdout,
+                    stderr,
+                    exit_code,
+                    duration_ms,
+                    status,
+                );
+            }
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
                 self.turn_active = true;
@@ -387,6 +457,70 @@ impl App {
         if !self.manual_scroll {
             self.history_scroll = 0;
         }
+    }
+
+    fn complete_execution(
+        &mut self,
+        execution_id: String,
+        capability: String,
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+        duration_ms: u64,
+        status: String,
+    ) {
+        self.status = Status::Thinking;
+        let mut completed = false;
+        if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+            message.role == MessageRole::Tool
+                && message
+                    .tool
+                    .as_ref()
+                    .is_some_and(|tool| tool.id == execution_id && !tool.completed)
+        }) {
+            if let Some(tool) = message.tool.as_mut() {
+                tool.output = (!stdout.is_empty()).then_some(stdout.clone());
+                tool.stderr = (!stderr.is_empty()).then_some(stderr.clone());
+                tool.duration = Some(Duration::from_millis(duration_ms));
+                tool.exit_code = Some(exit_code);
+                tool.execution_status = Some(status.clone());
+                tool.completed = true;
+                tool.success = status == "success" && exit_code == 0;
+            }
+            message.content = [stdout.as_str(), stderr.as_str()]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            completed = true;
+        }
+        if !completed {
+            let mut message = Message::execution_with_id(
+                execution_id,
+                capability,
+                String::new(),
+                Vec::new(),
+                None,
+                None,
+            );
+            if let Some(tool) = message.tool.as_mut() {
+                tool.output = (!stdout.is_empty()).then_some(stdout.clone());
+                tool.stderr = (!stderr.is_empty()).then_some(stderr.clone());
+                tool.started_at = None;
+                tool.duration = Some(Duration::from_millis(duration_ms));
+                tool.exit_code = Some(exit_code);
+                tool.execution_status = Some(status.clone());
+                tool.completed = true;
+                tool.success = status == "success" && exit_code == 0;
+            }
+            message.content = [stdout.as_str(), stderr.as_str()]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.messages.push(message);
+        }
+        self.history_changed();
     }
 }
 
@@ -477,11 +611,11 @@ mod tests {
         let mut app = App::new("conversation".to_owned());
         app.handle_runtime_event(RuntimeEvent::ToolStarted {
             tool_id: "tool-1".to_owned(),
-            tool_name: "process.exec".to_owned(),
+            tool_name: "demo.tool".to_owned(),
         });
         app.handle_runtime_event(RuntimeEvent::ToolCompleted {
             tool_id: "tool-1".to_owned(),
-            tool_name: "process.exec".to_owned(),
+            tool_name: "demo.tool".to_owned(),
             output: Some(r#"{\"stdout\":\"ok\",\"exit_code\":0,\"duration_ms\":10}"#.to_owned()),
         });
 
@@ -492,6 +626,39 @@ mod tests {
         let tool = message.tool.as_ref().expect("tool cell");
         assert!(tool.completed);
         assert_eq!(tool.duration, Some(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn keeps_execution_start_and_completion_by_execution_id() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            program: "node".to_owned(),
+            args: vec!["--version".to_owned()],
+            cwd: Some("/tmp".to_owned()),
+            target: Some("local".to_owned()),
+        });
+        app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            stdout: "v22.x.x".to_owned(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 120,
+            status: "success".to_owned(),
+        });
+
+        assert_eq!(app.messages().len(), 1);
+        let tool = app.messages()[0].tool.as_ref().expect("execution cell");
+        assert_eq!(tool.id, "execution-1");
+        assert_eq!(tool.program.as_deref(), Some("node"));
+        assert_eq!(tool.args, ["--version"]);
+        assert_eq!(tool.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(tool.exit_code, Some(0));
+        assert_eq!(tool.execution_status.as_deref(), Some("success"));
+        assert!(tool.completed);
+        assert!(tool.success);
     }
 
     #[test]
@@ -513,15 +680,15 @@ mod tests {
         let mut app = App::new("conversation".to_owned());
         app.handle_runtime_event(RuntimeEvent::ToolStarted {
             tool_id: "tool-1".to_owned(),
-            tool_name: "process.exec".to_owned(),
+            tool_name: "demo.tool".to_owned(),
         });
         app.handle_runtime_event(RuntimeEvent::ToolStarted {
             tool_id: "tool-2".to_owned(),
-            tool_name: "process.exec".to_owned(),
+            tool_name: "demo.tool".to_owned(),
         });
         app.handle_runtime_event(RuntimeEvent::ToolCompleted {
             tool_id: "tool-1".to_owned(),
-            tool_name: "process.exec".to_owned(),
+            tool_name: "demo.tool".to_owned(),
             output: Some(r#"{\"stdout\":\"first\"}"#.to_owned()),
         });
 

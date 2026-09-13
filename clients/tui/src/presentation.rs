@@ -6,10 +6,9 @@ use std::time::Duration;
 
 const ANSI_ESCAPE: char = '\x1b';
 
-/// Presentation helpers are intentionally independent from the Runtime protocol.
-/// The transcript layout follows the cell-oriented approach used by mature Rust TUIs,
-/// adapted here to Atlas messages and events. The component cues were informed by
-/// studying the Codex CLI TUI (Apache-2.0), without copying its source or architecture.
+/// Presentation helpers are independent from the Runtime protocol.
+/// The transcript layout follows the cell-oriented approach used by the Codex CLI TUI.
+/// See `clients/tui/NOTICE` and `clients/tui/LICENSE-APACHE` for attribution.
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ToolOutput {
@@ -233,6 +232,25 @@ pub(crate) fn sanitize_terminal_text(text: &str) -> String {
         }
     }
     sanitized
+}
+
+pub(crate) fn format_process_command(program: &str, args: &[String]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(argument: &str) -> String {
+    if argument
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-._/:=".contains(character))
+    {
+        argument.to_owned()
+    } else {
+        format!("'{}'", argument.replace('\'', "'\\''"))
+    }
 }
 
 pub(crate) fn render_markdown(input: &str) -> Vec<Line<'static>> {
@@ -527,7 +545,9 @@ fn heading_style(level: HeadingLevel) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_tool_output, render_markdown, sanitize_terminal_text};
+    use super::{
+        format_process_command, parse_tool_output, render_markdown, sanitize_terminal_text,
+    };
 
     #[test]
     fn formats_quoted_and_structured_tool_output_for_humans() {
@@ -546,6 +566,14 @@ mod tests {
         assert_eq!(
             sanitize_terminal_text("\x1b[31mred\x1b[0m\nnext\tline"),
             "red\nnext  line"
+        );
+    }
+
+    #[test]
+    fn quotes_process_arguments_only_for_display() {
+        assert_eq!(
+            format_process_command("node", &["script.js".to_owned(), "hello world".to_owned()]),
+            "node script.js 'hello world'"
         );
     }
 

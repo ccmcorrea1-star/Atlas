@@ -16,8 +16,29 @@ export type RuntimeEventType =
   | 'message.completed'
   | 'tool.started'
   | 'tool.completed'
+  | 'execution.started'
+  | 'execution.completed'
   | 'turn.completed'
   | 'error';
+
+export type RuntimeExecutionStartedData = {
+  execution_id: string;
+  capability: 'process.exec';
+  program: string;
+  args: string[];
+  cwd?: string;
+  target?: string;
+};
+
+export type RuntimeExecutionCompletedData = {
+  execution_id: string;
+  capability: 'process.exec';
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  status: string;
+};
 
 export type RuntimeEvent = {
   protocol: typeof RUNTIME_PROTOCOL;

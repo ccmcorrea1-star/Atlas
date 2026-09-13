@@ -53,6 +53,46 @@ same `request_id` and `conversation_id`:
 }
 ```
 
+For `process.exec`, the Runtime publishes a structured lifecycle instead of
+the generic tool events. Both events use the Agent tool `call_id` as
+`execution_id`, so clients update one execution cell:
+
+```json
+{
+  "protocol": "atlas-runtime",
+  "version": 1,
+  "type": "execution.started",
+  "request_id": "request-1",
+  "conversation_id": "minha-conversa",
+  "data": {
+    "execution_id": "call-1",
+    "capability": "process.exec",
+    "program": "node",
+    "args": ["--version"],
+    "target": "local"
+  }
+}
+```
+
+```json
+{
+  "protocol": "atlas-runtime",
+  "version": 1,
+  "type": "execution.completed",
+  "request_id": "request-1",
+  "conversation_id": "minha-conversa",
+  "data": {
+    "execution_id": "call-1",
+    "capability": "process.exec",
+    "stdout": "v22.x.x\n",
+    "stderr": "",
+    "exit_code": 0,
+    "duration_ms": 120,
+    "status": "success"
+  }
+}
+```
+
 Supported event types are:
 
 - `turn.started`: the Runtime accepted the turn.
@@ -60,6 +100,8 @@ Supported event types are:
 - `message.completed`: a completed public assistant message, with `data.message_id` and `data.content`.
 - `tool.started`: a Runtime-executed tool started, with `data.tool_id` and `data.name`.
 - `tool.completed`: a Runtime-executed tool finished, with `data.tool_id`, `data.name`, and optional `data.output`.
+- `execution.started`: a `process.exec` invocation started, with `data.execution_id`, `data.capability`, `data.program`, `data.args`, and optional `data.cwd` and `data.target`.
+- `execution.completed`: the matching `process.exec` invocation finished, with `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms`, and `data.status`.
 - `turn.completed`: the turn finished, with `data.content` and optional `data.message_id`.
 - `error`: the turn failed, with `data.code` and `data.message`.
 
@@ -68,9 +110,11 @@ both when streaming is available. A Runtime only emits an event when the
 underlying Agent execution provides that information. Clients must ignore event
 types added in later protocol versions when they can continue safely.
 
-Tool event data intentionally does not contain tool arguments, discovery
-requests, or SDK objects. The Runtime remains responsible for discovery,
-capabilities, approval policy, and execution.
+Generic tool event data intentionally does not contain tool arguments, discovery
+requests, or SDK objects. `process.exec` is the explicit exception: its public
+execution lifecycle contains only the structured process invocation fields
+needed by clients to render and correlate one execution cell. The Runtime
+remains responsible for discovery, capabilities, approval policy, and execution.
 
 ## Versioning
 

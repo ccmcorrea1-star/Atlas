@@ -29,6 +29,23 @@ pub enum RuntimeEvent {
         tool_name: String,
         output: Option<String>,
     },
+    ExecutionStarted {
+        execution_id: String,
+        capability: String,
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        target: Option<String>,
+    },
+    ExecutionCompleted {
+        execution_id: String,
+        capability: String,
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+        duration_ms: u64,
+        status: String,
+    },
     TurnStarted,
     TurnCompleted,
     Error {
@@ -212,6 +229,8 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
             | "message.completed"
             | "tool.started"
             | "tool.completed"
+            | "execution.started"
+            | "execution.completed"
             | "turn.completed"
             | "error"
     ) {
@@ -230,6 +249,15 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
             .ok_or_else(|| {
                 RuntimeError::Protocol(format!("Runtime event field {field} is missing"))
             })
+    };
+    let process_capability = || {
+        let capability = string_field("capability")?;
+        if capability != "process.exec" {
+            return Err(RuntimeError::Protocol(
+                "Runtime execution capability must be process.exec".to_owned(),
+            ));
+        }
+        Ok(capability)
     };
 
     match envelope.message_type.as_str() {
@@ -254,6 +282,70 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
                 Value::Null => None,
                 value => serde_json::to_string(value).ok(),
             }),
+        })),
+        "execution.started" => Ok(Some(RuntimeEvent::ExecutionStarted {
+            execution_id: string_field("execution_id")?,
+            capability: process_capability()?,
+            program: string_field("program")?,
+            args: data
+                .get("args")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol("Runtime event field args must be an array".to_owned())
+                })?
+                .iter()
+                .map(|argument| {
+                    argument.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        RuntimeError::Protocol(
+                            "Runtime event field args must contain only strings".to_owned(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            cwd: data
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            target: data
+                .get("target")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        })),
+        "execution.completed" => Ok(Some(RuntimeEvent::ExecutionCompleted {
+            execution_id: string_field("execution_id")?,
+            capability: process_capability()?,
+            stdout: data
+                .get("stdout")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol("Runtime event field stdout must be a string".to_owned())
+                })?
+                .to_owned(),
+            stderr: data
+                .get("stderr")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol("Runtime event field stderr must be a string".to_owned())
+                })?
+                .to_owned(),
+            exit_code: data
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok())
+                .ok_or_else(|| {
+                    RuntimeError::Protocol(
+                        "Runtime event field exit_code must be an integer".to_owned(),
+                    )
+                })?,
+            duration_ms: data
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol(
+                        "Runtime event field duration_ms must be an unsigned integer".to_owned(),
+                    )
+                })?,
+            status: string_field("status")?,
         })),
         "turn.completed" => Ok(Some(RuntimeEvent::TurnCompleted)),
         "error" => Err(RuntimeError::Remote(string_field("message")?)),
@@ -394,6 +486,65 @@ mod tests {
                 tool_id: "tool-1".to_owned(),
                 tool_name: "process.exec".to_owned(),
                 output: Some(r#"{"exit_code":0,"stdout":"ready"}"#.to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_process_execution_lifecycle_fields() {
+        let started = RuntimeEnvelope {
+            protocol: "atlas-runtime".to_owned(),
+            version: 1,
+            message_type: "execution.started".to_owned(),
+            request_id: None,
+            conversation_id: None,
+            data: serde_json::json!({
+                "execution_id": "call-1",
+                "capability": "process.exec",
+                "program": "node",
+                "args": ["--version"],
+                "cwd": "/tmp",
+                "target": "local"
+            }),
+        };
+        assert_eq!(
+            runtime_event(started).unwrap(),
+            Some(RuntimeEvent::ExecutionStarted {
+                execution_id: "call-1".to_owned(),
+                capability: "process.exec".to_owned(),
+                program: "node".to_owned(),
+                args: vec!["--version".to_owned()],
+                cwd: Some("/tmp".to_owned()),
+                target: Some("local".to_owned()),
+            })
+        );
+
+        let completed = RuntimeEnvelope {
+            protocol: "atlas-runtime".to_owned(),
+            version: 1,
+            message_type: "execution.completed".to_owned(),
+            request_id: None,
+            conversation_id: None,
+            data: serde_json::json!({
+                "execution_id": "call-1",
+                "capability": "process.exec",
+                "stdout": "v22.x.x",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 120,
+                "status": "success"
+            }),
+        };
+        assert_eq!(
+            runtime_event(completed).unwrap(),
+            Some(RuntimeEvent::ExecutionCompleted {
+                execution_id: "call-1".to_owned(),
+                capability: "process.exec".to_owned(),
+                stdout: "v22.x.x".to_owned(),
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: 120,
+                status: "success".to_owned(),
             })
         );
     }

@@ -27,9 +27,10 @@ Durante a execução:
 - `Backspace`, `Delete`, `Home`, `End` e as setas editam o campo de entrada;
 - `PageUp`/`PageDown` e a roda do mouse navegam pelo transcript.
 
-O transcript usa uma apresentação densa, com Markdown estilizado, tool calls agrupadas e previews
-de saída normalizados para leitura humana. Os limites entre componentes foram adaptados após estudo
-do TUI do Codex CLI, sem copiar sua arquitetura ou código-fonte.
+O transcript usa uma apresentação densa, com Markdown estilizado, células de execução agrupadas por
+`execution_id` e previews de saída normalizados para leitura humana. O lifecycle de `process.exec` e
+os limites entre componentes seguem o padrão do ExecCell do Codex CLI, com as adaptações registradas
+em [`clients/tui/NOTICE`](tui/NOTICE).
 
 O `RuntimeClient` é a única fronteira entre o TUI e o Atlas. Ele usa o contrato
 público em [`protocol/runtime/v1`](../protocol/runtime/v1/) sobre o Unix Socket

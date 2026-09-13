@@ -3,6 +3,7 @@ mod event;
 mod presentation;
 mod runtime;
 mod ui;
+mod wrapping;
 
 use std::io::{self, stdout};
 
