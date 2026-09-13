@@ -1,6 +1,20 @@
+<p align="center">
+  <img src="assets/brand/atlas-banner.svg" alt="Atlas — inteligência residente para o seu ambiente digital" width="100%">
+</p>
+
 # Atlas
 
-Agente de programação baseado no OpenAI Agents SDK e no OpenCode Go.
+Atlas é uma plataforma de inteligência pessoal residente e local-first, criada para compreender, operar e evoluir o ambiente digital do usuário.
+
+Não é apenas um chatbot ou copiloto. O objetivo é ser uma camada operacional persistente entre o usuário, seus computadores, aplicações, serviços, conhecimento e dispositivos.
+
+> **Atlas é uma inteligência residente para o ambiente digital do usuário.**
+
+A visão técnica completa está em [`docs/ATLAS_TECHNICAL_VISION.md`](docs/ATLAS_TECHNICAL_VISION.md).
+
+## Estado atual
+
+A implementação atual usa TypeScript/ESM, OpenAI Agents SDK e OpenCode Go. O projeto evolui incrementalmente em direção à arquitetura descrita na visão técnica, incluindo discovery progressivo, tools, skills, memória, tasks/workers, runtime local-first e clientes desacoplados.
 
 ## Requisitos
 
@@ -31,8 +45,7 @@ const result = await runAtlas('Explique este projeto.', {
 console.log(result.finalOutput);
 ```
 
-Use o mesmo `conversationId` para preservar o contexto entre turns. Um ID diferente cria uma
-conversa independente.
+Use o mesmo `conversationId` para preservar o contexto entre turns. Um ID diferente cria uma conversa independente.
 
 ## Comandos
 
@@ -54,3 +67,9 @@ npm run smoke
 ```
 
 Consulte [`docs/build.md`](docs/build.md) para o fluxo completo de build, validação e CI.
+
+---
+
+<p align="center">
+  <img src="assets/brand/atlas-logo.svg" alt="Atlas" width="420">
+</p>
