@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -13,6 +14,8 @@ export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1';
 export const OPENCODE_GO_RESPONSES_PATH = '/zen/go/v1/responses';
 export const OPENCODE_GO_RESPONSES_URL = `https://opencode.ai${OPENCODE_GO_RESPONSES_PATH}`;
 export const ATLAS_USER_AGENT = 'Atlas/1.0.0';
+
+const activeOpenCodeGoSession = new AsyncLocalStorage<string>();
 
 export type OpenCodeGoEndpoint = 'responses' | 'chat/completions' | 'messages';
 
@@ -36,6 +39,13 @@ export class OpenCodeGoSession {
   }
 }
 
+export function withOpenCodeGoSession<T>(
+  session: OpenCodeGoSession | string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return activeOpenCodeGoSession.run(typeof session === 'string' ? session : session.id, callback);
+}
+
 export type OpenCodeGoProviderOptions = {
   apiKey?: string;
   baseURL?: string;
@@ -50,13 +60,14 @@ function normalizeBaseURL(baseURL: string): string {
   return baseURL.replace(/\/+$/, '');
 }
 
-function createAtlasFetch(userAgent: string): typeof globalThis.fetch {
+function createAtlasFetch(userAgent: string, defaultSessionId: string): typeof globalThis.fetch {
   return async (input, init) => {
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     const initHeaders = new Headers(init?.headers);
 
     initHeaders.forEach((value, name) => headers.set(name, value));
     headers.set('User-Agent', userAgent);
+    headers.set('x-opencode-session', activeOpenCodeGoSession.getStore() ?? defaultSessionId);
 
     return globalThis.fetch(input, { ...init, headers });
   };
@@ -100,9 +111,8 @@ export class OpenCodeGoProvider implements ModelProvider {
     const headers = {
       ...(options.headers ?? {}),
       'User-Agent': options.userAgent ?? ATLAS_USER_AGENT,
-      'x-opencode-session': this.session.id,
     };
-    const fetch = createAtlasFetch(headers['User-Agent']);
+    const fetch = createAtlasFetch(headers['User-Agent'], this.session.id);
     const baseURL = normalizeBaseURL(options.baseURL ?? OPENCODE_GO_BASE_URL);
 
     this.responsesProvider = createOpenAI({

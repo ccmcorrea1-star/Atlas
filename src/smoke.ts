@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
-import { Atlas, createAtlasRunner } from './index.js';
+import { getAtlasRunner, runAtlas } from './index.js';
 
 type CapturedRequest = {
   body: Record<string, unknown>;
@@ -23,20 +23,28 @@ const server = createServer(async (request, response) => {
   });
 
   response.writeHead(200, { 'content-type': 'application/json' });
+  const requestNumber = capturedRequests.length;
+  const outputText =
+    requestNumber === 1
+      ? 'First turn stored.'
+      : requestNumber === 2
+        ? 'Second turn saw the context.'
+        : 'Independent conversation.';
+
   response.end(
     JSON.stringify({
-      id: 'resp_atlas_smoke',
+      id: `resp_atlas_smoke_${requestNumber}`,
       object: 'response',
       created_at: 1,
       status: 'completed',
       model: 'gpt-5.6-luna',
       output: [
         {
-          id: 'msg_atlas_smoke',
+          id: `msg_atlas_smoke_${requestNumber}`,
           type: 'message',
           status: 'completed',
           role: 'assistant',
-          content: [{ type: 'output_text', text: 'Atlas smoke OK', annotations: [] }],
+          content: [{ type: 'output_text', text: outputText, annotations: [] }],
         },
       ],
       usage: {
@@ -72,25 +80,58 @@ function close(): Promise<void> {
 const port = await listen();
 
 try {
-  const runner = createAtlasRunner({
+  const providerOptions = {
     apiKey: 'atlas-smoke-key',
     baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
-    sessionId: 'atlas-smoke-session',
-  });
-  const result = await runner.run(Atlas, 'Reply with exactly: Atlas smoke OK.');
-  const secondResult = await runner.run(Atlas, 'Reply with exactly: Atlas smoke OK.');
+  };
+  const runner = getAtlasRunner(providerOptions);
+  const firstResult = await runAtlas(
+    'Remember this context: Atlas smoke first turn.',
+    { ...providerOptions, conversationId: 'atlas-smoke-conversation-a' },
+  );
+  const secondResult = await runAtlas(
+    'Use the context from my previous turn.',
+    { ...providerOptions, conversationId: 'atlas-smoke-conversation-a' },
+  );
+  const independentResult = await runAtlas(
+    'This is a separate conversation.',
+    { ...providerOptions, conversationId: 'atlas-smoke-conversation-b' },
+  );
 
-  assert.equal(result.finalOutput, 'Atlas smoke OK');
-  assert.equal(secondResult.finalOutput, 'Atlas smoke OK');
-  assert.equal(capturedRequests.length, 2);
+  assert.equal(firstResult.finalOutput, 'First turn stored.');
+  assert.equal(secondResult.finalOutput, 'Second turn saw the context.');
+  assert.equal(independentResult.finalOutput, 'Independent conversation.');
+  assert.equal(capturedRequests.length, 3);
   assert.equal(capturedRequests[0]?.url, '/zen/go/v1/responses');
   assert.equal(capturedRequests[0]?.headers['user-agent'], 'Atlas/1.0.0');
-  assert.equal(capturedRequests[0]?.headers['x-opencode-session'], 'atlas-smoke-session');
+  assert.equal(
+    capturedRequests[0]?.headers['x-opencode-session'],
+    'atlas-smoke-conversation-a',
+  );
   assert.equal(capturedRequests[0]?.headers.authorization, 'Bearer atlas-smoke-key');
   assert.equal(capturedRequests[0]?.body.model, 'gpt-5.6-luna');
-  assert.equal(capturedRequests[1]?.headers['x-opencode-session'], 'atlas-smoke-session');
+  assert.equal(
+    capturedRequests[1]?.headers['x-opencode-session'],
+    'atlas-smoke-conversation-a',
+  );
+  assert.notEqual(
+    capturedRequests[2]?.headers['x-opencode-session'],
+    capturedRequests[0]?.headers['x-opencode-session'],
+  );
+  assert.match(
+    JSON.stringify(capturedRequests[1]?.body.input),
+    /Atlas smoke first turn/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(capturedRequests[2]?.body.input),
+    /Atlas smoke first turn/,
+  );
+  assert.equal(getAtlasRunner(providerOptions), runner);
+  assert.equal(getAtlasRunner(providerOptions).config.modelProvider, runner.config.modelProvider);
 
-  console.log('Atlas smoke passed: Responses endpoint and session headers are configured.');
+  console.log(
+    'Atlas smoke passed: conversation sessions preserve context and reuse the Runner.',
+  );
 } finally {
   await close();
 }
