@@ -85,18 +85,18 @@ try {
     baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
   };
   const runner = getAtlasRunner(providerOptions);
-  const firstResult = await runAtlas(
-    'Remember this context: Atlas smoke first turn.',
-    { ...providerOptions, conversationId: 'atlas-smoke-conversation-a' },
-  );
-  const secondResult = await runAtlas(
-    'Use the context from my previous turn.',
-    { ...providerOptions, conversationId: 'atlas-smoke-conversation-a' },
-  );
-  const independentResult = await runAtlas(
-    'This is a separate conversation.',
-    { ...providerOptions, conversationId: 'atlas-smoke-conversation-b' },
-  );
+  const firstResult = await runAtlas('Remember this context: Atlas smoke first turn.', {
+    ...providerOptions,
+    conversationId: 'atlas-smoke-conversation-a',
+  });
+  const secondResult = await runAtlas('Use the context from my previous turn.', {
+    ...providerOptions,
+    conversationId: 'atlas-smoke-conversation-a',
+  });
+  const independentResult = await runAtlas('This is a separate conversation.', {
+    ...providerOptions,
+    conversationId: 'atlas-smoke-conversation-b',
+  });
 
   assert.equal(firstResult.finalOutput, 'First turn stored.');
   assert.equal(secondResult.finalOutput, 'Second turn saw the context.');
@@ -104,34 +104,20 @@ try {
   assert.equal(capturedRequests.length, 3);
   assert.equal(capturedRequests[0]?.url, '/zen/go/v1/responses');
   assert.equal(capturedRequests[0]?.headers['user-agent'], 'Atlas/1.0.0');
-  assert.equal(
-    capturedRequests[0]?.headers['x-opencode-session'],
-    'atlas-smoke-conversation-a',
-  );
+  assert.equal(capturedRequests[0]?.headers['x-opencode-session'], 'atlas-smoke-conversation-a');
   assert.equal(capturedRequests[0]?.headers.authorization, 'Bearer atlas-smoke-key');
   assert.equal(capturedRequests[0]?.body.model, 'gpt-5.6-luna');
-  assert.equal(
-    capturedRequests[1]?.headers['x-opencode-session'],
-    'atlas-smoke-conversation-a',
-  );
+  assert.equal(capturedRequests[1]?.headers['x-opencode-session'], 'atlas-smoke-conversation-a');
   assert.notEqual(
     capturedRequests[2]?.headers['x-opencode-session'],
     capturedRequests[0]?.headers['x-opencode-session'],
   );
-  assert.match(
-    JSON.stringify(capturedRequests[1]?.body.input),
-    /Atlas smoke first turn/,
-  );
-  assert.doesNotMatch(
-    JSON.stringify(capturedRequests[2]?.body.input),
-    /Atlas smoke first turn/,
-  );
+  assert.match(JSON.stringify(capturedRequests[1]?.body.input), /Atlas smoke first turn/);
+  assert.doesNotMatch(JSON.stringify(capturedRequests[2]?.body.input), /Atlas smoke first turn/);
   assert.equal(getAtlasRunner(providerOptions), runner);
   assert.equal(getAtlasRunner(providerOptions).config.modelProvider, runner.config.modelProvider);
 
-  console.log(
-    'Atlas smoke passed: conversation sessions preserve context and reuse the Runner.',
-  );
+  console.log('Atlas smoke passed: conversation sessions preserve context and reuse the Runner.');
 } finally {
   await close();
 }

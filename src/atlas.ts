@@ -95,12 +95,9 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const { conversationId: _conversationId, ...providerOptions } = options;
   const runtime = getAtlasRuntime(providerOptions);
   const sessionId = getConversationId(options);
-  const session =
-    runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
+  const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
 
   runtime.sessions.set(sessionId, session);
 
-  return withOpenCodeGoSession(sessionId, () =>
-    runtime.runner.run(Atlas, input, { session }),
-  );
+  return withOpenCodeGoSession(sessionId, () => runtime.runner.run(Atlas, input, { session }));
 }
