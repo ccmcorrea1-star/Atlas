@@ -22,6 +22,7 @@ using atlas::capabilities::Discovery;
 using atlas::capabilities::DiscoveryRequest;
 using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
+using atlas::capabilities::StructuredValue;
 
 void require(bool condition, const std::string& message) {
   if (!condition) {
@@ -101,6 +102,8 @@ Capability runtimeCapability() {
       .parent = "runtime",
       .aliases = {"echo"},
       .implementation = "test://runtime/echo",
+      .description = {},
+      .schema = {},
   };
 }
 
@@ -112,6 +115,15 @@ DiscoveryRequest pathRequest(std::string path) {
   return {.path = std::move(path), .query = std::nullopt};
 }
 
+const StructuredValue* objectField(const StructuredValue& value, std::string_view name) {
+  const auto* object = std::get_if<StructuredValue::Object>(&value.value);
+  if (object == nullptr) {
+    return nullptr;
+  }
+  const auto iterator = object->find(name);
+  return iterator == object->end() ? nullptr : &iterator->second;
+}
+
 void testRegistryAndDiscovery() {
   Registry registry;
   Discovery discovery(registry);
@@ -119,11 +131,18 @@ void testRegistryAndDiscovery() {
 
   require(!registry.get("missing.capability").has_value(), "missing capability should not be returned");
   require(
-      loader.load("src/capabilities/tools/process/exec/capability.json"),
-      "process.exec should be loaded from its manifest");
+      loader.scan("src/capabilities/tools/process"),
+      "process group and process.exec should be loaded from their manifests");
   require(
       !loader.load("src/capabilities/tools/process/exec/capability.json"),
       "duplicate capability loading should fail");
+
+  const auto group = registry.get("process");
+  require(group.has_value(), "process group should be registered");
+  require(group->type == "group", "process should be registered as a group");
+  require(
+      group->implementation.kind.empty() && group->implementation.entrypoint.empty(),
+      "groups should not have an implementation");
 
   const auto registered = registry.get("process.exec");
   require(registered.has_value(), "registered capability should be returned");
@@ -131,6 +150,9 @@ void testRegistryAndDiscovery() {
   require(
       registered->summary == "executa um processo diretamente sem shell",
       "registered capability should expose its summary");
+  require(
+      registered->description == "executar um programa local diretamente, sem shell",
+      "registered capability should expose its description");
   require(registered->parent == "process", "registered capability should expose its parent");
   require(
       registered->implementation.kind == "executable",
@@ -139,9 +161,37 @@ void testRegistryAndDiscovery() {
       registered->implementation.entrypoint.find("src/capabilities/tools/process/exec/implementation") !=
           std::string::npos,
       "manifest entrypoint should resolve relative to its capability");
+  const StructuredValue* schemaProperties = objectField(registered->schema, "properties");
+  require(schemaProperties != nullptr, "registered capability should preserve its schema");
+  require(
+      objectField(*schemaProperties, "program") != nullptr &&
+          objectField(*schemaProperties, "timeout_ms") != nullptr,
+      "registered capability should preserve complete schema properties");
+
+  const auto definition = registry.getDefinition("process.exec");
+  require(
+      definition.has_value() && definition->description == registered->description &&
+          objectField(definition->schema, "required") != nullptr,
+      "complete capability definition should be retrievable from the Registry");
 
   const auto listed = registry.list();
-  require(listed.size() == 1 && listed.front().id == "process.exec", "list should contain process.exec");
+  require(listed.size() == 2, "Registry list should contain the group and its capability");
+
+  const auto root = discovery.discover();
+  require(
+      root.size() == 1 && root.front().id == "process" && root.front().type == "group" &&
+          root.front().summary == "executar e gerenciar processos",
+      "discover without a request should return only the process root group");
+
+  const auto discoveredChildren = discovery.discover(pathRequest("process"));
+  require(
+      discoveredChildren.size() == 1 && discoveredChildren.front().id == "process.exec",
+      "discover by path should return the process.exec capability");
+
+  const auto directSearch = discovery.discover(queryRequest("executar programa"));
+  require(
+      directSearch.size() == 1 && directSearch.front().id == "process.exec",
+      "direct Discovery search should find process.exec");
 
   const auto processChildren = registry.children("process");
   require(
@@ -151,7 +201,7 @@ void testRegistryAndDiscovery() {
       registry.children("unknown.path").empty(),
       "children should be empty for an unknown path");
 
-  const auto processSearch = registry.search("EXECUTA PROCESSO");
+  const auto processSearch = registry.search("EXECUTA PROCESSO DIRETAMENTE");
   require(
       processSearch.size() == 1 && processSearch.front().id == "process.exec",
       "search should match summary tokens case-insensitively");
@@ -189,6 +239,8 @@ void testRegistryAndDiscovery() {
               .parent = std::nullopt,
               .aliases = {},
               .implementation = "test://other",
+              .description = {},
+              .schema = {},
           }),
       "update should not change a capability identity");
   Capability missing = runtimeCapability();
@@ -204,8 +256,10 @@ void testRegistryAndDiscovery() {
   require(loader.unload("process.exec"), "unload should remove the manifest capability");
   require(!registry.get("process.exec").has_value(), "unloaded manifest capability should leave Registry");
   require(
-      discovery.discover(queryRequest("EXECUTA PROCESSO")).empty(),
+      discovery.discover(queryRequest("EXECUTAR PROGRAMA")).empty(),
       "unloaded manifest capability should leave Discovery");
+  require(loader.unload("process"), "unload should remove the process group");
+  require(!registry.get("process").has_value(), "unloaded group should leave Registry");
 }
 
 }  // namespace

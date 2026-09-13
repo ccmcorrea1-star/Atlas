@@ -34,6 +34,8 @@ bool containsAllTokens(const Capability& capability, const std::vector<std::stri
   searchable += lowerAscii(capability.type);
   searchable += ' ';
   searchable += lowerAscii(capability.summary);
+  searchable += ' ';
+  searchable += lowerAscii(capability.description);
   if (capability.parent.has_value()) {
     searchable += ' ';
     searchable += lowerAscii(capability.parent.value());
@@ -55,8 +57,9 @@ bool containsAllTokens(const Capability& capability, const std::vector<std::stri
 
 bool Registry::isValid(const Capability& capability) {
   if (capability.id.empty() || capability.type.empty() || capability.summary.empty() ||
-      capability.implementation.empty() || capability.id.find('\0') != std::string::npos ||
+      capability.id.find('\0') != std::string::npos ||
       capability.type.find('\0') != std::string::npos || capability.summary.find('\0') != std::string::npos ||
+      capability.description.find('\0') != std::string::npos ||
       capability.implementation.kind.find('\0') != std::string::npos ||
       capability.implementation.entrypoint.find('\0') != std::string::npos) {
     return false;
@@ -77,7 +80,10 @@ bool Registry::isValid(const Capability& capability) {
     }
     aliases.push_back(alias);
   }
-  return true;
+  if (capability.type == "group") {
+    return capability.implementation.kind.empty() && capability.implementation.entrypoint.empty();
+  }
+  return !capability.implementation.empty();
 }
 
 bool Registry::registerCapability(Capability capability) {
@@ -123,6 +129,10 @@ bool Registry::update(std::string_view id, Capability capability) {
 }
 
 std::optional<Capability> Registry::get(std::string_view id) const {
+  return getDefinition(id);
+}
+
+std::optional<Capability> Registry::getDefinition(std::string_view id) const {
   std::shared_lock lock(mutex_);
   const auto iterator = capabilities_.find(id);
   if (iterator == capabilities_.end()) {
@@ -166,6 +176,18 @@ std::vector<Capability> Registry::list() const {
   result.reserve(capabilities_.size());
   for (const auto& entry : capabilities_) {
     result.push_back(entry.second);
+  }
+  return result;
+}
+
+std::vector<Capability> Registry::rootGroups() const {
+  std::shared_lock lock(mutex_);
+  std::vector<Capability> result;
+  for (const auto& entry : capabilities_) {
+    const Capability& capability = entry.second;
+    if (capability.type == "group" && !capability.parent.has_value()) {
+      result.push_back(capability);
+    }
   }
   return result;
 }

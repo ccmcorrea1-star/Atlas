@@ -20,9 +20,10 @@ std::vector<DiscoveryResult> Discovery::discover(const DiscoveryRequest& request
           capabilities.end());
     }
   } else if (request.path.has_value()) {
-    capabilities = registry_.children(request.path.value());
+    capabilities = request.path->empty() ? registry_.rootGroups() : registry_.children(request.path.value());
   } else {
-    capabilities = registry_.list();
+    // O nivel inicial revela somente grupos raiz, nunca tools individuais.
+    capabilities = registry_.rootGroups();
   }
   return project(capabilities);
 }

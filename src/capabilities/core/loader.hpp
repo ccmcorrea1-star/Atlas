@@ -16,10 +16,10 @@ class Loader {
   Loader(const Loader&) = delete;
   Loader& operator=(const Loader&) = delete;
 
-  // Valida e registra o manifesto capability.json indicado.
+  // Valida e registra o manifesto capability.json ou group.json indicado.
   bool load(const std::filesystem::path& path);
 
-  // Remove do Registry a capability identificada, sem executar a implementacao.
+  // Remove do Registry o recurso identificado, sem executar a implementacao.
   bool unload(std::string_view id);
 
   // Rele o manifesto usado no load e atualiza a capability de forma atomica.

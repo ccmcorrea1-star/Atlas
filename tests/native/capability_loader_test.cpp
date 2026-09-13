@@ -46,10 +46,22 @@ std::string manifest(
          "}\n";
 }
 
+std::string groupManifest(std::string_view id, std::string_view summary) {
+  return "{\n"
+         "  \"id\": \"" + std::string(id) + "\",\n"
+         "  \"summary\": \"" + std::string(summary) + "\"\n"
+         "}\n";
+}
+
 void testLoader(const std::filesystem::path& directory) {
   Registry registry;
   Loader loader(registry);
   Discovery discovery(registry);
+
+  const std::filesystem::path groupPath = directory / "group" / "group.json";
+  std::filesystem::create_directories(groupPath.parent_path());
+  writeManifest(groupPath, groupManifest("tests", "testes de capabilities"));
+  require(loader.load(groupPath), "valid group manifest should load");
 
   const std::filesystem::path validPath = directory / "valid" / "capability.json";
   std::filesystem::create_directories(validPath.parent_path());
@@ -61,8 +73,11 @@ void testLoader(const std::filesystem::path& directory) {
   require(loaded->implementation.kind == "native", "implementation kind should be preserved");
   require(loaded->implementation.entrypoint == "atlas/test", "entrypoint should be preserved");
   require(
-      discovery.discover().size() == 1 && discovery.discover().front().id == "tests.echo",
-      "loaded capability should appear in Discovery");
+      discovery.discover().size() == 1 && discovery.discover().front().id == "tests",
+      "Discovery should expose only the loaded root group");
+  require(
+      discovery.discover("tests").size() == 1 && discovery.discover("tests").front().id == "tests.echo",
+      "loaded capability should appear below its group in Discovery");
 
   const std::filesystem::path invalidPath = directory / "invalid" / "capability.json";
   std::filesystem::create_directories(invalidPath.parent_path());
@@ -109,6 +124,7 @@ void testLoader(const std::filesystem::path& directory) {
     require(result.id != "tests.echo", "unloaded capability should leave Discovery");
   }
   require(!loader.unload("tests.echo"), "unload should fail for a missing capability");
+  require(loader.unload("tests"), "group unload should remove a loaded group");
 }
 
 }  // namespace

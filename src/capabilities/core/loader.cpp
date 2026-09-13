@@ -1,6 +1,7 @@
 #include "loader.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -352,6 +353,20 @@ bool validateCapability(const Capability& capability, std::string& error) {
     error = "field 'parent' must be a non-empty string when present";
     return false;
   }
+  std::set<std::string, std::less<>> aliases;
+  for (const std::string& alias : capability.aliases) {
+    if (alias.empty() || hasNull(alias) || alias == capability.id || !aliases.insert(alias).second) {
+      error = "field 'aliases' contains an invalid or duplicated alias";
+      return false;
+    }
+  }
+  if (capability.type == "group") {
+    if (!capability.implementation.kind.empty() || !capability.implementation.entrypoint.empty()) {
+      error = "groups must not define an implementation";
+      return false;
+    }
+    return true;
+  }
   if (capability.implementation.kind.empty() || !supportedImplementationKind(capability.implementation.kind)) {
     error = "field 'implementation.kind' has an unsupported value";
     return false;
@@ -359,14 +374,6 @@ bool validateCapability(const Capability& capability, std::string& error) {
   if (capability.implementation.entrypoint.empty() || hasNull(capability.implementation.entrypoint)) {
     error = "field 'implementation.entrypoint' must be a non-empty string";
     return false;
-  }
-
-  std::set<std::string, std::less<>> aliases;
-  for (const std::string& alias : capability.aliases) {
-    if (alias.empty() || hasNull(alias) || alias == capability.id || !aliases.insert(alias).second) {
-      error = "field 'aliases' contains an invalid or duplicated alias";
-      return false;
-    }
   }
   return true;
 }
@@ -389,17 +396,58 @@ bool requiredString(
   return true;
 }
 
-bool parseCapability(const JsonValue& root, Capability& capability, std::string& error) {
-  if (root.kind != JsonValue::Kind::object) {
-    error = "manifest root must be a JSON object";
-    return false;
-  }
-  if (!requiredString(root, "id", capability.id, error) ||
-      !requiredString(root, "type", capability.type, error) ||
-      !requiredString(root, "summary", capability.summary, error)) {
-    return false;
-  }
+// Converte o JSON do manifesto para o valor estruturado preservado no Registry.
+StructuredValue toStructuredValue(const JsonValue& value) {
+  switch (value.kind) {
+    case JsonValue::Kind::null_value:
+      return StructuredValue(nullptr);
+    case JsonValue::Kind::boolean:
+      return StructuredValue(value.boolean_value);
+    case JsonValue::Kind::number: {
+      std::int64_t integer = 0;
+      const auto integerResult = std::from_chars(
+          value.string_value.data(),
+          value.string_value.data() + value.string_value.size(),
+          integer);
+      if (integerResult.ec == std::errc{} &&
+          integerResult.ptr == value.string_value.data() + value.string_value.size()) {
+        return StructuredValue(integer);
+      }
 
+      double decimal = 0.0;
+      const auto decimalResult = std::from_chars(
+          value.string_value.data(),
+          value.string_value.data() + value.string_value.size(),
+          decimal,
+          std::chars_format::general);
+      if (decimalResult.ec != std::errc{} ||
+          decimalResult.ptr != value.string_value.data() + value.string_value.size()) {
+        throw std::runtime_error("JSON number is outside the supported range");
+      }
+      return StructuredValue(decimal);
+    }
+    case JsonValue::Kind::string:
+      return StructuredValue(value.string_value);
+    case JsonValue::Kind::array: {
+      StructuredValue::Array array;
+      array.reserve(value.array_value.size());
+      for (const JsonValue& item : value.array_value) {
+        array.push_back(toStructuredValue(item));
+      }
+      return StructuredValue(std::move(array));
+    }
+    case JsonValue::Kind::object: {
+      StructuredValue::Object object;
+      for (const auto& [key, item] : value.object_value) {
+        object.emplace(key, toStructuredValue(item));
+      }
+      return StructuredValue(std::move(object));
+    }
+  }
+  throw std::runtime_error("unsupported JSON value");
+}
+
+bool parseParentAndAliases(const JsonValue& root, Capability& capability, std::string& error) {
   if (const JsonValue* parent = member(root, "parent"); parent != nullptr) {
     if (!isString(parent) || parent->string_value.empty()) {
       error = "field 'parent' must be a non-empty string when present";
@@ -420,6 +468,45 @@ bool parseCapability(const JsonValue& root, Capability& capability, std::string&
       }
       capability.aliases.push_back(alias.string_value);
     }
+  }
+  return true;
+}
+
+bool parseMetadata(const JsonValue& root, Capability& capability, std::string& error) {
+  // Metadata fica disponivel apenas na definicao completa, nao na projecao de Discovery.
+  if (const JsonValue* description = member(root, "description"); description != nullptr) {
+    if (!isString(description) || description->string_value.empty()) {
+      error = "field 'description' must be a non-empty string when present";
+      return false;
+    }
+    capability.description = description->string_value;
+  }
+
+  if (const JsonValue* schema = member(root, "schema"); schema != nullptr) {
+    try {
+      capability.schema = toStructuredValue(*schema);
+    } catch (const std::runtime_error& exception) {
+      error = "field 'schema' is invalid: ";
+      error += exception.what();
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseCapability(const JsonValue& root, Capability& capability, std::string& error) {
+  if (root.kind != JsonValue::Kind::object) {
+    error = "manifest root must be a JSON object";
+    return false;
+  }
+  if (!requiredString(root, "id", capability.id, error) ||
+      !requiredString(root, "type", capability.type, error) ||
+      !requiredString(root, "summary", capability.summary, error)) {
+    return false;
+  }
+
+  if (!parseParentAndAliases(root, capability, error) || !parseMetadata(root, capability, error)) {
+    return false;
   }
 
   const JsonValue* implementation = member(root, "implementation");
@@ -445,6 +532,33 @@ bool parseCapability(const JsonValue& root, Capability& capability, std::string&
   return validateCapability(capability, error);
 }
 
+bool parseGroup(const JsonValue& root, Capability& capability, std::string& error) {
+  if (root.kind != JsonValue::Kind::object) {
+    error = "manifest root must be a JSON object";
+    return false;
+  }
+  if (!requiredString(root, "id", capability.id, error) ||
+      !requiredString(root, "summary", capability.summary, error)) {
+    return false;
+  }
+
+  if (const JsonValue* type = member(root, "type"); type != nullptr &&
+      (!isString(type) || type->string_value != "group")) {
+    error = "field 'type' must be 'group' when present in a group manifest";
+    return false;
+  }
+  if (!parseParentAndAliases(root, capability, error)) {
+    return false;
+  }
+  if (member(root, "implementation") != nullptr) {
+    error = "group manifests must not define 'implementation'";
+    return false;
+  }
+
+  capability.type = "group";
+  return validateCapability(capability, error);
+}
+
 }  // namespace
 
 bool Loader::parseManifest(
@@ -466,6 +580,9 @@ bool Loader::parseManifest(
 
   try {
     const JsonValue root = JsonParser(contents).parse();
+    if (path.filename() == "group.json") {
+      return parseGroup(root, capability, error);
+    }
     return parseCapability(root, capability, error);
   } catch (const std::runtime_error& exception) {
     error = "invalid JSON: ";
@@ -563,7 +680,7 @@ bool Loader::scan(const std::filesystem::path& directory) {
   while (iterator != end) {
     std::error_code entryError;
     if (iterator->is_regular_file(entryError)) {
-      if (iterator->path().filename() == "capability.json") {
+      if (iterator->path().filename() == "capability.json" || iterator->path().filename() == "group.json") {
         manifests.push_back(iterator->path());
       }
     } else if (entryError) {

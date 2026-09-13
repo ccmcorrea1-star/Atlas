@@ -63,3 +63,6 @@ install(TARGETS atlas-process-exec-implementation
 install(FILES src/capabilities/tools/process/exec/capability.json
   DESTINATION capabilities/tools/process/exec
 )
+install(FILES src/capabilities/tools/process/group.json
+  DESTINATION capabilities/tools/process
+)

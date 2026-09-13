@@ -43,6 +43,10 @@ struct Capability {
   std::optional<std::string> parent;
   std::vector<std::string> aliases;
   CapabilityImplementation implementation;
+
+  // Mantem os detalhes necessarios para materializar a capability depois da descoberta.
+  std::string description;
+  StructuredValue schema;
 };
 
 // Mantem capabilities mutaveis em runtime e fornece snapshots ordenados.
@@ -65,6 +69,9 @@ class Registry {
   // Busca por id. Aliases continuam sendo usados apenas pela busca textual.
   std::optional<Capability> get(std::string_view id) const;
 
+  // Retorna a definicao completa, incluindo descricao, schema e implementation.
+  std::optional<Capability> getDefinition(std::string_view id) const;
+
   // Registra a funcao que resolve um entrypoint de implementation.kind native.
   bool registerNativeEntrypoint(std::string entrypoint, NativeEntrypoint function);
 
@@ -76,6 +83,7 @@ class Registry {
 
   // Todas as operacoes de consulta retornam dados independentes do Registry.
   std::vector<Capability> list() const;
+  std::vector<Capability> rootGroups() const;
   std::vector<Capability> children(std::string_view path) const;
   std::vector<Capability> search(std::string_view query) const;
 

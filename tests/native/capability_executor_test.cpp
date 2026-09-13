@@ -39,6 +39,8 @@ Capability descriptor(
       .parent = std::nullopt,
       .aliases = {},
       .implementation = {std::move(kind), std::move(entrypoint)},
+      .description = {},
+      .schema = {},
   };
 }
 
@@ -92,6 +94,20 @@ void testProcessExecution() {
   };
   const ExecutionResult timeout = executor.execute("process.exec", "local", std::move(timeoutArguments));
   require(timeout.status == ExecutionStatus::timed_out, "process.exec should preserve executable timeouts");
+}
+
+void testGroupIsNotExecutable() {
+  Registry registry;
+  Loader loader(registry);
+  require(
+      loader.load("src/capabilities/tools/process/group.json"),
+      "process group should be loaded from its group manifest");
+
+  const ExecutionResult result = Executor(registry).execute("process", "local", {});
+  require(result.status == ExecutionStatus::failed, "a group should not be executable");
+  require(
+      result.error == "capability 'process' has no valid implementation",
+      "group execution should fail without an implementation");
 }
 
 void testMissingCapability() {
@@ -181,6 +197,7 @@ void testInvalidImplementationIsNotRunnable() {
 
 int main() {
   testProcessExecution();
+  testGroupIsNotExecutable();
   testMissingCapability();
   testUnsupportedKinds();
   testInvalidEntrypoint();
