@@ -1,6 +1,6 @@
 # Atlas — Visão Técnica e Arquitetura
 
-**Versão 0.6 — Setembro de 2026**
+**Versão 0.7 — Setembro de 2026**
 
 > Este documento é a fonte de verdade para a visão, os princípios e as fronteiras arquiteturais do Atlas.
 
@@ -388,7 +388,108 @@ Modelo
 
 > **Nada entra no contexto do modelo apenas porque existe.**
 
-## 8. Memória
+## 8. Compactação de contexto
+
+Compactação não é apenas resumir a conversa. Ela reconstrói o contexto de trabalho para manter somente o que continua relevante ao assunto atual.
+
+O `system prompt` permanece intacto e não é resumido pela compactação.
+
+Ao compactar, Atlas deve identificar o assunto ativo, o objetivo atual e o estado do trabalho. Conteúdo de assuntos anteriores que não seja mais relevante sai do contexto ativo, mas continua preservado no estado persistente da conversa.
+
+O contexto compactado deve ser organizado aproximadamente nesta ordem:
+
+```text
+system prompt
+assunto atual
+objetivo atual
+estado do trabalho
+skills relevantes
+tools relevantes
+resultados e referências importantes
+decisões e restrições
+últimas mensagens
+```
+
+### Assunto e objetivo
+
+A compactação deve identificar explicitamente sobre o que o Agent está trabalhando e qual resultado está tentando alcançar.
+
+```text
+Assunto:
+Diagnóstico do container atlas-db.
+
+Objetivo:
+Descobrir por que atlas-db está reiniciando e corrigir o problema.
+```
+
+Quando o assunto muda, informações antigas que não contribuem mais para o objetivo atual deixam de ocupar o contexto ativo.
+
+### Skills e tools
+
+Skills ainda relevantes permanecem organizadas por nome e finalidade. O procedimento completo pode ser removido quando não for necessário naquele momento e materializado novamente pelo Discovery quando necessário.
+
+Tools relevantes ou em uso permanecem identificadas no contexto. Schemas completos podem ser removidos após o uso e materializados novamente antes de uma nova chamada.
+
+```text
+Skills:
+- docker-diagnostics — diagnóstico de problemas Docker
+
+Tools:
+- docker.container.inspect
+- docker.container.logs
+- docker.container.restart
+```
+
+### Estado, resultados e referências
+
+Resultados grandes de tools, logs, documentos e outras saídas devem ser reduzidos ao estado relevante e, quando possível, manter referência ao conteúdo original persistido pelo Runtime.
+
+```text
+Estado:
+- atlas-db está em restart loop;
+- exit code 1;
+- logs indicam falha de conexão com PostgreSQL.
+
+Resultados:
+- inspect: exit code 1 → referência ao resultado original
+- logs: connection refused em postgres:5432 → referência ao resultado original
+```
+
+Compactação não deve ser a única cópia de informação importante. Resultados completos, artefatos, Tasks e demais estados persistentes continuam fora do contexto do modelo.
+
+### Decisões, restrições e últimas mensagens
+
+Decisões tomadas e restrições ainda válidas devem permanecer explícitas.
+
+As mensagens mais recentes permanecem literalmente no contexto, sem serem substituídas imediatamente por resumo, para preservar nuance, intenção e continuidade da conversa.
+
+O fluxo conceitual é:
+
+```text
+contexto cresce
+  ↓
+identificar assunto ativo
+  ↓
+identificar objetivo atual
+  ↓
+remover conteúdo fora do assunto
+  ↓
+consolidar estado relevante
+  ↓
+organizar skills e tools relevantes
+  ↓
+resumir resultados grandes e manter referências
+  ↓
+preservar decisões e restrições
+  ↓
+manter últimas mensagens
+  ↓
+novo contexto de trabalho
+```
+
+> **O contexto ativo é um cache de trabalho do Agent; o estado persistente do Atlas é a fonte de verdade.**
+
+## 9. Memória
 
 A memória é recuperada sob demanda; não é despejada integralmente no prompt.
 
@@ -420,7 +521,7 @@ armazenar / atualizar / descartar
 
 Quando uma informação nova contradiz uma memória existente, o sistema deve atualizar, versionar, invalidar ou representar explicitamente o conflito.
 
-## 9. Capability Registry e Capability Factory
+## 10. Capability Registry e Capability Factory
 
 Toda capacidade conhecida pela plataforma deve entrar em um Registry unificado e independente da linguagem de implementação.
 
@@ -471,7 +572,7 @@ improvisação do LLM
 
 Capacidades geradas precisam de identidade, versão, origem, testes, dependências e provenance.
 
-## 10. Tasks e Workers
+## 11. Tasks e Workers
 
 Tasks existem para trabalho que se beneficia de execução desacoplada do turno principal. Elas não são o caminho obrigatório para toda ação.
 
@@ -496,7 +597,7 @@ Invariantes:
 - retries não podem duplicar silenciosamente efeitos;
 - recovery deve ser possível quando a operação permitir.
 
-## 11. Eventos, provenance e estado
+## 12. Eventos, provenance e estado
 
 O Runtime deve produzir eventos estruturados para tornar o trabalho observável.
 
@@ -531,7 +632,7 @@ artefato / efeito
 
 O estado persistente do Atlas não deve depender estruturalmente de tipos internos de um provider ou Agent SDK específico.
 
-## 12. MCP, dispositivos e clientes
+## 13. MCP, dispositivos e clientes
 
 MCP é uma fronteira de integração, não o mecanismo interno obrigatório de Discovery.
 
@@ -567,7 +668,7 @@ Clientes
 
 A interface apresenta estado e coleta interação. O Runtime mantém execução e estado operacional. O Agent conduz o trabalho cognitivo.
 
-## 13. Local-first e independência de infraestrutura
+## 14. Local-first e independência de infraestrutura
 
 Atlas é local-first, não necessariamente local-only.
 
@@ -587,13 +688,13 @@ Model Provider
 
 Atlas deve possuir contratos próprios. Tipos internos de um SDK não devem definir a API pública central do produto.
 
-## 14. Workstation e trabalho observável
+## 15. Workstation e trabalho observável
 
 Atlas Workstation não deve ser apenas um chat maior. É um espaço visual compartilhado onde usuário e Agent trabalham sobre os mesmos objetos, aplicações e estado do mundo.
 
 O usuário deve conseguir acompanhar o trabalho sem receber raciocínio privado.
 
-## 15. Invariantes arquiteturais
+## 16. Invariantes arquiteturais
 
 1. O Agent age diretamente por meio de tools quando isso é suficiente.
 2. Delegação para Tasks e Workers é opcional e usada quando houver benefício operacional.
@@ -603,22 +704,27 @@ O usuário deve conseguir acompanhar o trabalho sem receber raciocínio privado.
 6. Tools usam materialização progressiva de schema.
 7. Depois de descoberta e materializada, uma tool é chamada diretamente pelo Agent.
 8. Uma skill materializa procedimento; o Agent continua chamando as tools necessárias.
-9. Memória é recuperada por relevância; nunca despejada integralmente no contexto.
-10. Estado da conversa, contexto de trabalho, memória de longo prazo e conhecimento são conceitos distintos.
-11. Trabalho persistente pertence a Tasks; Workers são executores temporários.
-12. Toda ação relevante deve possuir provenance suficiente para ser rastreada.
-13. Eventos visíveis expõem trabalho operacional, não raciocínio privado.
-14. Capacidades geradas não são confiáveis apenas porque Atlas as gerou.
-15. Clientes não possuem o runtime cognitivo principal.
-16. Providers e Agent SDKs são substituíveis.
-17. Atlas possui seus contratos públicos e seu estado persistente.
-18. Execução e estado locais permanecem de primeira classe.
-19. O custo de acessar tools, skills, memória e conhecimento cresce com a relevância atual, não com o tamanho total do sistema.
-20. Depois da seleção de uma tool, a execução deve ser determinística sempre que possível.
-21. Delegação nunca deve ser introduzida apenas por arquitetura quando a execução direta é suficiente.
-22. MCP é uma fonte de capacidades, não uma dependência estrutural do núcleo do Discovery.
+9. O `system prompt` não é resumido pela compactação.
+10. Compactação identifica assunto, objetivo e estado do trabalho e remove do contexto ativo o que deixou de ser relevante.
+11. Skills e tools relevantes permanecem organizadas no contexto, com rematerialização de detalhes quando necessário.
+12. As últimas mensagens permanecem literalmente no contexto após compactação.
+13. Compactação não substitui o estado persistente nem é a única cópia de informação importante.
+14. Memória é recuperada por relevância; nunca despejada integralmente no contexto.
+15. Estado da conversa, contexto de trabalho, memória de longo prazo e conhecimento são conceitos distintos.
+16. Trabalho persistente pertence a Tasks; Workers são executores temporários.
+17. Toda ação relevante deve possuir provenance suficiente para ser rastreada.
+18. Eventos visíveis expõem trabalho operacional, não raciocínio privado.
+19. Capacidades geradas não são confiáveis apenas porque Atlas as gerou.
+20. Clientes não possuem o runtime cognitivo principal.
+21. Providers e Agent SDKs são substituíveis.
+22. Atlas possui seus contratos públicos e seu estado persistente.
+23. Execução e estado locais permanecem de primeira classe.
+24. O custo de acessar tools, skills, memória e conhecimento cresce com a relevância atual, não com o tamanho total do sistema.
+25. Depois da seleção de uma tool, a execução deve ser determinística sempre que possível.
+26. Delegação nunca deve ser introduzida apenas por arquitetura quando a execução direta é suficiente.
+27. MCP é uma fonte de capacidades, não uma dependência estrutural do núcleo do Discovery.
 
-## 16. Objetivo de longo prazo
+## 17. Objetivo de longo prazo
 
 Atlas deve evoluir de `assistant` para `resident intelligence`.
 
@@ -628,7 +734,7 @@ No estado final, o usuário trabalha normalmente enquanto Atlas permanece presen
 
 **Esse é o Atlas.**
 
-## 17. Referências da implementação atual
+## 18. Referências da implementação atual
 
 - Repositório: https://github.com/ccmcorrea1-star/Atlas
 - OpenAI Agents SDK: https://openai.github.io/openai-agents-js/
