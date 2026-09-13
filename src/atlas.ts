@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   Agent,
@@ -147,19 +147,31 @@ function schemaForTool(definition: CapabilityDefinition): FunctionTool['paramete
   return definition.schema as FunctionTool['parameters'];
 }
 
+function providerToolName(capabilityId: string): string {
+  // O digest diferencia IDs que produzem a mesma forma sanitizada.
+  const readableName = capabilityId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'capability';
+  const suffix = createHash('sha256').update(capabilityId).digest('hex').slice(0, 16);
+  return `${readableName}_${suffix}`;
+}
+
 function materializeTool(
   definition: CapabilityDefinition,
   capabilityRuntime: CapabilityRuntime,
+  toolName: string,
+  capabilityIdsByToolName: ReadonlyMap<string, string>,
 ): FunctionTool {
   return {
     type: 'function',
-    name: definition.id,
+    name: toolName,
     description: definition.description,
     parameters: schemaForTool(definition),
     strict: false,
     needsApproval: async () => false,
     isEnabled: async () => true,
     invoke: async (_runContext, input) => {
+      if (capabilityIdsByToolName.get(toolName) !== definition.id) {
+        throw new Error(`Unknown provider tool mapping for capability "${definition.id}".`);
+      }
       const arguments_ = parseObjectInput(input, definition.id);
       const result = await capabilityRuntime.execute(definition.id, 'local', arguments_);
       return JSON.stringify(result);
@@ -206,26 +218,42 @@ function discoveryTool(
   };
 }
 
+type AtlasAgent = {
+  agent: Agent;
+  capabilityIdsByToolName: ReadonlyMap<string, string>;
+};
+
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
   rootGroups: readonly CapabilityDiscoveryResult[],
-): Agent {
+): AtlasAgent {
   const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
   const agent = Atlas.clone({
     instructions: `${ATLAS_INSTRUCTIONS}\n\nAvailable capability groups:\n${catalog}`,
     tools: [],
   });
   const materialized = new Set<string>();
+  const capabilityIdsByToolName = new Map<string, string>();
   const addTool = (definition: CapabilityDefinition) => {
     if (materialized.has(definition.id)) {
       return;
     }
     materialized.add(definition.id);
-    agent.tools.push(materializeTool(definition, capabilityRuntime));
+    const toolName = providerToolName(definition.id);
+    const mappedCapabilityId = capabilityIdsByToolName.get(toolName);
+    if (mappedCapabilityId !== undefined && mappedCapabilityId !== definition.id) {
+      throw new Error(
+        `Provider tool name collision between capabilities "${mappedCapabilityId}" and "${definition.id}".`,
+      );
+    }
+    capabilityIdsByToolName.set(toolName, definition.id);
+    agent.tools.push(
+      materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName),
+    );
   };
   const discover = discoveryTool(capabilityRuntime, addTool);
   agent.tools.push(discover);
-  return agent;
+  return { agent, capabilityIdsByToolName };
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -265,6 +293,7 @@ async function publishRunEvent(
   event: RunStreamEvent,
   onEvent: (event: AtlasRunEvent) => void | Promise<void>,
   fallbackMessageId: string,
+  capabilityIdsByToolName: ReadonlyMap<string, string>,
 ): Promise<void> {
   if (event.type === 'raw_model_stream_event') {
     if (event.data.type !== 'output_text_delta') {
@@ -284,19 +313,23 @@ async function publishRunEvent(
   }
 
   const item = event.item.rawItem as unknown as Record<string, unknown>;
-  const toolName = stringValue(item.name);
+  const providerToolName = stringValue(item.name);
+  const toolName =
+    providerToolName === undefined
+      ? undefined
+      : (capabilityIdsByToolName.get(providerToolName) ?? providerToolName);
   const toolId = stringValue(item.callId) ?? stringValue(item.call_id);
 
   if (event.name === 'tool_called') {
     // Discovery is an Agent implementation detail, not a client-facing tool.
-    if (toolName && toolName !== 'discover' && toolId) {
+    if (toolName && providerToolName !== 'discover' && toolId) {
       await onEvent({ type: 'tool.started', toolId, toolName });
     }
     return;
   }
 
   if (event.name === 'tool_output') {
-    if (toolName && toolName !== 'discover' && toolId) {
+    if (toolName && providerToolName !== 'discover' && toolId) {
       const output = publicText(item.output);
       await onEvent({
         type: 'tool.completed',
@@ -354,7 +387,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   const rootGroups = await capabilityRuntime.discover();
-  const agent = createAtlasAgent(capabilityRuntime, rootGroups);
+  const { agent, capabilityIdsByToolName } = createAtlasAgent(capabilityRuntime, rootGroups);
   // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
 
@@ -371,7 +404,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     });
     const fallbackMessageId = randomUUID();
     for await (const event of streamedResult) {
-      await publishRunEvent(event, onEvent, fallbackMessageId);
+      await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByToolName);
     }
 
     // O iterador pode terminar antes da finalizacao interna do Runner.
