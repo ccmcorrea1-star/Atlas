@@ -1,3 +1,4 @@
+// API pública do agente Atlas.
 export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './atlas.js';
 export type { AtlasRunOptions } from './atlas.js';
 export {

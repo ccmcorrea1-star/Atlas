@@ -10,6 +10,7 @@ type CapturedRequest = {
 };
 
 const capturedRequests: CapturedRequest[] = [];
+// O servidor local valida o contrato sem depender da API do OpenCode Go.
 const server = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -80,6 +81,7 @@ function close(): Promise<void> {
 const port = await listen();
 
 try {
+  // Duas conversas comprovam continuidade e isolamento do histórico.
   const providerOptions = {
     apiKey: 'atlas-smoke-key',
     baseURL: `http://127.0.0.1:${port}/zen/go/v1`,

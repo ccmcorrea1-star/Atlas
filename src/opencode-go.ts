@@ -15,6 +15,7 @@ export const OPENCODE_GO_RESPONSES_PATH = '/zen/go/v1/responses';
 export const OPENCODE_GO_RESPONSES_URL = `https://opencode.ai${OPENCODE_GO_RESPONSES_PATH}`;
 export const ATLAS_USER_AGENT = 'Atlas/1.0.0';
 
+// Evita estado mutável compartilhado entre requests concorrentes.
 const activeOpenCodeGoSession = new AsyncLocalStorage<string>();
 
 export type OpenCodeGoEndpoint = 'responses' | 'chat/completions' | 'messages';
@@ -67,6 +68,7 @@ function createAtlasFetch(userAgent: string, defaultSessionId: string): typeof g
 
     initHeaders.forEach((value, name) => headers.set(name, value));
     headers.set('User-Agent', userAgent);
+    // O header é resolvido por request para acompanhar a conversa ativa.
     headers.set('x-opencode-session', activeOpenCodeGoSession.getStore() ?? defaultSessionId);
 
     return globalThis.fetch(input, { ...init, headers });
