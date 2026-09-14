@@ -97,7 +97,7 @@ fn wrap_plain_with_widths_using(
 
 fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     if text.is_empty() {
-        return vec![0..0];
+        return std::iter::once(0..0).collect();
     }
 
     let options = wrapping_options(text, width, false);
@@ -127,7 +127,7 @@ fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     }
 
     if ranges.is_empty() {
-        vec![0..text.len()]
+        std::iter::once(0..text.len()).collect()
     } else {
         ranges
     }

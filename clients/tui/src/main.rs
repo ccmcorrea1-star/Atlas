@@ -9,6 +9,7 @@ mod ui;
 mod wrapping;
 
 use std::io::{self, stdout};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use crossterm::{
@@ -17,6 +18,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use tokio::task::JoinHandle;
 
 use app::App;
 use event::{Event, EventHandler};
@@ -26,8 +28,8 @@ use runtime::RuntimeClient;
 #[command(name = "atlas", version, about = "Atlas terminal client")]
 struct Cli {
     /// Conversation ID reused by the Runtime for the current chat.
-    #[arg(long, default_value = "atlas-tui")]
-    conversation_id: String,
+    #[arg(long)]
+    conversation_id: Option<String>,
 }
 
 type AtlasTerminal = Terminal<CrosstermBackend<io::Stdout>>;
@@ -35,14 +37,21 @@ type AtlasTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    let (runtime, runtime_events) = RuntimeClient::new(cli.conversation_id);
+    let conversation_id = cli.conversation_id.unwrap_or_else(default_conversation_id);
+    if conversation_id.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "conversation ID cannot be empty",
+        ));
+    }
+    let (runtime, runtime_events) = RuntimeClient::new(conversation_id);
     let mut events = EventHandler::new(runtime_events);
     let mut app = App::new(runtime.conversation_id().to_owned());
-    let mut terminal = setup_terminal()?;
+    let mut terminal = TerminalGuard::new(setup_terminal()?);
 
-    let result = run(&mut terminal, &mut app, runtime, &mut events).await;
-    restore_terminal(&mut terminal)?;
-    result
+    let result = run(&mut terminal.terminal, &mut app, runtime, &mut events).await;
+    let restore_result = terminal.restore();
+    result.and(restore_result)
 }
 
 async fn run(
@@ -51,6 +60,7 @@ async fn run(
     runtime: RuntimeClient,
     events: &mut EventHandler,
 ) -> io::Result<()> {
+    let mut send_task: Option<JoinHandle<()>> = None;
     terminal.draw(|frame| ui::draw(frame, app))?;
     while !app.should_quit() {
         let Some(event) = events.next().await else {
@@ -59,7 +69,9 @@ async fn run(
 
         let should_redraw = match event {
             Event::Key(key) => {
-                handle_key(app, &runtime, key);
+                if let Some(task) = handle_key(app, &runtime, key) {
+                    send_task = Some(task);
+                }
                 true
             }
             Event::Runtime(runtime_event) => {
@@ -78,53 +90,125 @@ async fn run(
         }
     }
 
+    if let Some(task) = send_task {
+        task.abort();
+    }
     Ok(())
 }
 
-fn handle_key(app: &mut App, runtime: &RuntimeClient, key: crossterm::event::KeyEvent) {
+fn handle_key(
+    app: &mut App,
+    runtime: &RuntimeClient,
+    key: crossterm::event::KeyEvent,
+) -> Option<JoinHandle<()>> {
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.quit();
+        return None;
+    }
+
+    if app.quit_confirmation() {
+        match key.code {
+            KeyCode::Char('y') => app.quit(),
+            KeyCode::Char('n') | KeyCode::Esc => app.close_quit_confirmation(),
+            _ => {}
+        }
+        return None;
+    }
 
     if app.shortcuts_open() {
         if key.code == KeyCode::Esc {
             app.close_shortcuts();
         }
-        return;
+        return None;
     }
 
     match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
-        KeyCode::Esc => app.quit(),
+        KeyCode::Esc if app.turn_active() => {
+            app.open_quit_confirmation();
+            None
+        }
+        KeyCode::Esc => {
+            app.quit();
+            None
+        }
         KeyCode::Char(character)
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && character.eq_ignore_ascii_case(&'p') =>
         {
             app.open_shortcuts();
+            None
         }
         KeyCode::Enter => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.insert_newline();
+                None
             } else if !app.turn_active()
                 && let Some(message) = app.submit_input()
             {
                 let runtime = runtime.clone();
-                let _send_task = tokio::spawn(async move {
+                Some(tokio::spawn(async move {
                     let _ = runtime.send_message(message).await;
-                });
+                }))
+            } else {
+                None
             }
         }
-        KeyCode::Backspace => app.backspace(),
-        KeyCode::Delete => app.delete_forward(),
-        KeyCode::Left => app.move_cursor_left(),
-        KeyCode::Right => app.move_cursor_right(),
-        KeyCode::Up => app.move_cursor_up(),
-        KeyCode::Down => app.move_cursor_down(),
-        KeyCode::Home => app.move_cursor_home(),
-        KeyCode::End => app.move_cursor_end(),
-        KeyCode::PageUp => app.scroll_up(5),
-        KeyCode::PageDown => app.scroll_down(5),
-        KeyCode::Char(character) => app.insert_character(character),
-        _ => {}
+        KeyCode::Backspace => {
+            app.backspace();
+            None
+        }
+        KeyCode::Delete => {
+            app.delete_forward();
+            None
+        }
+        KeyCode::Left => {
+            app.move_cursor_left();
+            None
+        }
+        KeyCode::Right => {
+            app.move_cursor_right();
+            None
+        }
+        KeyCode::Up => {
+            app.move_cursor_up();
+            None
+        }
+        KeyCode::Down => {
+            app.move_cursor_down();
+            None
+        }
+        KeyCode::Home => {
+            app.move_cursor_home();
+            None
+        }
+        KeyCode::End => {
+            app.move_cursor_end();
+            None
+        }
+        KeyCode::PageUp => {
+            app.scroll_up(5);
+            None
+        }
+        KeyCode::PageDown => {
+            app.scroll_down(5);
+            None
+        }
+        KeyCode::Char(character) => {
+            app.insert_character(character);
+            None
+        }
+        _ => None,
     }
+}
+
+fn default_conversation_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("atlas-tui-{}-{timestamp}", std::process::id())
 }
 
 fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
@@ -140,8 +224,44 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 fn setup_terminal() -> io::Result<AtlasTerminal> {
     enable_raw_mode()?;
     let mut output = stdout();
-    execute!(output, EnterAlternateScreen, EnableMouseCapture)?;
+    if let Err(error) = execute!(output, EnterAlternateScreen, EnableMouseCapture) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            output,
+            LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        );
+        return Err(error);
+    }
     Terminal::new(CrosstermBackend::new(output))
+}
+
+struct TerminalGuard {
+    terminal: AtlasTerminal,
+    restored: bool,
+}
+
+impl TerminalGuard {
+    fn new(terminal: AtlasTerminal) -> Self {
+        Self {
+            terminal,
+            restored: false,
+        }
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        self.restored = true;
+        restore_terminal(&mut self.terminal)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
 }
 
 fn restore_terminal(terminal: &mut AtlasTerminal) -> io::Result<()> {
@@ -180,14 +300,14 @@ mod tests {
             RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
         let mut app = App::new("conversation".to_owned());
 
-        handle_key(
+        let _ = handle_key(
             &mut app,
             &runtime,
             KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
         );
         assert!(app.shortcuts_open());
 
-        handle_key(
+        let _ = handle_key(
             &mut app,
             &runtime,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -202,7 +322,7 @@ mod tests {
             RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
         let mut app = App::new("conversation".to_owned());
 
-        handle_key(
+        let _ = handle_key(
             &mut app,
             &runtime,
             KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT),
@@ -219,7 +339,7 @@ mod tests {
         let mut app = App::new("conversation".to_owned());
         app.open_shortcuts();
 
-        handle_key(
+        let _ = handle_key(
             &mut app,
             &runtime,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
@@ -227,5 +347,45 @@ mod tests {
 
         assert!(app.shortcuts_open());
         assert!(app.input().is_empty());
+    }
+
+    #[test]
+    fn escape_requests_confirmation_while_a_turn_is_active() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+        app.insert_character('h');
+        app.submit_input();
+
+        let _ = handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert!(app.quit_confirmation());
+        assert!(!app.should_quit());
+
+        let _ = handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(!app.quit_confirmation());
+    }
+
+    #[test]
+    fn ctrl_c_quits_even_when_the_shortcuts_overlay_is_open() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+        app.open_shortcuts();
+
+        let _ = handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert!(app.should_quit());
     }
 }

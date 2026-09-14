@@ -174,12 +174,25 @@ impl ExecutionCell {
         }
 
         let title = if tool.completed { "Ran" } else { "Running" };
-        let line = Line::from(vec![
+        let name = sanitize_terminal_text(&tool.name);
+        let mut lines = vec![Line::from(vec![
             execution_marker(tool),
             Span::raw(" "),
             Span::styled(title, Style::default().bold()),
-        ]);
-        vec![line]
+            Span::raw(" "),
+            Span::styled(name, command_style()),
+        ])];
+        if tool.completed {
+            append_output(&mut lines, tool, width);
+            append_generic_status(&mut lines, tool);
+        } else {
+            lines.push(prefixed_line(
+                Line::from("aguardando..."),
+                "  └ ",
+                Style::default().dim(),
+            ));
+        }
+        lines
     }
 
     fn process_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
@@ -236,11 +249,13 @@ impl ExecutionCell {
                     let exit_code = tool
                         .exit_code
                         .map_or_else(|| "?".to_owned(), |code| code.to_string());
+                    let outcome = if tool.execution_status.as_deref() == Some("aborted") {
+                        "aborted".to_owned()
+                    } else {
+                        format!("exit {exit_code}")
+                    };
                     lines.push(prefixed_line(
-                        Line::from(format!(
-                            "✗ exit {exit_code} · {}",
-                            format_duration(duration)
-                        )),
+                        Line::from(format!("✗ {outcome} · {}", format_duration(duration))),
                         "  ",
                         Style::default().fg(Color::Red).dim(),
                     ));
@@ -255,6 +270,23 @@ impl ExecutionCell {
         }
         lines
     }
+}
+
+fn append_generic_status(lines: &mut Vec<Line<'static>>, tool: &ToolCall) {
+    let Some(duration) = tool.duration else {
+        return;
+    };
+    if tool.success {
+        lines[0].push_span(format!(" · {}", format_duration(duration)).dim());
+        return;
+    }
+
+    let status = tool.execution_status.as_deref().unwrap_or("failed");
+    lines.push(prefixed_line(
+        Line::from(format!("✗ {status} · {}", format_duration(duration))),
+        "  ",
+        Style::default().fg(Color::Red).dim(),
+    ));
 }
 
 fn system_message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {

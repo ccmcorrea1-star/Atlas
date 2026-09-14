@@ -8,13 +8,17 @@ use crate::app::App;
 use crate::wrapping::{cursor_position, wrap_text};
 
 const PLACEHOLDER: &str = "Ask Atlas to do anything";
+const MAX_COMPOSER_ROWS: usize = 8;
 
 pub(crate) struct ComposerPanel;
 
 impl ComposerPanel {
     pub(crate) fn height(app: &App, width: u16) -> u16 {
         let content_width = usize::from(width).saturating_sub(4).max(1);
-        wrap_text(app.input(), content_width).len() as u16 + 2
+        wrap_text(app.input(), content_width)
+            .len()
+            .min(MAX_COMPOSER_ROWS) as u16
+            + 2
     }
 
     pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -35,7 +39,12 @@ impl ComposerPanel {
 
         let content_width = usize::from(inner.width).saturating_sub(2).max(1);
         let rows = wrap_text(app.input(), content_width);
-        let first_visible = rows.len().saturating_sub(usize::from(input_rows));
+        let (cursor_row, cursor_column) =
+            cursor_position(app.input(), app.cursor_byte_position(), content_width);
+        let visible_rows = usize::from(input_rows);
+        let first_visible = cursor_row
+            .saturating_sub(visible_rows.saturating_sub(1))
+            .min(rows.len().saturating_sub(visible_rows));
         for (index, text) in rows.iter().skip(first_visible).enumerate() {
             let row = first_visible + index;
             let prompt = if row == 0 { "› " } else { "  " };
@@ -73,8 +82,6 @@ impl ComposerPanel {
             );
         }
 
-        let (cursor_row, cursor_column) =
-            cursor_position(app.input(), app.cursor_byte_position(), content_width);
         if cursor_row >= first_visible && cursor_row - first_visible < usize::from(input_rows) {
             let cursor_x = inner
                 .x

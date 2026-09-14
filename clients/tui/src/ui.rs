@@ -203,6 +203,27 @@ mod tests {
     }
 
     #[test]
+    fn renders_generic_tool_output_and_status() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: Some(
+                r#"{\"stdout\":\"content\",\"status\":\"success\",\"duration_ms\":12}"#.to_owned(),
+            ),
+        });
+
+        let rows = render_fixture(app, 80, 12);
+        assert!(rows.iter().any(|row| row.contains("Ran filesystem.read")));
+        assert!(rows.iter().any(|row| row.contains("content")));
+        assert!(rows.iter().any(|row| row.contains("12ms")));
+    }
+
+    #[test]
     fn renders_long_markdown_and_both_reference_sizes() {
         for (width, height) in [(80, 24), (120, 30)] {
             let mut app = App::new("conversation".to_owned());
@@ -258,6 +279,15 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("Shortcuts")));
         assert!(rows.iter().any(|row| row.contains("Open shortcuts")));
         assert!(rows.iter().any(|row| row.contains("Close overlay")));
+    }
+
+    #[test]
+    fn renders_a_compact_shortcuts_hint_on_a_small_terminal() {
+        let mut app = App::new("conversation".to_owned());
+        app.open_shortcuts();
+        let rows = render_fixture(app, 19, 7);
+
+        assert!(rows.iter().any(|row| row.contains("Esc close")));
     }
 
     #[test]

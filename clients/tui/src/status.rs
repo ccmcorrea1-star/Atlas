@@ -3,8 +3,10 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Status};
+use crate::presentation::sanitize_terminal_text;
 
 pub(crate) struct StatusBar;
 
@@ -18,10 +20,23 @@ impl StatusBar {
     }
 
     fn line(app: &App, width: u16) -> Line<'static> {
+        if app.quit_confirmation() {
+            return Line::from(vec![
+                Span::styled("! ", Style::default().fg(Color::Yellow).bold()),
+                Span::styled(
+                    "Work is still running. Quit? [y/N]",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]);
+        }
+
         let left = match app.status() {
             Status::Error(message) => Line::from(vec![
                 Span::styled("! ", Style::default().fg(Color::Red).bold()),
-                Span::styled(message.clone(), Style::default().fg(Color::Red)),
+                Span::styled(
+                    sanitize_terminal_text(message),
+                    Style::default().fg(Color::Red),
+                ),
                 Span::raw("  "),
                 Span::styled("Ctrl+P", Style::default().fg(Color::Cyan).bold()),
                 Span::styled(" shortcuts", Style::default().dim()),
@@ -30,9 +45,21 @@ impl StatusBar {
                 Span::styled("Ctrl+P", Style::default().fg(Color::Cyan).bold()),
                 Span::styled(" shortcuts", Style::default().dim()),
             ]),
-            Status::Sending | Status::Thinking | Status::Tool(_) => Line::from(vec![
+            Status::Sending | Status::Thinking => Line::from(vec![
                 Span::styled("• ", Style::default().fg(Color::Cyan).bold()),
                 Span::styled("Working", Style::default().bold()),
+                Span::raw("  "),
+                Span::styled("Ctrl+P", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" shortcuts", Style::default().dim()),
+            ]),
+            Status::Tool(tool) => Line::from(vec![
+                Span::styled("• ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled("Working", Style::default().bold()),
+                Span::raw(" "),
+                Span::styled(
+                    sanitize_terminal_text(tool),
+                    Style::default().fg(Color::Cyan),
+                ),
                 Span::raw("  "),
                 Span::styled("Ctrl+P", Style::default().fg(Color::Cyan).bold()),
                 Span::styled(" shortcuts", Style::default().dim()),
@@ -43,7 +70,7 @@ impl StatusBar {
         };
 
         let right = format_context(context.used_tokens, context.context_window);
-        let right_width = right.len();
+        let right_width = right.width();
         let left_width = left.width();
         let available_left = usize::from(width).saturating_sub(right_width + 2);
         if left_width > available_left {
@@ -102,7 +129,15 @@ pub(crate) struct ShortcutsOverlay;
 
 impl ShortcutsOverlay {
     pub(crate) fn draw(frame: &mut Frame<'_>, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
         if area.width < 20 || area.height < 8 {
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new("Esc close | Ctrl+C quit").style(Style::default().fg(Color::Cyan)),
+                area,
+            );
             return;
         }
         let width = area.width.saturating_sub(4).min(58);
