@@ -11,6 +11,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.tests.json --noEmit",
     "lint": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint:client": "cargo clippy --locked --manifest-path clients/tui/Cargo.toml --all-targets -- -D warnings",
     "lint:fix": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

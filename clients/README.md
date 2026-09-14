@@ -18,9 +18,20 @@ Depois execute o TUI:
 cargo run --manifest-path clients/tui/Cargo.toml -- --conversation-id minha-conversa
 ```
 
-`Enter` envia, `Shift+Enter` quebra linha e `Esc` ou `Ctrl-C` encerra.
+Atalhos principais:
 
-A comunicação usa o [`Atlas Runtime Protocol v1`](../protocol/runtime/v1/README.md) pelo Unix Socket `/tmp/atlas-runtime.sock`. Use `ATLAS_RUNTIME_SOCKET` para alterar o caminho.
+- `Enter` envia a mensagem;
+- `Shift+Enter` insere uma nova linha;
+- `Esc` ou `Ctrl-C` encerra o cliente; `Esc` pede confirmação durante um turn ativo;
+- `Backspace`, `Delete`, `Home`, `End` e as setas editam o campo de entrada;
+- `PageUp`/`PageDown` e a roda do mouse navegam pelo transcript;
+- `Ctrl-R` pesquisa o histórico reversamente;
+- `@` abre a busca local de caminhos.
+
+O `RuntimeClient` é a única fronteira entre o TUI e o Atlas. Ele usa o contrato
+público em [`protocol/runtime/v1`](../protocol/runtime/v1/) sobre um Unix Socket
+no diretório `XDG_RUNTIME_DIR` do usuário; sem essa variável, usa
+`/tmp/atlas-runtime.sock`. O caminho pode ser alterado com `ATLAS_RUNTIME_SOCKET`.
 
 ## Verificação
 
