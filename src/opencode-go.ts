@@ -24,11 +24,13 @@ export type OpenCodeGoEndpoint = 'responses' | 'chat/completions' | 'messages';
 
 export type OpenCodeGoModelDefinition = {
   endpoint: OpenCodeGoEndpoint;
+  // O metadado do modelo alimenta o snapshot de contexto do Runtime.
+  contextWindow?: number;
 };
 
 // O registro inicial e pequeno; novos modelos podem ser fornecidos nas opcoes do provider.
 export const OPENCODE_GO_MODELS = {
-  [OPENCODE_GO_MODEL_ID]: { endpoint: 'responses' },
+  [OPENCODE_GO_MODEL_ID]: { endpoint: 'responses', contextWindow: 256_000 },
 } as const satisfies Record<string, OpenCodeGoModelDefinition>;
 
 export class OpenCodeGoSession {
@@ -60,8 +62,28 @@ export type OpenCodeGoProviderOptions = {
   session?: OpenCodeGoSession;
   sessionId?: string;
   userAgent?: string;
+  contextWindow?: number;
   models?: Readonly<Record<string, OpenCodeGoModelDefinition>>;
 };
+
+function validateContextWindow(contextWindow: number | undefined): number | undefined {
+  if (contextWindow === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0) {
+    throw new Error('OpenCode Go context window must be a positive safe integer.');
+  }
+  return contextWindow;
+}
+
+export function getOpenCodeGoContextWindow(
+  options: OpenCodeGoProviderOptions = {},
+): number | undefined {
+  const models = { ...OPENCODE_GO_MODELS, ...(options.models ?? {}) };
+  return validateContextWindow(
+    options.contextWindow ?? models[OPENCODE_GO_MODEL_ID]?.contextWindow,
+  );
+}
 
 function normalizeBaseURL(baseURL: string): string {
   // Os adapters acrescentam seus proprios paths; a base nao deve terminar em '/'.
@@ -101,6 +123,7 @@ function getModelId(modelName: string): string {
 export class OpenCodeGoProvider implements ModelProvider {
   public readonly session: OpenCodeGoSession;
   public readonly sessionId: string;
+  public readonly contextWindow: number | undefined;
 
   private readonly models: Readonly<Record<string, OpenCodeGoModelDefinition>>;
   private readonly responsesProvider: ReturnType<typeof createOpenAI>;
@@ -120,6 +143,7 @@ export class OpenCodeGoProvider implements ModelProvider {
     this.sessionId = this.session.id;
     // Opcoes adicionais sobrescrevem apenas modelos com o mesmo ID.
     this.models = { ...OPENCODE_GO_MODELS, ...(options.models ?? {}) };
+    this.contextWindow = getOpenCodeGoContextWindow(options);
 
     const headers = {
       ...(options.headers ?? {}),

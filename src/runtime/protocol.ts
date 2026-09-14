@@ -21,6 +21,17 @@ export type RuntimeEventType =
   | 'turn.completed'
   | 'error';
 
+export type RuntimeContextUsage = {
+  used_tokens: number;
+  context_window: number;
+};
+
+export type RuntimeTurnCompletedData = {
+  content: string;
+  message_id?: string;
+  context?: RuntimeContextUsage;
+};
+
 export type RuntimeExecutionStartedData = {
   execution_id: string;
   capability: 'process.exec';

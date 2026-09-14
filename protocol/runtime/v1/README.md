@@ -102,7 +102,9 @@ Supported event types are:
 - `tool.completed`: a Runtime-executed tool finished, with `data.tool_id`, `data.name`, and optional `data.output`.
 - `execution.started`: a `process.exec` invocation started, with `data.execution_id`, `data.capability`, `data.program`, `data.args`, and optional `data.cwd` and `data.target`.
 - `execution.completed`: the matching `process.exec` invocation finished, with `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms`, and `data.status`.
-- `turn.completed`: the turn finished, with `data.content` and optional `data.message_id`.
+- `turn.completed`: the turn finished, with `data.content`, optional `data.message_id`, and the
+  Runtime-provided `data.context` usage snapshot when the model exposes a context window:
+  `{ "used_tokens": 6600, "context_window": 256000 }`.
 - `error`: the turn failed, with `data.code` and `data.message`.
 
 Clients must handle `message.delta` or `message.completed`; a Runtime may emit

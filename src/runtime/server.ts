@@ -2,12 +2,14 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
+import { getOpenCodeGoContextWindow } from '../opencode-go.js';
 import {
   parseRuntimeTurnRequest,
   runtimeErrorEvent,
   runtimeEvent,
   serializeRuntimeMessage,
   type RuntimeEvent,
+  type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
 } from './protocol.js';
 import { UnixSocketServer } from './transport/unix/server.js';
@@ -23,6 +25,7 @@ export class AtlasRuntimeServer {
   public readonly socketPath: string;
 
   private readonly runOptions;
+  private readonly contextWindow: number | undefined;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
 
@@ -30,6 +33,7 @@ export class AtlasRuntimeServer {
     this.socketPath =
       options.socketPath ?? process.env.ATLAS_RUNTIME_SOCKET ?? DEFAULT_RUNTIME_SOCKET_PATH;
     this.runOptions = options.runOptions ?? {};
+    this.contextWindow = getOpenCodeGoContextWindow(this.runOptions);
     this.transport = new UnixSocketServer({
       socketPath: this.socketPath,
       onLine: (line, send) => this.handleLine(line, send),
@@ -102,12 +106,20 @@ export class AtlasRuntimeServer {
         typeof result.finalOutput === 'string'
           ? result.finalOutput
           : JSON.stringify(result.finalOutput);
-      publish(
-        runtimeEvent(request, 'turn.completed', {
-          ...(messageId === undefined ? {} : { message_id: messageId }),
-          content: content ?? '',
-        }),
-      );
+      const completedData: RuntimeTurnCompletedData = {
+        ...(messageId === undefined ? {} : { message_id: messageId }),
+        content: content ?? '',
+        // A UI recebe o uso agregado sem precisar conhecer o Agent SDK.
+        ...(this.contextWindow === undefined
+          ? {}
+          : {
+              context: {
+                used_tokens: result.runContext.usage.inputTokens,
+                context_window: this.contextWindow,
+              },
+            }),
+      };
+      publish(runtimeEvent(request, 'turn.completed', completedData));
     } catch (error) {
       publish(runtimeErrorEvent(error instanceof Error ? error.message : String(error), request));
     }

@@ -43,3 +43,18 @@ test('serializes the process execution lifecycle without provider tool names', (
   assert.deepEqual(JSON.parse(serializeRuntimeMessage(started)), started);
   assert.deepEqual(JSON.parse(serializeRuntimeMessage(completed)), completed);
 });
+
+test('carries Runtime-provided context usage on the completed turn', () => {
+  const completed = runtimeEvent(request, 'turn.completed', {
+    content: 'done',
+    context: {
+      used_tokens: 6600,
+      context_window: 256000,
+    },
+  });
+
+  assert.deepEqual(completed.data.context, {
+    used_tokens: 6600,
+    context_window: 256000,
+  });
+});

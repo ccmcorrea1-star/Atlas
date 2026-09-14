@@ -482,6 +482,10 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
     assert.equal(events[0]?.request_id, 'tui-integration-request');
     assert.equal(events.at(-1)?.conversation_id, 'runtime-integration-conversation');
     assert.equal((events.at(-1)?.data as WireMessage).content, 'v22.x.x');
+    assert.deepEqual((events.at(-1)?.data as WireMessage).context, {
+      used_tokens: 1,
+      context_window: 256000,
+    });
     assert.equal(model.requests.length, 1);
     assert.equal(model.requests[0]?.stream, true);
     assert.equal(model.requests[0]?.model, 'gpt-5.6-luna');

@@ -47,10 +47,18 @@ pub enum RuntimeEvent {
         status: String,
     },
     TurnStarted,
-    TurnCompleted,
+    TurnCompleted {
+        context: Option<ContextUsage>,
+    },
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub used_tokens: u64,
+    pub context_window: u64,
 }
 
 pub type RuntimeEventSender = UnboundedSender<RuntimeEvent>;
@@ -207,9 +215,9 @@ async fn send_turn(
         }
 
         match runtime_event(envelope)? {
-            Some(RuntimeEvent::TurnCompleted) => {
+            Some(RuntimeEvent::TurnCompleted { context }) => {
                 events
-                    .send(RuntimeEvent::TurnCompleted)
+                    .send(RuntimeEvent::TurnCompleted { context })
                     .map_err(|_| RuntimeError::EventChannelClosed)?;
                 return Ok(());
             }
@@ -347,7 +355,41 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
                 })?,
             status: string_field("status")?,
         })),
-        "turn.completed" => Ok(Some(RuntimeEvent::TurnCompleted)),
+        "turn.completed" => Ok(Some(RuntimeEvent::TurnCompleted {
+            context: data
+                .get("context")
+                .map(|value| -> Result<ContextUsage, RuntimeError> {
+                    let context = value.as_object().ok_or_else(|| {
+                        RuntimeError::Protocol(
+                            "Runtime event field context must be an object".to_owned(),
+                        )
+                    })?;
+                    let used_tokens = context
+                        .get("used_tokens")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            RuntimeError::Protocol(
+                                "Runtime context field used_tokens must be an unsigned integer"
+                                    .to_owned(),
+                            )
+                        })?;
+                    let context_window = context
+                        .get("context_window")
+                        .and_then(Value::as_u64)
+                        .filter(|value| *value > 0)
+                        .ok_or_else(|| {
+                            RuntimeError::Protocol(
+                                "Runtime context field context_window must be a positive unsigned integer"
+                                    .to_owned(),
+                            )
+                        })?;
+                    Ok(ContextUsage {
+                        used_tokens,
+                        context_window,
+                    })
+                })
+                .transpose()?,
+        })),
         "error" => Err(RuntimeError::Remote(string_field("message")?)),
         _ => Ok(None),
     }
@@ -436,7 +478,7 @@ mod tests {
                     })
                     .map_err(|_| super::RuntimeError::EventChannelClosed)?;
                 events
-                    .send(RuntimeEvent::TurnCompleted)
+                    .send(RuntimeEvent::TurnCompleted { context: None })
                     .map_err(|_| super::RuntimeError::EventChannelClosed)?;
                 Ok(())
             })
@@ -461,7 +503,7 @@ mod tests {
         ));
         assert!(matches!(
             events.recv().await,
-            Some(RuntimeEvent::TurnCompleted)
+            Some(RuntimeEvent::TurnCompleted { context: None })
         ));
     }
 
@@ -549,6 +591,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_context_usage_from_a_completed_turn() {
+        let envelope = RuntimeEnvelope {
+            protocol: "atlas-runtime".to_owned(),
+            version: 1,
+            message_type: "turn.completed".to_owned(),
+            request_id: None,
+            conversation_id: None,
+            data: serde_json::json!({
+                "content": "done",
+                "context": {"used_tokens": 6600, "context_window": 256000}
+            }),
+        };
+
+        assert_eq!(
+            runtime_event(envelope).unwrap(),
+            Some(RuntimeEvent::TurnCompleted {
+                context: Some(super::ContextUsage {
+                    used_tokens: 6600,
+                    context_window: 256000,
+                }),
+            })
+        );
+    }
+
     #[tokio::test]
     async fn sends_a_turn_over_the_public_unix_protocol() {
         let socket_path = std::env::temp_dir().join(format!(
@@ -627,7 +694,7 @@ mod tests {
         ));
         assert!(matches!(
             events.recv().await,
-            Some(RuntimeEvent::TurnCompleted)
+            Some(RuntimeEvent::TurnCompleted { context: None })
         ));
         server.await.unwrap();
         std::fs::remove_file(socket_path).unwrap();
