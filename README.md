@@ -4,58 +4,40 @@
 
 # Atlas
 
-Atlas é uma plataforma de inteligência pessoal residente e local-first, criada para compreender, operar e evoluir o ambiente digital do usuário.
+Atlas é uma inteligência pessoal residente e local-first para compreender e operar o ambiente digital do usuário.
 
-Não é apenas um chatbot ou copiloto. O objetivo é ser uma camada operacional persistente entre o usuário, seus computadores, aplicações, serviços, conhecimento e dispositivos.
+A visão do projeto está em [`docs/ATLAS_TECHNICAL_VISION.md`](docs/ATLAS_TECHNICAL_VISION.md).
 
-> **Atlas é uma inteligência residente para o ambiente digital do usuário.**
-
-A visão técnica completa está em [`docs/ATLAS_TECHNICAL_VISION.md`](docs/ATLAS_TECHNICAL_VISION.md).
-
-Os clientes oficiais ficam separados do Runtime em [`clients/`](clients/). O primeiro é o TUI em Rust; consulte
-[`clients/README.md`](clients/README.md) para executar e verificar o cliente.
+Documentação: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`CODE_STYLE.md`](CODE_STYLE.md) · [`docs/build.md`](docs/build.md) · [`docs/test.md`](docs/test.md) · [`clients/README.md`](clients/README.md)
 
 ## Estado atual
 
-A implementação atual usa TypeScript/ESM, OpenAI Agents SDK e OpenCode Go. O projeto evolui incrementalmente em direção à arquitetura descrita na visão técnica, incluindo discovery progressivo, tools, skills, memória, tasks/workers, runtime local-first e clientes desacoplados.
-
-## Requisitos
-
-- Node.js 22 ou superior
-- Rust e Cargo para o cliente TUI
-- Uma chave do OpenCode Go
+O Runtime usa TypeScript/ESM, OpenAI Agents SDK e OpenCode Go. Capabilities nativas usam C++ e o cliente TUI usa Rust.
 
 ## Instalação
 
+Requer Node.js 22+, npm, CMake com C++23 e Rust/Cargo para o TUI.
+
 ```bash
 npm ci
-```
-
-Configure a chave no ambiente:
-
-```bash
 export OPENCODE_GO_API_KEY="sua-chave"
 ```
 
-## Uso
-
-```ts
-import { runAtlas } from './dist/index.js';
-
-const result = await runAtlas('Explique este projeto.', {
-  conversationId: 'conversation-123',
-});
-
-console.log(result.finalOutput);
-```
-
-Use o mesmo `conversationId` para preservar o contexto entre turns. Um ID diferente cria uma conversa independente.
-
-## Comandos
+## Execução
 
 ```bash
-npm run dev
 npm run runtime
+cargo run --manifest-path clients/tui/Cargo.toml -- --conversation-id minha-conversa
+```
+
+O caminho do Unix Socket pode ser alterado com `ATLAS_RUNTIME_SOCKET`.
+
+## Verificação
+
+```bash
+npm run format:check
+npm run lint
+npm run typecheck
 npm run build
 npm test
 npm run smoke
@@ -63,14 +45,4 @@ npm run build:client
 npm run test:client
 ```
 
-Para executar todos os checks de qualidade:
-
-```bash
-npm run format:check
-npm run lint
-npm run typecheck
-npm test
-npm run smoke
-```
-
-Consulte [`docs/build.md`](docs/build.md) para o fluxo completo de build, validação e CI.
+Detalhes em [`docs/build.md`](docs/build.md) e [`docs/test.md`](docs/test.md).
