@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -24,13 +24,13 @@ impl StatusBar {
             return Line::from(vec![
                 Span::styled("! ", Style::default().fg(Color::Yellow).bold()),
                 Span::styled(
-                    "Work is still running. Quit? [y/N]",
+                    "Work is still running. Quit client? [y/N]",
                     Style::default().fg(Color::Yellow),
                 ),
             ]);
         }
 
-        let left = match app.status() {
+        let status = match app.status() {
             Status::Error(message) => Line::from(vec![
                 Span::styled("! ", Style::default().fg(Color::Red).bold()),
                 Span::styled(
@@ -46,14 +46,22 @@ impl StatusBar {
                 Span::styled(" shortcuts", Style::default().dim()),
             ]),
             Status::Sending | Status::Thinking => Line::from(vec![
-                Span::styled("• ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(
+                    spinner(app.animation_tick()),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::raw(" "),
                 Span::styled("Working", Style::default().bold()),
                 Span::raw("  "),
                 Span::styled("Ctrl+P", Style::default().fg(Color::Cyan).bold()),
                 Span::styled(" shortcuts", Style::default().dim()),
             ]),
             Status::Tool(tool) => Line::from(vec![
-                Span::styled("• ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(
+                    spinner(app.animation_tick()),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::raw(" "),
                 Span::styled("Working", Style::default().bold()),
                 Span::raw(" "),
                 Span::styled(
@@ -65,24 +73,64 @@ impl StatusBar {
                 Span::styled(" shortcuts", Style::default().dim()),
             ]),
         };
+        let mut left = Line::from(Span::styled("─ ", Style::default().fg(Color::DarkGray)));
+        left.spans.extend(status.spans);
         let Some(context) = app.context_usage() else {
-            return left;
+            return truncate_line(left, usize::from(width));
         };
 
         let right = format_context(context.used_tokens, context.context_window);
         let right_width = right.width();
-        let left_width = left.width();
-        let available_left = usize::from(width).saturating_sub(right_width + 2);
-        if left_width > available_left {
-            return Line::from(Span::styled(right, Style::default().dim()))
-                .alignment(Alignment::Right);
+        let total_width = usize::from(width);
+        if right_width >= total_width {
+            return truncate_line(
+                Line::from(Span::styled(right, Style::default().dim())),
+                total_width,
+            );
         }
 
-        let mut spans = left.spans;
-        spans.push(Span::raw(" ".repeat(available_left - left_width + 1)));
+        let available_left = total_width.saturating_sub(right_width + 1);
+        let mut spans = truncate_line(left, available_left).spans;
+        let rendered_left_width = spans.iter().map(|span| span.content.width()).sum::<usize>();
+        spans.push(Span::raw(
+            " ".repeat(total_width - right_width - rendered_left_width),
+        ));
         spans.push(Span::styled(right, Style::default().dim()));
         Line::from(spans)
     }
+}
+
+fn spinner(tick: u64) -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    FRAMES[(tick as usize) % FRAMES.len()]
+}
+
+fn truncate_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let mut end = span.content.len();
+        while end > 0 && UnicodeWidthStr::width(&span.content[..end]) > remaining {
+            end -= 1;
+            while end > 0 && !span.content.is_char_boundary(end) {
+                end -= 1;
+            }
+        }
+        if end == 0 {
+            continue;
+        }
+        let content = span.content[..end].to_owned();
+        remaining = remaining.saturating_sub(content.width());
+        spans.push(Span::styled(content, span.style));
+    }
+    Line::from(spans)
 }
 
 pub(crate) fn format_context(used_tokens: u64, context_window: u64) -> String {
@@ -175,6 +223,10 @@ impl ShortcutsOverlay {
                 Span::raw(" Scroll transcript"),
             ]),
             Line::from(vec![
+                Span::styled("Ctrl+Home/End", Style::default().fg(Color::Cyan).bold()),
+                Span::raw(" Jump transcript"),
+            ]),
+            Line::from(vec![
                 Span::styled("Ctrl+C", Style::default().fg(Color::Cyan).bold()),
                 Span::raw("    Quit"),
             ]),
@@ -189,5 +241,46 @@ impl ShortcutsOverlay {
             ),
             popup,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StatusBar;
+    use crate::app::App;
+    use crate::runtime::{ContextUsage, RuntimeEvent};
+
+    #[test]
+    fn truncates_long_errors_without_overflowing_the_footer() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::Error {
+            message: "x".repeat(200),
+        });
+
+        let line = StatusBar::line(&app, 24);
+
+        assert!(line.width() <= 24);
+    }
+
+    #[test]
+    fn keeps_context_visible_when_the_status_prefix_is_too_long() {
+        let mut app = App::new("conversation".to_owned());
+        app.set_context_usage(ContextUsage {
+            used_tokens: 6_600,
+            context_window: 256_000,
+        });
+        app.handle_runtime_event(RuntimeEvent::Error {
+            message: "connection failed with a long explanation".to_owned(),
+        });
+
+        let line = StatusBar::line(&app, 32);
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(line.width() <= 32);
+        assert!(text.contains("6.6K / 256K (2%)"));
     }
 }

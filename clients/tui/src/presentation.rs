@@ -296,6 +296,8 @@ struct MarkdownRenderer<'a> {
     in_code_block: bool,
     in_table: bool,
     table_cell_index: usize,
+    link_destinations: Vec<String>,
+    image_destinations: Vec<String>,
     needs_blank: bool,
 }
 
@@ -312,6 +314,8 @@ impl<'a> MarkdownRenderer<'a> {
             in_code_block: false,
             in_table: false,
             table_cell_index: 0,
+            link_destinations: Vec::new(),
+            image_destinations: Vec::new(),
             needs_blank: false,
         }
     }
@@ -422,11 +426,15 @@ impl<'a> MarkdownRenderer<'a> {
             Tag::Strikethrough => self
                 .styles
                 .push(Style::default().add_modifier(Modifier::CROSSED_OUT)),
-            Tag::Link { .. } => self.styles.push(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
+            Tag::Link { dest_url, .. } => {
+                self.link_destinations
+                    .push(sanitize_terminal_text(&dest_url));
+                self.styles.push(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::UNDERLINED),
+                );
+            }
             Tag::Table(_) => {
                 self.flush_line();
                 if !self.lines.is_empty() {
@@ -452,11 +460,15 @@ impl<'a> MarkdownRenderer<'a> {
             }
             Tag::HtmlBlock
             | Tag::FootnoteDefinition(_)
-            | Tag::Image { .. }
             | Tag::MetadataBlock(_)
             | Tag::DefinitionList
             | Tag::DefinitionListTitle
             | Tag::DefinitionListDefinition => {}
+            Tag::Image { dest_url, .. } => {
+                self.image_destinations
+                    .push(sanitize_terminal_text(&dest_url));
+                self.push_span("![".to_owned(), Style::default().fg(Color::DarkGray));
+            }
         }
     }
 
@@ -490,7 +502,18 @@ impl<'a> MarkdownRenderer<'a> {
                 self.needs_blank = true;
             }
             TagEnd::Item => self.flush_line(),
-            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                self.styles.pop();
+            }
+            TagEnd::Link => {
+                if let Some(destination) = self.link_destinations.pop()
+                    && !destination.is_empty()
+                {
+                    self.push_span(
+                        format!(" ({destination})"),
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
                 self.styles.pop();
             }
             TagEnd::Table => {
@@ -505,11 +528,17 @@ impl<'a> MarkdownRenderer<'a> {
             TagEnd::TableCell => {}
             TagEnd::HtmlBlock
             | TagEnd::FootnoteDefinition
-            | TagEnd::Image
             | TagEnd::MetadataBlock(_)
             | TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition => {}
+            TagEnd::Image => {
+                let destination = self.image_destinations.pop().unwrap_or_default();
+                self.push_span(
+                    format!("]({destination})"),
+                    Style::default().fg(Color::DarkGray),
+                );
+            }
         }
     }
 
@@ -656,6 +685,21 @@ mod tests {
         assert!(text.contains("done"));
         assert!(text.contains("- one"));
         assert!(text.contains("- two"));
+    }
+
+    #[test]
+    fn preserves_link_and_image_destinations_in_terminal_markdown() {
+        let lines = render_markdown(
+            "[docs](https://example.com/docs) ![logo](https://example.com/logo.png)",
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("docs (https://example.com/docs)"));
+        assert!(text.contains("![logo](https://example.com/logo.png)"));
     }
 
     #[test]

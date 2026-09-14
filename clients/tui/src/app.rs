@@ -141,6 +141,7 @@ pub struct App {
     context_usage: Option<ContextUsage>,
     shortcuts_open: bool,
     quit_confirmation: bool,
+    animation_tick: u64,
     transcript_revision: u64,
     transcript_cache: Option<TranscriptLayoutCache>,
 }
@@ -160,6 +161,7 @@ impl App {
             context_usage: None,
             shortcuts_open: false,
             quit_confirmation: false,
+            animation_tick: 0,
             transcript_revision: 0,
             transcript_cache: None,
         }
@@ -217,6 +219,14 @@ impl App {
 
     pub fn quit_confirmation(&self) -> bool {
         self.quit_confirmation
+    }
+
+    pub(crate) fn animation_tick(&self) -> u64 {
+        self.animation_tick
+    }
+
+    pub(crate) fn tick(&mut self) {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
     }
 
     pub fn open_quit_confirmation(&mut self) {
@@ -290,8 +300,8 @@ impl App {
     }
 
     pub fn move_cursor_right(&mut self) {
-        if let Some(character) = self.input[self.cursor..].chars().next() {
-            self.cursor += character.len_utf8();
+        if let Some(grapheme) = self.input[self.cursor..].graphemes(true).next() {
+            self.cursor += grapheme.len();
         }
     }
 
@@ -368,6 +378,16 @@ impl App {
         }
     }
 
+    pub fn scroll_to_bottom(&mut self) {
+        self.history_scroll = 0;
+        self.manual_scroll = false;
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.history_scroll = usize::MAX;
+        self.manual_scroll = true;
+    }
+
     pub fn submit_input(&mut self) -> Option<String> {
         if self.turn_active {
             return None;
@@ -423,8 +443,25 @@ impl App {
             }
             RuntimeEvent::ToolStarted { tool_id, tool_name } => {
                 self.status = Status::Tool(bounded_metadata(&tool_name));
-                self.messages
-                    .push(Message::tool_with_id(tool_id.clone(), tool_name));
+                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+                    message.role == MessageRole::Tool
+                        && message.tool.as_ref().is_some_and(|tool| tool.id == tool_id)
+                }) {
+                    if let Some(tool) = message.tool.as_mut() {
+                        tool.name = bounded_metadata(&tool_name);
+                        if tool.completed {
+                            tool.completed = false;
+                            tool.success = true;
+                            tool.started_at = Some(Instant::now());
+                            tool.duration = None;
+                            tool.exit_code = None;
+                            tool.execution_status = None;
+                        }
+                    }
+                } else {
+                    self.messages
+                        .push(Message::tool_with_id(tool_id.clone(), tool_name));
+                }
                 self.history_changed();
             }
             RuntimeEvent::ExecutionStarted {
@@ -981,6 +1018,42 @@ mod tests {
         assert_eq!(app.cursor_byte_position(), 0);
         app.delete_forward();
         assert!(app.input().is_empty());
+    }
+
+    #[test]
+    fn moves_right_over_a_combining_grapheme_as_one_character() {
+        let mut app = App::new("conversation".to_owned());
+        app.insert_character('e');
+        app.insert_character('\u{301}');
+        app.move_cursor_home();
+        app.move_cursor_right();
+
+        assert_eq!(app.cursor_byte_position(), "e\u{301}".len());
+    }
+
+    #[test]
+    fn deduplicates_repeated_generic_tool_start_events() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+        });
+
+        assert_eq!(app.messages().len(), 1);
+    }
+
+    #[test]
+    fn ctrl_home_and_end_control_transcript_scroll_without_moving_composer() {
+        let mut app = App::new("conversation".to_owned());
+        app.scroll_to_top();
+        assert!(app.manual_scroll);
+        app.scroll_to_bottom();
+        assert_eq!(app.history_scroll(), 0);
+        assert!(!app.manual_scroll);
     }
 
     #[test]

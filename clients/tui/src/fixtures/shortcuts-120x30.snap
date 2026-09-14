@@ -6,8 +6,8 @@
 │                              │Shift+Enter Insert newline                              ││
 │                              │Up/Down  Move cursor                                    ││
 │                              │PageUp/Down Scroll transcript                           ││
+│                              │Ctrl+Home/End Jump transcript                           ││
 │                              │Ctrl+C    Quit                                          ││
-│                              │                                                        ││
 │                              │                                                        ││
 │                              │                                                        ││
 │                              │                                                        ││
@@ -16,4 +16,4 @@
 ┌ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │› Ask Atlas to do anything│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-Ctrl+P shortcuts
+─ Ctrl+P shortcuts

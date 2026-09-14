@@ -83,6 +83,10 @@ async fn run(
                 true
             }
             Event::Resize => true,
+            Event::Tick => {
+                app.tick();
+                true
+            }
         };
 
         if should_redraw && !app.should_quit() {
@@ -105,6 +109,16 @@ fn handle_key(
 
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.quit();
+        return None;
+    }
+
+    if key.code == KeyCode::Home && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.scroll_to_top();
+        return None;
+    }
+
+    if key.code == KeyCode::End && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.scroll_to_bottom();
         return None;
     }
 
@@ -387,5 +401,26 @@ mod tests {
         );
 
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn ctrl_home_and_end_route_to_transcript_navigation() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+
+        let _ = handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+        );
+        assert!(app.history_scroll() > 0);
+
+        let _ = handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.history_scroll(), 0);
     }
 }
