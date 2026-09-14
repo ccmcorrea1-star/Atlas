@@ -1,14 +1,15 @@
 use std::fmt;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeEvent {
@@ -61,9 +62,12 @@ pub struct ContextUsage {
     pub context_window: u64,
 }
 
-pub type RuntimeEventSender = UnboundedSender<RuntimeEvent>;
-pub type RuntimeEventReceiver = UnboundedReceiver<RuntimeEvent>;
+pub type RuntimeEventSender = Sender<RuntimeEvent>;
+pub type RuntimeEventReceiver = Receiver<RuntimeEvent>;
 pub type RuntimeFuture = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send>>;
+
+const EVENT_CHANNEL_CAPACITY: usize = 256;
+const MAX_RUNTIME_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -97,6 +101,19 @@ pub trait RuntimeTransport: Send + Sync {
 
 pub const DEFAULT_RUNTIME_SOCKET_PATH: &str = "/tmp/atlas-runtime.sock";
 
+fn default_runtime_socket_path() -> String {
+    std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| {
+            Path::new(&path)
+                .join("atlas-runtime.sock")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_else(|| DEFAULT_RUNTIME_SOCKET_PATH.to_owned())
+}
+
 #[derive(Debug, Clone)]
 pub struct UnixTransport {
     socket_path: Arc<str>,
@@ -117,8 +134,7 @@ impl UnixTransport {
 impl Default for UnixTransport {
     fn default() -> Self {
         Self::new(
-            std::env::var("ATLAS_RUNTIME_SOCKET")
-                .unwrap_or_else(|_| DEFAULT_RUNTIME_SOCKET_PATH.to_owned()),
+            std::env::var("ATLAS_RUNTIME_SOCKET").unwrap_or_else(|_| default_runtime_socket_path()),
         )
     }
 }
@@ -188,19 +204,8 @@ async fn send_turn(
         .map_err(|error| RuntimeError::Transport(error.to_string()))?;
 
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
     loop {
-        line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|error| RuntimeError::Transport(error.to_string()))?;
-        if bytes == 0 {
-            return Err(RuntimeError::Transport(
-                "Runtime closed the connection before completing the turn".to_owned(),
-            ));
-        }
-
+        let line = read_runtime_frame(&mut reader).await?;
         let envelope: RuntimeEnvelope = serde_json::from_str(line.trim_end())
             .map_err(|error| RuntimeError::Protocol(error.to_string()))?;
         if envelope.protocol != "atlas-runtime" || envelope.version != 1 {
@@ -208,23 +213,64 @@ async fn send_turn(
                 "unsupported Atlas Runtime protocol version".to_owned(),
             ));
         }
-        if envelope.request_id.is_some()
-            && envelope.request_id.as_deref() != Some(request_id.as_str())
-        {
-            continue;
+        if envelope.request_id.as_deref() != Some(request_id.as_str()) {
+            return Err(RuntimeError::Protocol(
+                "Runtime event request_id does not match the active turn".to_owned(),
+            ));
+        }
+        if envelope.conversation_id.as_deref() != Some(conversation_id) {
+            return Err(RuntimeError::Protocol(
+                "Runtime event conversation_id does not match the active conversation".to_owned(),
+            ));
         }
 
         match runtime_event(envelope)? {
             Some(RuntimeEvent::TurnCompleted { context }) => {
                 events
                     .send(RuntimeEvent::TurnCompleted { context })
+                    .await
                     .map_err(|_| RuntimeError::EventChannelClosed)?;
                 return Ok(());
             }
             Some(event) => events
                 .send(event)
+                .await
                 .map_err(|_| RuntimeError::EventChannelClosed)?,
             None => {}
+        }
+    }
+}
+
+async fn read_runtime_frame<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<String, RuntimeError> {
+    let mut bytes = Vec::new();
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .await
+            .map_err(|error| RuntimeError::Transport(error.to_string()))?;
+        if buffer.is_empty() {
+            return Err(RuntimeError::Transport(
+                "Runtime closed the connection before completing the turn".to_owned(),
+            ));
+        }
+
+        let length = buffer
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(buffer.len(), |index| index + 1);
+        let has_newline = buffer[..length].last() == Some(&b'\n');
+        if bytes.len().saturating_add(length) > MAX_RUNTIME_FRAME_BYTES {
+            return Err(RuntimeError::Protocol(
+                "Runtime event exceeds the maximum frame size".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..length]);
+        reader.consume(length);
+        if has_newline {
+            return String::from_utf8(bytes)
+                .map_err(|error| RuntimeError::Protocol(error.to_string()));
         }
     }
 }
@@ -258,6 +304,14 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
                 RuntimeError::Protocol(format!("Runtime event field {field} is missing"))
             })
     };
+    let text_field = |field: &str| {
+        data.get(field)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                RuntimeError::Protocol(format!("Runtime event field {field} is missing"))
+            })
+    };
     let process_capability = || {
         let capability = string_field("capability")?;
         if capability != "process.exec" {
@@ -272,11 +326,11 @@ fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, Runt
         "turn.started" => Ok(Some(RuntimeEvent::TurnStarted)),
         "message.delta" => Ok(Some(RuntimeEvent::MessageDelta {
             message_id: string_field("message_id")?,
-            delta: string_field("delta")?,
+            delta: text_field("delta")?,
         })),
         "message.completed" => Ok(Some(RuntimeEvent::MessageCompleted {
             message_id: string_field("message_id")?,
-            content: string_field("content")?,
+            content: text_field("content")?,
         })),
         "tool.started" => Ok(Some(RuntimeEvent::ToolStarted {
             tool_id: string_field("tool_id")?,
@@ -411,7 +465,7 @@ impl RuntimeClient {
     where
         T: RuntimeTransport + 'static,
     {
-        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let (event_sender, event_receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         (
             Self {
                 conversation_id: Arc::from(conversation_id),
@@ -441,6 +495,7 @@ impl RuntimeClient {
                 .send(RuntimeEvent::Error {
                     message: error.to_string(),
                 })
+                .await
                 .map_err(|_| RuntimeError::EventChannelClosed)?;
         }
 
@@ -470,15 +525,18 @@ mod tests {
             Box::pin(async move {
                 events
                     .send(RuntimeEvent::TurnStarted)
+                    .await
                     .map_err(|_| super::RuntimeError::EventChannelClosed)?;
                 events
                     .send(RuntimeEvent::MessageDelta {
                         message_id: "message-1".to_owned(),
                         delta: "response".to_owned(),
                     })
+                    .await
                     .map_err(|_| super::RuntimeError::EventChannelClosed)?;
                 events
                     .send(RuntimeEvent::TurnCompleted { context: None })
+                    .await
                     .map_err(|_| super::RuntimeError::EventChannelClosed)?;
                 Ok(())
             })
@@ -528,6 +586,26 @@ mod tests {
                 tool_id: "tool-1".to_owned(),
                 tool_name: "process.exec".to_owned(),
                 output: Some(r#"{"exit_code":0,"stdout":"ready"}"#.to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_empty_message_content_from_the_runtime() {
+        let envelope = RuntimeEnvelope {
+            protocol: "atlas-runtime".to_owned(),
+            version: 1,
+            message_type: "message.completed".to_owned(),
+            request_id: Some("request-1".to_owned()),
+            conversation_id: Some("conversation-1".to_owned()),
+            data: serde_json::json!({"message_id": "message-1", "content": ""}),
+        };
+
+        assert_eq!(
+            runtime_event(envelope).unwrap(),
+            Some(RuntimeEvent::MessageCompleted {
+                message_id: "message-1".to_owned(),
+                content: String::new(),
             })
         );
     }
@@ -695,6 +773,45 @@ mod tests {
         assert!(matches!(
             events.recv().await,
             Some(RuntimeEvent::TurnCompleted { context: None })
+        ));
+        server.await.unwrap();
+        std::fs::remove_file(socket_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_events_without_the_active_request_id() {
+        let socket_path = std::env::temp_dir().join(format!(
+            "atlas-tui-runtime-invalid-event-{}-{}.sock",
+            std::process::id(),
+            super::NEXT_REQUEST_ID.fetch_add(1, super::Ordering::Relaxed)
+        ));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).await.unwrap();
+            let event = serde_json::json!({
+                "protocol": "atlas-runtime",
+                "version": 1,
+                "type": "turn.started",
+                "conversation_id": "conversation-1",
+                "data": {}
+            });
+            let mut line = serde_json::to_vec(&event).unwrap();
+            line.push(b'\n');
+            reader.into_inner().write_all(&line).await.unwrap();
+        });
+
+        let (client, mut events) = RuntimeClient::with_transport(
+            "conversation-1".to_owned(),
+            super::UnixTransport::new(socket_path.to_string_lossy().to_string()),
+        );
+        let error = client.send_message("hello".to_owned()).await.unwrap_err();
+        assert!(matches!(error, super::RuntimeError::Protocol(_)));
+        assert!(matches!(
+            events.recv().await,
+            Some(RuntimeEvent::Error { .. })
         ));
         server.await.unwrap();
         std::fs::remove_file(socket_path).unwrap();
