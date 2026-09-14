@@ -16,6 +16,13 @@ import { UnixSocketServer } from './transport/unix/server.js';
 
 export const DEFAULT_RUNTIME_SOCKET_PATH = '/tmp/atlas-runtime.sock';
 
+function defaultRuntimeSocketPath(): string {
+  const runtimeDirectory = process.env.XDG_RUNTIME_DIR?.trim();
+  return runtimeDirectory === undefined || runtimeDirectory.length === 0
+    ? DEFAULT_RUNTIME_SOCKET_PATH
+    : resolve(runtimeDirectory, 'atlas-runtime.sock');
+}
+
 export type RuntimeServerOptions = {
   socketPath?: string;
   runOptions?: Omit<AtlasRunOptions, 'conversationId' | 'onEvent'>;
@@ -31,7 +38,7 @@ export class AtlasRuntimeServer {
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath =
-      options.socketPath ?? process.env.ATLAS_RUNTIME_SOCKET ?? DEFAULT_RUNTIME_SOCKET_PATH;
+      options.socketPath ?? process.env.ATLAS_RUNTIME_SOCKET ?? defaultRuntimeSocketPath();
     this.runOptions = options.runOptions ?? {};
     this.contextWindow = getOpenCodeGoContextWindow(this.runOptions);
     this.transport = new UnixSocketServer({
