@@ -358,17 +358,20 @@ impl<'a> MarkdownRenderer<'a> {
                     self.lines.push(Line::default());
                 }
                 self.in_code_block = true;
-                if let CodeBlockKind::Fenced(language) = kind
-                    && !language.is_empty()
-                {
-                    self.current.push(Span::styled(
-                        format!("  · {}", sanitize_terminal_text(&language)),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    self.flush_line();
-                }
+                let label = match kind {
+                    CodeBlockKind::Fenced(language) if !language.is_empty() => {
+                        sanitize_terminal_text(&language)
+                    }
+                    _ => "code".to_owned(),
+                };
+                self.ensure_prefix();
+                self.current.push(Span::styled(
+                    format!("┌─ {label}"),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                self.flush_line();
             }
             Tag::List(start) => self.list_stack.push(start),
             Tag::Item => {
@@ -451,6 +454,8 @@ impl<'a> MarkdownRenderer<'a> {
             TagEnd::CodeBlock => {
                 self.flush_line();
                 self.in_code_block = false;
+                self.lines
+                    .push(Line::from(Span::styled("│ └─", Style::default().dim())));
                 self.needs_blank = true;
             }
             TagEnd::List(_) => {
@@ -511,7 +516,7 @@ impl<'a> MarkdownRenderer<'a> {
         }
         if self.in_code_block {
             self.current
-                .push(Span::styled("  │ ", Style::default().dim()));
+                .push(Span::styled("│ ", Style::default().dim()));
         } else if !self.in_table
             && let Some(prefix) = self.item_prefix.as_deref()
         {

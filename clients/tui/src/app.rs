@@ -1,5 +1,6 @@
 use crate::presentation::parse_tool_output;
-use crate::runtime::RuntimeEvent;
+use crate::runtime::{ContextUsage, RuntimeEvent};
+use crate::transcript::TranscriptLayoutCache;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
@@ -113,6 +114,10 @@ pub struct App {
     should_quit: bool,
     history_scroll: usize,
     manual_scroll: bool,
+    context_usage: Option<ContextUsage>,
+    shortcuts_open: bool,
+    transcript_revision: u64,
+    transcript_cache: Option<TranscriptLayoutCache>,
 }
 
 impl App {
@@ -127,6 +132,10 @@ impl App {
             should_quit: false,
             history_scroll: 0,
             manual_scroll: false,
+            context_usage: None,
+            shortcuts_open: false,
+            transcript_revision: 0,
+            transcript_cache: None,
         }
     }
 
@@ -159,8 +168,43 @@ impl App {
         self.turn_active
     }
 
+    pub fn context_usage(&self) -> Option<ContextUsage> {
+        self.context_usage
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_context_usage(&mut self, context: ContextUsage) {
+        self.context_usage = Some(context);
+    }
+
+    pub fn shortcuts_open(&self) -> bool {
+        self.shortcuts_open
+    }
+
+    pub fn open_shortcuts(&mut self) {
+        self.shortcuts_open = true;
+    }
+
+    pub fn close_shortcuts(&mut self) {
+        self.shortcuts_open = false;
+    }
+
     pub fn history_scroll(&self) -> usize {
         self.history_scroll
+    }
+
+    pub(crate) fn transcript_revision(&self) -> u64 {
+        self.transcript_revision
+    }
+
+    pub(crate) fn transcript_cache(&self, width: u16) -> Option<&TranscriptLayoutCache> {
+        self.transcript_cache
+            .as_ref()
+            .filter(|cache| cache.revision == self.transcript_revision && cache.width == width)
+    }
+
+    pub(crate) fn set_transcript_cache(&mut self, cache: TranscriptLayoutCache) {
+        self.transcript_cache = Some(cache);
     }
 
     pub fn quit(&mut self) {
@@ -335,14 +379,32 @@ impl App {
                 target,
             } => {
                 self.status = Status::Tool(capability.to_owned());
-                self.messages.push(Message::execution_with_id(
-                    execution_id,
-                    capability,
-                    program,
-                    args,
-                    cwd,
-                    target,
-                ));
+                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+                    message.role == MessageRole::Tool
+                        && message
+                            .tool
+                            .as_ref()
+                            .is_some_and(|tool| tool.id == execution_id)
+                }) {
+                    if let Some(tool) = message.tool.as_mut() {
+                        tool.name = capability;
+                        tool.program = Some(program);
+                        tool.args = args;
+                        tool.cwd = cwd;
+                        tool.target = target;
+                        tool.started_at = Some(Instant::now());
+                        tool.completed = false;
+                    }
+                } else {
+                    self.messages.push(Message::execution_with_id(
+                        execution_id,
+                        capability,
+                        program,
+                        args,
+                        cwd,
+                        target,
+                    ));
+                }
                 self.history_changed();
             }
             RuntimeEvent::ToolCompleted {
@@ -359,10 +421,7 @@ impl App {
                 let mut completed = false;
                 if let Some(message) = self.messages.iter_mut().rev().find(|message| {
                     message.role == MessageRole::Tool
-                        && message
-                            .tool
-                            .as_ref()
-                            .is_some_and(|tool| tool.id == tool_id && !tool.completed)
+                        && message.tool.as_ref().is_some_and(|tool| tool.id == tool_id)
                 }) {
                     if let Some(tool) = message.tool.as_mut() {
                         tool.output = parsed_output
@@ -436,7 +495,10 @@ impl App {
                 self.status = Status::Thinking;
                 self.turn_active = true;
             }
-            RuntimeEvent::TurnCompleted => {
+            RuntimeEvent::TurnCompleted { context } => {
+                if let Some(context) = context {
+                    self.context_usage = Some(context);
+                }
                 self.status = Status::Ready;
                 self.turn_active = false;
             }
@@ -454,6 +516,9 @@ impl App {
     }
 
     fn history_changed(&mut self) {
+        // Message mutations invalidate wrapping, height, and scroll calculations.
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.transcript_cache = None;
         if !self.manual_scroll {
             self.history_scroll = 0;
         }
@@ -470,13 +535,15 @@ impl App {
         status: String,
     ) {
         self.status = Status::Thinking;
+        let stdout = crate::presentation::sanitize_terminal_text(&stdout);
+        let stderr = crate::presentation::sanitize_terminal_text(&stderr);
         let mut completed = false;
         if let Some(message) = self.messages.iter_mut().rev().find(|message| {
             message.role == MessageRole::Tool
                 && message
                     .tool
                     .as_ref()
-                    .is_some_and(|tool| tool.id == execution_id && !tool.completed)
+                    .is_some_and(|tool| tool.id == execution_id)
         }) {
             if let Some(tool) = message.tool.as_mut() {
                 tool.output = (!stdout.is_empty()).then_some(stdout.clone());
@@ -601,7 +668,7 @@ mod tests {
         assert_eq!(app.input(), "second");
         assert_eq!(app.messages().len(), 1);
 
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
         assert_eq!(app.submit_input().as_deref(), Some("second"));
         assert_eq!(app.messages().len(), 2);
     }
@@ -659,6 +726,33 @@ mod tests {
         assert_eq!(tool.execution_status.as_deref(), Some("success"));
         assert!(tool.completed);
         assert!(tool.success);
+    }
+
+    #[test]
+    fn does_not_duplicate_an_execution_when_completion_is_repeated() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            program: "node".to_owned(),
+            args: vec!["--version".to_owned()],
+            cwd: None,
+            target: Some("local".to_owned()),
+        });
+        for output in ["first", "second"] {
+            app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
+                execution_id: "execution-1".to_owned(),
+                capability: "process.exec".to_owned(),
+                stdout: output.to_owned(),
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: 8,
+                status: "success".to_owned(),
+            });
+        }
+
+        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages()[0].content, "second");
     }
 
     #[test]

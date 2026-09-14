@@ -1,503 +1,26 @@
-//! Transcript and composer rendering adapted from the Codex TUI cell layout.
-//!
-//! See `clients/tui/NOTICE` and `clients/tui/LICENSE-APACHE` for attribution.
-
-use std::time::Duration;
-
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
+use ratatui::layout::{Constraint, Layout};
 
-use crate::app::{App, Message, MessageRole, Status, ToolCall};
-use crate::presentation::{format_process_command, render_markdown, sanitize_terminal_text};
-use crate::wrapping::{
-    cursor_position, display_width, wrap_command_with_widths, wrap_lines,
-    wrap_plain_no_hyphenation, wrap_text,
-};
+use crate::app::App;
+use crate::composer::ComposerPanel;
+use crate::status::{ShortcutsOverlay, StatusBar};
+use crate::transcript::ChatPanel;
 
-const TOOL_OUTPUT_MAX_ROWS: usize = 5;
-const TRANSCRIPT_HINT: &str = "ctrl + t to view transcript";
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    let composer_height = ComposerPanel::height(app, frame.area().width);
+    let [transcript_area, composer_area, status_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(composer_height),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
-    let width = frame.area().width;
-    let composer_height = composer_height(app, width);
-    let status_height = u16::from(status_is_visible(app)) * 2;
-    let bottom_height = composer_height.saturating_add(status_height);
-    let [history_area, bottom_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(bottom_height)])
-            .areas(frame.area());
-
-    draw_history(frame, app, history_area);
-    draw_bottom_pane(frame, app, bottom_area, composer_height);
-}
-
-fn draw_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if area.is_empty() {
-        return;
+    ChatPanel::draw(frame, app, transcript_area);
+    ComposerPanel::draw(frame, app, composer_area);
+    StatusBar::draw(frame, app, status_area);
+    if app.shortcuts_open() {
+        ShortcutsOverlay::draw(frame, frame.area());
     }
-
-    let lines = history_lines(app, area.width);
-    if lines.is_empty() {
-        return;
-    }
-    let total_rows = wrapped_line_count(&lines, area.width);
-    let visible_rows = usize::from(area.height);
-    let max_scroll = total_rows.saturating_sub(visible_rows);
-    let scroll = max_scroll
-        .saturating_sub(app.history_scroll())
-        .min(u16::MAX as usize) as u16;
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
-        area,
-    );
-}
-
-fn history_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let mut previous_role = None;
-    for message in app.messages() {
-        if needs_cell_separator(previous_role, message.role) {
-            lines.push(Line::default());
-        }
-        if let Some(tool) = message.tool.as_ref() {
-            lines.extend(tool_lines(tool, width));
-        } else {
-            lines.extend(message_lines(message, width));
-        }
-        previous_role = Some(message.role);
-    }
-    lines
-}
-
-fn needs_cell_separator(previous: Option<MessageRole>, current: MessageRole) -> bool {
-    match (previous, current) {
-        (Some(MessageRole::Atlas | MessageRole::System), MessageRole::Tool)
-        | (Some(MessageRole::Tool), MessageRole::Atlas | MessageRole::System) => true,
-        _ => false,
-    }
-}
-
-fn message_lines(message: &Message, width: u16) -> Vec<Line<'static>> {
-    match message.role {
-        MessageRole::User => user_message_lines(&message.content, width),
-        MessageRole::Atlas => agent_message_lines(&message.content, width),
-        MessageRole::System => prefixed_message_lines(
-            &message.content,
-            width,
-            "! ",
-            Style::default().fg(Color::Red).dim(),
-        ),
-        MessageRole::Tool => Vec::new(),
-    }
-}
-
-fn user_message_lines(content: &str, width: u16) -> Vec<Line<'static>> {
-    let content = sanitize_terminal_text(content);
-    let content = content.trim_end_matches(['\r', '\n']);
-    if content.is_empty() {
-        return Vec::new();
-    }
-
-    let wrap_width = usize::from(width).saturating_sub(3).max(1);
-    let mut lines = vec![Line::default()];
-    let mut first = true;
-    for source_line in content.split('\n') {
-        for line in wrap_text(source_line, wrap_width) {
-            let prefix = if first { "› " } else { "  " };
-            lines.push(prefixed_line(
-                Line::from(line),
-                prefix,
-                Style::default().bold().dim(),
-            ));
-            first = false;
-        }
-    }
-    lines.push(Line::default());
-    lines
-}
-
-fn agent_message_lines(content: &str, width: u16) -> Vec<Line<'static>> {
-    let body = render_markdown(content);
-    let wrap_width = usize::from(width).saturating_sub(2).max(1);
-    let mut lines = Vec::new();
-    let mut first = true;
-    for line in wrap_lines(body, wrap_width) {
-        let prefix = if first { "• " } else { "  " };
-        lines.push(prefixed_line(line, prefix, Style::default().dim()));
-        first = false;
-    }
-    if lines.is_empty() {
-        lines.push(prefixed_line(Line::default(), "• ", Style::default().dim()));
-    }
-    lines
-}
-
-fn prefixed_message_lines(
-    content: &str,
-    width: u16,
-    prefix: &str,
-    prefix_style: Style,
-) -> Vec<Line<'static>> {
-    let wrap_width = usize::from(width)
-        .saturating_sub(display_width(prefix))
-        .max(1);
-    let mut lines = Vec::new();
-    let mut first = true;
-    for source_line in sanitize_terminal_text(content).split('\n') {
-        for line in wrap_text(source_line, wrap_width) {
-            lines.push(prefixed_line(
-                Line::from(line),
-                if first { prefix } else { "  " },
-                prefix_style,
-            ));
-            first = false;
-        }
-    }
-    lines
-}
-
-fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    if tool.name == "process.exec" {
-        return exec_lines(tool, width);
-    }
-
-    let title = if tool.completed { "Ran" } else { "Running" };
-    let mut line = Line::from(vec![
-        execution_marker(tool),
-        Span::raw(" "),
-        Span::styled(title, Style::default().bold()),
-    ]);
-    line.push_span(format!(" {}", tool.name).cyan());
-    vec![line]
-}
-
-fn exec_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    let command = tool
-        .program
-        .as_deref()
-        .map(|program| format_process_command(program, &tool.args))
-        .unwrap_or_default();
-    let title = if tool.completed { "Ran" } else { "Running" };
-    let bullet = execution_marker(tool);
-    let mut header = Line::from(vec![
-        bullet,
-        Span::raw(" "),
-        Span::styled(title, Style::default().bold()),
-    ]);
-    let header_width = header.width();
-    let mut lines = Vec::new();
-
-    if !command.is_empty() {
-        let command_lines = wrap_command_with_widths(
-            &command,
-            usize::from(width).saturating_sub(header_width).max(1),
-            usize::from(width).saturating_sub(4).max(1),
-        );
-        if let Some(first) = command_lines.first() {
-            header.push_span(" ");
-            header.push_span(Span::styled(first.clone(), command_style()));
-        }
-        lines.push(header);
-        let continuation_count = command_lines.len().saturating_sub(1);
-        for continuation in command_lines.iter().skip(1).take(2) {
-            lines.push(prefixed_line(
-                Line::from(Span::styled(continuation.clone(), command_style())),
-                "  │ ",
-                Style::default().dim(),
-            ));
-        }
-        if continuation_count > 2 {
-            lines.push(prefixed_line(
-                Line::from(format!("… +{} lines", continuation_count - 2)),
-                "  │ ",
-                Style::default().dim(),
-            ));
-        }
-    } else {
-        lines.push(header);
-    }
-
-    if tool.completed {
-        append_exec_output(&mut lines, tool, width);
-        if let Some(duration) = tool.duration {
-            if tool.success {
-                lines[0].push_span(format!(" · {}", format_duration(duration)).dim());
-            } else {
-                let exit_code = tool
-                    .exit_code
-                    .map_or_else(|| "?".to_owned(), |code| code.to_string());
-                lines.push(prefixed_line(
-                    Line::from(format!(
-                        "✗ exit {exit_code} · {}",
-                        format_duration(duration)
-                    )),
-                    "  ",
-                    Style::default().fg(Color::Red).dim(),
-                ));
-            }
-        }
-    }
-    lines
-}
-
-fn execution_marker(tool: &ToolCall) -> Span<'static> {
-    if !tool.completed {
-        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let elapsed = tool
-            .started_at
-            .map(|started| started.elapsed().as_millis() / 120)
-            .unwrap_or_default();
-        return Span::styled(
-            frames[(elapsed as usize) % frames.len()],
-            Style::default().dim(),
-        );
-    }
-    Span::styled(
-        "•",
-        if tool.success {
-            Style::default().fg(Color::Green).bold()
-        } else {
-            Style::default().fg(Color::Red).bold()
-        },
-    )
-}
-
-fn command_style() -> Style {
-    Style::default().fg(Color::Cyan)
-}
-
-fn append_exec_output(lines: &mut Vec<Line<'static>>, tool: &ToolCall, width: u16) {
-    let output = [
-        tool.output.as_deref().unwrap_or_default(),
-        tool.stderr.as_deref().unwrap_or_default(),
-    ]
-    .into_iter()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join("\n");
-
-    if output.is_empty() {
-        lines.push(prefixed_line(
-            Line::from("(no output)"),
-            "  └ ",
-            Style::default().dim(),
-        ));
-        return;
-    }
-
-    let output_width = usize::from(width).saturating_sub(4).max(1);
-    let mut rendered = Vec::new();
-    for (index, output_line) in output.lines().enumerate() {
-        let prefix = if index == 0 { "  └ " } else { "    " };
-        for wrapped in wrap_plain_no_hyphenation(output_line, output_width) {
-            rendered.push(prefixed_line(
-                Line::from(wrapped),
-                prefix,
-                Style::default().dim(),
-            ));
-        }
-    }
-
-    if rendered.len() > TOOL_OUTPUT_MAX_ROWS {
-        let keep = TOOL_OUTPUT_MAX_ROWS.saturating_sub(1);
-        let head = keep / 2;
-        let tail = keep - head;
-        let hidden = rendered.len() - keep;
-        let mut limited = rendered[..head].to_vec();
-        limited.push(prefixed_line(
-            Line::from(format!("… +{hidden} lines ({TRANSCRIPT_HINT})")),
-            "    ",
-            Style::default().dim(),
-        ));
-        limited.extend(rendered[rendered.len() - tail..].iter().cloned());
-        lines.extend(limited);
-    } else {
-        lines.extend(rendered);
-    }
-}
-
-fn draw_bottom_pane(frame: &mut Frame<'_>, app: &App, area: Rect, composer_height: u16) {
-    if area.is_empty() {
-        return;
-    }
-    let composer_area = if status_is_visible(app) {
-        let status_area = Rect { height: 1, ..area };
-        frame.render_widget(Paragraph::new(status_line(app)), status_area);
-        Rect {
-            y: area.y + 2,
-            height: composer_height,
-            ..area
-        }
-    } else {
-        area
-    };
-    draw_composer(frame, app, composer_area);
-}
-
-fn draw_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if area.is_empty() {
-        return;
-    }
-    Block::default().render(area, frame.buffer_mut());
-    let input_rows = area.height.saturating_sub(3);
-    if input_rows == 0 {
-        return;
-    }
-
-    let content_width = usize::from(area.width).saturating_sub(3).max(1);
-    let rows = wrap_text(app.input(), content_width);
-    let first_visible = rows.len().saturating_sub(usize::from(input_rows));
-    let visible = rows.iter().skip(first_visible).enumerate();
-    for (index, text) in visible {
-        let row = first_visible + index;
-        let prompt = if row == 0 { "› " } else { "  " };
-        let prompt_style = if row == 0 {
-            Style::default().bold()
-        } else {
-            Style::default()
-        };
-        let line = Line::from(vec![
-            Span::styled(prompt, prompt_style),
-            Span::raw(text.clone()),
-        ]);
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect {
-                x: area.x,
-                y: area.y + 1 + index as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
-    }
-    if app.input().is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "Ask Atlas to do anything",
-                Style::default().dim(),
-            )),
-            Rect {
-                x: area.x + 2,
-                y: area.y + 1,
-                width: area.width.saturating_sub(2),
-                height: 1,
-            },
-        );
-    }
-
-    let (cursor_row, cursor_column) =
-        cursor_position(app.input(), app.cursor_byte_position(), content_width);
-    if cursor_row >= first_visible && cursor_row - first_visible < usize::from(input_rows) {
-        let cursor_x = area
-            .x
-            .saturating_add(2)
-            .saturating_add(cursor_column as u16)
-            .min(area.x.saturating_add(area.width.saturating_sub(1)));
-        frame.set_cursor_position(Position::new(
-            cursor_x,
-            area.y + 1 + (cursor_row - first_visible) as u16,
-        ));
-    }
-
-    let footer_area = Rect {
-        y: area.y + area.height - 1,
-        height: 1,
-        ..area
-    };
-    frame.render_widget(
-        Paragraph::new(footer_line(app, footer_area.width)),
-        footer_area,
-    );
-}
-
-fn footer_line(app: &App, width: u16) -> Line<'static> {
-    let left = if app.input().is_empty() && !status_is_visible(app) {
-        Some(Line::from(vec![
-            Span::raw("?"),
-            Span::styled(" for shortcuts", Style::default().dim()),
-        ]))
-    } else if !app.input().is_empty() && status_is_visible(app) {
-        Some(Line::from(vec![
-            Span::raw("tab"),
-            Span::styled(" to queue message", Style::default().dim()),
-        ]))
-    } else {
-        None
-    };
-    let right = Line::from(Span::styled("100% context left", Style::default().dim()));
-    let left_width = left.as_ref().map_or(0, Line::width);
-    let right_width = right.width();
-    let available_left = usize::from(width)
-        .saturating_sub(right_width)
-        .saturating_sub(1);
-    let mut spans = Vec::new();
-    if let Some(mut left) = left {
-        if left_width <= available_left {
-            spans.append(&mut left.spans);
-            spans.push(Span::raw(" ".repeat(available_left - left_width)));
-        }
-    } else {
-        spans.push(Span::raw(" ".repeat(available_left)));
-    }
-    spans.extend(right.spans);
-    Line::from(spans)
-}
-
-fn status_line(app: &App) -> Line<'static> {
-    match app.status() {
-        Status::Error(message) => Line::from(vec![
-            Span::styled("!", Style::default().fg(Color::Red).bold()),
-            Span::raw(" "),
-            Span::styled(message.clone(), Style::default().fg(Color::Red)),
-        ]),
-        Status::Ready => Line::default(),
-        Status::Sending | Status::Thinking | Status::Tool(_) => Line::from(vec![
-            Span::styled("•", Style::default().dim()),
-            Span::raw(" "),
-            Span::styled("Working", Style::default().bold()),
-        ]),
-    }
-}
-
-fn status_is_visible(app: &App) -> bool {
-    !matches!(app.status(), Status::Ready)
-}
-
-fn composer_height(app: &App, width: u16) -> u16 {
-    let content_width = usize::from(width).saturating_sub(3).max(1);
-    wrap_text(app.input(), content_width).len() as u16 + 3
-}
-
-fn prefixed_line(mut line: Line<'static>, prefix: &str, style: Style) -> Line<'static> {
-    let mut spans = vec![Span::styled(prefix.to_owned(), style)];
-    spans.append(&mut line.spans);
-    Line::from(spans).style(line.style)
-}
-
-fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(width))
-        .sum()
-}
-
-fn format_duration(duration: Duration) -> String {
-    if duration.as_millis() < 1_000 {
-        return format!("{}ms", duration.as_millis());
-    }
-    if duration.as_secs() < 60 {
-        return format!("{:.1}s", duration.as_secs_f64());
-    }
-    format!(
-        "{}m {:02}s",
-        duration.as_secs() / 60,
-        duration.as_secs() % 60
-    )
 }
 
 #[cfg(test)]
@@ -507,7 +30,7 @@ mod tests {
 
     use super::draw;
     use crate::app::App;
-    use crate::runtime::RuntimeEvent;
+    use crate::runtime::{ContextUsage, RuntimeEvent};
 
     fn terminal_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
@@ -522,10 +45,17 @@ mod tests {
             .collect()
     }
 
-    fn render_fixture(app: App, width: u16, height: u16) -> Vec<String> {
+    fn render_fixture(mut app: App, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         terminal_rows(&terminal)
+    }
+
+    fn with_context(app: &mut App) {
+        app.set_context_usage(ContextUsage {
+            used_tokens: 6_600,
+            context_window: 256_000,
+        });
     }
 
     #[test]
@@ -538,16 +68,30 @@ mod tests {
             message_id: "message-1".to_owned(),
             content: "Resposta **normal** com `markdown`.".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
         let rows = render_fixture(app, 80, 10);
 
-        assert!(rows.iter().any(|row| row == "› hi"));
+        assert!(rows.iter().any(|row| row.contains("› hi")));
         assert!(
             rows.iter()
-                .any(|row| row == "• Resposta normal com markdown.")
+                .any(|row| row.contains("  │ Resposta normal com markdown."))
         );
         assert!(!rows.iter().any(|row| row.contains("Atlas:")));
-        assert!(!rows.iter().any(|row| row.contains("READY")));
+    }
+
+    #[test]
+    fn renders_fenced_cpp_as_code_without_an_empty_agent_marker() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message-1".to_owned(),
+            content: "```cpp\nint main() { return 0; }\n```".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        let rows = render_fixture(app, 80, 10);
+
+        assert!(rows.iter().any(|row| row.contains("┌─ cpp")));
+        assert!(rows.iter().any(|row| row.contains("int main()")));
+        assert!(rows.iter().any(|row| row.contains("└─")));
     }
 
     #[test]
@@ -578,6 +122,38 @@ mod tests {
     }
 
     #[test]
+    fn redraws_the_same_execution_cell_with_complete_output() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            program: "node".to_owned(),
+            args: vec!["--version".to_owned()],
+            cwd: None,
+            target: Some("local".to_owned()),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            stdout: "stdout one\nstdout two\nstdout three".to_owned(),
+            stderr: "stderr one\nstderr two".to_owned(),
+            exit_code: 0,
+            duration_ms: 8,
+            status: "success".to_owned(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let rows = terminal_rows(&terminal);
+        assert!(rows.iter().any(|row| row.contains("stdout three")));
+        assert!(rows.iter().any(|row| row.contains("stderr two")));
+        assert!(rows.iter().any(|row| row.contains("Ran node --version")));
+    }
+
+    #[test]
     fn renders_running_and_failed_exec_states() {
         let mut running = App::new("conversation".to_owned());
         running.handle_runtime_event(RuntimeEvent::ExecutionStarted {
@@ -595,6 +171,7 @@ mod tests {
                 .iter()
                 .any(|row| row.contains("node --version"))
         );
+        assert!(running_rows.iter().any(|row| row.contains("aguardando...")));
 
         let mut failed = App::new("conversation".to_owned());
         failed.handle_runtime_event(RuntimeEvent::ExecutionStarted {
@@ -614,7 +191,7 @@ mod tests {
             duration_ms: 120,
             status: "failed".to_owned(),
         });
-        failed.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        failed.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
         let failed_rows = render_fixture(failed, 80, 10);
         assert!(
             failed_rows
@@ -633,7 +210,7 @@ mod tests {
                 message_id: "message-1".to_owned(),
                 content: "# Atlas\n\nTexto longo para testar wrapping igual ao transcript do Codex com **ênfase** e uma URL https://example.com/a/b/c.".to_owned(),
             });
-            app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+            app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
             let rows = render_fixture(app, width, height);
             assert_eq!(rows.len(), usize::from(height));
             assert!(rows.iter().any(|row| row.contains("Atlas")));
@@ -642,6 +219,45 @@ mod tests {
                     .all(|row| row.chars().count() <= usize::from(width))
             );
         }
+    }
+
+    #[test]
+    fn renders_context_usage_in_the_footer() {
+        let mut app = App::new("conversation".to_owned());
+        with_context(&mut app);
+        let rows = render_fixture(app, 80, 24);
+
+        assert!(rows.iter().any(|row| row.contains("6.6K / 256K (2%)")));
+        assert!(rows.iter().any(|row| row.contains("Ctrl+P shortcuts")));
+        assert!(!rows.iter().any(|row| row.contains("? for shortcuts")));
+        assert!(!rows.iter().any(|row| row.contains("context left")));
+    }
+
+    #[test]
+    fn renders_the_requested_zero_percent_footer_format() {
+        let mut app = App::new("conversation".to_owned());
+        app.set_context_usage(ContextUsage {
+            used_tokens: 1_200,
+            context_window: 256_000,
+        });
+        let rows = render_fixture(app, 80, 24);
+
+        assert!(
+            rows.iter().any(|row| {
+                row.contains("Ctrl+P shortcuts") && row.contains("1.2K / 256K (0%)")
+            })
+        );
+    }
+
+    #[test]
+    fn renders_shortcuts_overlay_over_the_chat_surface() {
+        let mut app = App::new("conversation".to_owned());
+        app.open_shortcuts();
+        let rows = render_fixture(app, 80, 24);
+
+        assert!(rows.iter().any(|row| row.contains("Shortcuts")));
+        assert!(rows.iter().any(|row| row.contains("Open shortcuts")));
+        assert!(rows.iter().any(|row| row.contains("Close overlay")));
     }
 
     #[test]
@@ -718,26 +334,43 @@ mod tests {
             30,
             include_str!("fixtures/markdown-compact-120x30.snap"),
         );
+        assert_fixture_snapshot(
+            fixture_shortcuts(),
+            80,
+            24,
+            include_str!("fixtures/shortcuts-80x24.snap"),
+        );
+        assert_fixture_snapshot(
+            fixture_shortcuts(),
+            120,
+            30,
+            include_str!("fixtures/shortcuts-120x30.snap"),
+        );
+        assert_fixture_snapshot(
+            fixture_long_execution_output(),
+            80,
+            24,
+            include_str!("fixtures/tool-long-output-80x24.snap"),
+        );
+        assert_fixture_snapshot(
+            fixture_long_execution_output(),
+            120,
+            30,
+            include_str!("fixtures/tool-long-output-120x30.snap"),
+        );
     }
 
     fn assert_fixture_snapshot(app: App, width: u16, height: u16, expected: &str) {
         let rendered = render_fixture(app, width, height)
             .into_iter()
-            .map(|row| {
-                let row = row.trim();
-                if let Some(prefix) = row.strip_suffix("100% context left") {
-                    let prefix = prefix.trim_end();
-                    return format!("{prefix}<right>100% context left");
-                }
-                if let Some((_, rest)) = row.split_once(' ')
-                    && rest.starts_with("Running")
-                {
-                    format!("<spinner> {rest}")
-                } else {
-                    row.to_owned()
-                }
+            .filter_map(|row| {
+                let row = compact_snapshot_row(&row);
+                let panel_spacer = row
+                    .strip_prefix('│')
+                    .and_then(|row| row.strip_suffix('│'))
+                    .is_some_and(|row| row.trim().is_empty());
+                (!row.is_empty() && !panel_spacer).then_some(row)
             })
-            .filter(|row| !row.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(
@@ -745,6 +378,14 @@ mod tests {
             expected.trim(),
             "fixture snapshot {width}x{height}"
         );
+    }
+
+    fn compact_snapshot_row(row: &str) -> String {
+        let row = row.trim();
+        if let Some(content) = row.strip_prefix('│').and_then(|row| row.strip_suffix('│')) {
+            return format!("│{}│", content.trim_end());
+        }
+        row.to_owned()
     }
 
     fn fixture_user_answer() -> App {
@@ -757,7 +398,8 @@ mod tests {
             message_id: "message-1".to_owned(),
             content: "Resposta simples.".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        with_context(&mut app);
         app
     }
 
@@ -788,7 +430,8 @@ mod tests {
             message_id: "message-2".to_owned(),
             content: "Comando concluído.".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        with_context(&mut app);
         app
     }
 
@@ -802,6 +445,7 @@ mod tests {
             cwd: None,
             target: Some("local".to_owned()),
         });
+        with_context(&mut app);
         app
     }
 
@@ -824,7 +468,8 @@ mod tests {
             duration_ms: 7,
             status: "failed".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        with_context(&mut app);
         app
     }
 
@@ -834,7 +479,8 @@ mod tests {
             message_id: "message-1".to_owned(),
             content: "# Atlas\n\nTexto longo para validar o wrapping do transcript em uma janela estreita, com **ênfase**, `comando` e uma URL https://example.com/a/b/c.".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        with_context(&mut app);
         app
     }
 
@@ -842,9 +488,41 @@ mod tests {
         let mut app = App::new("conversation".to_owned());
         app.handle_runtime_event(RuntimeEvent::MessageCompleted {
             message_id: "message-1".to_owned(),
-            content: "- primeiro item\n- segundo item\n\n```text\nhello\n```".to_owned(),
+            content: "- primeiro item\n- segundo item\n\n```cpp\nint main() { return 0; }\n```"
+                .to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted);
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
+        with_context(&mut app);
+        app
+    }
+
+    fn fixture_shortcuts() -> App {
+        let mut app = App::new("conversation".to_owned());
+        app.open_shortcuts();
+        app
+    }
+
+    fn fixture_long_execution_output() -> App {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            program: "node".to_owned(),
+            args: vec!["--version".to_owned()],
+            cwd: None,
+            target: Some("local".to_owned()),
+        });
+        app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            stdout: "stdout line one\nstdout line two\nstdout line three\nstdout line four"
+                .to_owned(),
+            stderr: "stderr warning one\nstderr warning two".to_owned(),
+            exit_code: 0,
+            duration_ms: 8,
+            status: "success".to_owned(),
+        });
+        with_context(&mut app);
         app
     }
 }

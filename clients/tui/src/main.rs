@@ -1,7 +1,10 @@
 mod app;
+mod composer;
 mod event;
 mod presentation;
 mod runtime;
+mod status;
+mod transcript;
 mod ui;
 mod wrapping;
 
@@ -54,15 +57,23 @@ async fn run(
             break;
         };
 
-        match event {
-            Event::Key(key) => handle_key(app, &runtime, key),
-            Event::Runtime(runtime_event) => app.handle_runtime_event(runtime_event),
-            Event::Mouse(mouse) => handle_mouse(app, mouse),
-            Event::Tick => {}
-            Event::Resize => {}
-        }
+        let should_redraw = match event {
+            Event::Key(key) => {
+                handle_key(app, &runtime, key);
+                true
+            }
+            Event::Runtime(runtime_event) => {
+                app.handle_runtime_event(runtime_event);
+                true
+            }
+            Event::Mouse(mouse) => {
+                handle_mouse(app, mouse);
+                true
+            }
+            Event::Resize => true,
+        };
 
-        if !app.should_quit() {
+        if should_redraw && !app.should_quit() {
             terminal.draw(|frame| ui::draw(frame, app))?;
         }
     }
@@ -73,9 +84,22 @@ async fn run(
 fn handle_key(app: &mut App, runtime: &RuntimeClient, key: crossterm::event::KeyEvent) {
     use crossterm::event::{KeyCode, KeyModifiers};
 
+    if app.shortcuts_open() {
+        if key.code == KeyCode::Esc {
+            app.close_shortcuts();
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
         KeyCode::Esc => app.quit(),
+        KeyCode::Char(character)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && character.eq_ignore_ascii_case(&'p') =>
+        {
+            app.open_shortcuts();
+        }
         KeyCode::Enter => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.insert_newline();
@@ -128,4 +152,80 @@ fn restore_terminal(terminal: &mut AtlasTerminal) -> io::Result<()> {
         crossterm::event::DisableMouseCapture
     )?;
     terminal.show_cursor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_key;
+    use crate::app::App;
+    use crate::runtime::{RuntimeClient, RuntimeEventSender, RuntimeFuture, RuntimeTransport};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    struct NoopTransport;
+
+    impl RuntimeTransport for NoopTransport {
+        fn send_message(
+            &self,
+            _conversation_id: String,
+            _input: String,
+            _events: RuntimeEventSender,
+        ) -> RuntimeFuture {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn ctrl_p_opens_shortcuts_and_escape_only_closes_it() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+
+        handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert!(app.shortcuts_open());
+
+        handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert!(!app.shortcuts_open());
+        assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn question_mark_is_inserted_when_the_composer_is_empty() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+
+        handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT),
+        );
+
+        assert_eq!(app.input(), "?");
+        assert!(!app.shortcuts_open());
+    }
+
+    #[test]
+    fn other_keys_do_not_close_the_shortcuts_overlay() {
+        let (runtime, _events) =
+            RuntimeClient::with_transport("conversation".to_owned(), NoopTransport);
+        let mut app = App::new("conversation".to_owned());
+        app.open_shortcuts();
+
+        handle_key(
+            &mut app,
+            &runtime,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+
+        assert!(app.shortcuts_open());
+        assert!(app.input().is_empty());
+    }
 }

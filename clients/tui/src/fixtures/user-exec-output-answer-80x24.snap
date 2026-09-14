@@ -1,6 +1,11 @@
-› Execute o comando
-• Ran printf ok · 12ms
-└ ok
-• Comando concluído.
-› Ask Atlas to do anything
-? for shortcuts<right>100% context left
+┌ Chat ────────────────────────────────────────────────────────────────────────┐
+│› Execute o comando│
+│• Ran printf ok · 12ms│
+│  └ ok│
+│  Atlas│
+│  │ Comando concluído.│
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Message ─────────────────────────────────────────────────────────────────────┐
+│› Ask Atlas to do anything│
+└──────────────────────────────────────────────────────────────────────────────┘
+Ctrl+P shortcuts                                               6.6K / 256K (2%)

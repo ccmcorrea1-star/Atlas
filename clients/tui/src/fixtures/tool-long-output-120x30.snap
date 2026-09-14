@@ -1,10 +1,13 @@
 ┌ Chat ────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  Atlas│
-│  │ # Atlas│
-│  │ Texto longo para validar o wrapping do transcript em uma janela estreita, com ênfase, comando e uma URL│
-│  │ https://example.com/a/b/c.│
+│• Ran node --version · 8ms│
+│  └ stdout line one│
+│    stdout line two│
+│    stdout line three│
+│    stdout line four│
+│    stderr warning one│
+│    stderr warning two│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Message ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │› Ask Atlas to do anything│
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-Ctrl+P shortcuts                                                                                       6.6K / 256K (2%)
+• Working  Ctrl+P shortcuts                                                                            6.6K / 256K (2%)

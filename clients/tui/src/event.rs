@@ -11,7 +11,6 @@ pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize,
-    Tick,
     Runtime(RuntimeEvent),
 }
 
@@ -55,11 +54,7 @@ fn spawn_terminal_events(sender: UnboundedSender<Event>) {
                     Ok(_) => {}
                     Err(_) => break,
                 },
-                Ok(false) => {
-                    if sender.send(Event::Tick).is_err() {
-                        break;
-                    }
-                }
+                Ok(false) => {}
                 Err(_) => break,
             }
         }
