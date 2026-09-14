@@ -1,78 +1,27 @@
 # Testes
 
-O Atlas usa o runner nativo de testes do Node.js através do `tsx`. Os testes são escritos em
-TypeScript e ficam separados do código de produção.
+Os testes ficam em [`tests/`](../tests/) e não dependem de serviços externos.
 
-## Estrutura
-
-```text
-tests/
-├── support/
-│   └── open-code-go-test-server.ts
-├── integration/
-│   └── runtime-unix.test.ts
-└── unit/
-    ├── atlas-capabilities.test.ts
-    ├── atlas-conversations.test.ts
-    └── opencode-go-provider.test.ts
-```
-
-`tests/support/` contém infraestrutura compartilhada pelos testes. O servidor simulado responde no
-formato da Responses API e captura headers e payloads enviados pelo provider.
-
-## Executar testes
+## Executar
 
 ```bash
 npm test
 ```
 
-Os testes são locais e não precisam de `OPENCODE_GO_API_KEY`. As requisições são direcionadas para
-um servidor HTTP temporário em `127.0.0.1`.
-
-## Cenários cobertos
-
-`atlas-conversations.test.ts` verifica:
-
-1. Turns da mesma conversa usam o mesmo `x-opencode-session`.
-2. O histórico do primeiro turn é enviado no segundo turn.
-3. Conversas diferentes usam IDs de sessão diferentes e não compartilham histórico.
-4. O mesmo `Runner` e o mesmo provider são reutilizados.
-
-`opencode-go-provider.test.ts` verifica:
-
-1. Um Runner criado diretamente usa a sessão configurada no provider.
-2. IDs de sessão vazios são rejeitados.
-
-`runtime-unix.test.ts` verifica o contrato público sobre Unix Socket, incluindo
-o `request_id`, o `conversation_id`, os eventos de turno e a resposta real
-produzida pelo `runAtlas()` através do provider local de teste.
+`npm test` executa os testes TypeScript e nativos. O provider usa um servidor HTTP local de teste, sem `OPENCODE_GO_API_KEY`.
 
 ## Smoke test
 
-O smoke test é uma verificação de integração local mais ampla:
-
 ```bash
 npm run smoke
 ```
 
-Ele exercita o fluxo público de conversas, incluindo endpoint, autenticação, User-Agent, headers de
-sessão, preservação de contexto e reutilização do Runner.
+Valida o fluxo público de conversa, sessão, contexto e provider.
 
-Os testes nativos em `tests/native/` validam o Registry, o Loader, o Discovery, o Executor e a execução direta de
-`process.exec` pelo runtime executável compartilhado definido em seu manifesto. `npm test` compila esses testes com C++23
-e executa os testes TypeScript com o bridge nativo disponível.
-
-## CI
-
-O GitHub Actions executa `npm test` e `npm run smoke` depois de format, lint, typecheck e build.
-
-Para reproduzir localmente o mesmo fluxo:
+## Cliente TUI
 
 ```bash
-npm run format:check
-npm run lint
-npm run typecheck
-npm run build
-npm test
-npm run smoke
+npm run test:client
 ```
+
+Para o fluxo completo de validação, consulte [`build.md`](./build.md).
