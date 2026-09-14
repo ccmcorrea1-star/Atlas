@@ -1,17 +1,14 @@
 # Atlas Runtime Protocol v1
 
-The Atlas Runtime Protocol is the public boundary between the Runtime and
-clients such as the TUI, desktop, web, and mobile applications. It is
-transport-independent and contains user intent and public execution events,
-not Agent SDK, discovery, or capability implementation details.
+Contrato público entre o Runtime e clientes como TUI, desktop, web e mobile.
 
-## Encoding
+O protocolo expõe intenção do usuário e eventos públicos de execução. Detalhes internos de SDK, Discovery e capabilities não fazem parte do contrato.
 
-Messages are UTF-8 JSON objects delimited by one newline (`JSON Lines`). The
-first transport is a Unix Domain Socket. Other transports may carry the same
-messages later without changing this contract.
+## Transporte
 
-Every message includes:
+Mensagens são objetos JSON UTF-8 separados por nova linha (`JSON Lines`). O transporte atual usa Unix Domain Socket.
+
+Toda mensagem contém:
 
 ```json
 {
@@ -20,11 +17,9 @@ Every message includes:
 }
 ```
 
-## Turn Request
+## Requisição
 
-Clients send only the user's intention. `request_id` correlates all events
-belonging to this request. Reusing `conversation_id` preserves conversation
-continuity in the Runtime.
+O cliente envia um `turn.request`:
 
 ```json
 {
@@ -37,90 +32,39 @@ continuity in the Runtime.
 }
 ```
 
-## Events
+`request_id` identifica a requisição. Reutilizar `conversation_id` preserva a conversa.
 
-The Runtime sends zero or more events for the request. Each event includes the
-same `request_id` and `conversation_id`:
+## Eventos
 
-```json
-{
-  "protocol": "atlas-runtime",
-  "version": 1,
-  "type": "turn.started",
-  "request_id": "request-1",
-  "conversation_id": "minha-conversa",
-  "data": {}
-}
-```
+Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
 
-For `process.exec`, the Runtime publishes a structured lifecycle instead of
-the generic tool events. Both events use the Agent tool `call_id` as
-`execution_id`, so clients update one execution cell:
+| Evento | Dados |
+| --- | --- |
+| `turn.started` | turno aceito |
+| `message.delta` | `message_id`, `delta` |
+| `message.completed` | `message_id`, `content` |
+| `tool.started` | `tool_id`, `name` |
+| `tool.completed` | `tool_id`, `name`, `output?` |
+| `execution.started` | `execution_id`, `capability`, `program`, `args`, `cwd?`, `target?` |
+| `execution.completed` | `execution_id`, `capability`, `stdout`, `stderr`, `exit_code`, `duration_ms`, `status` |
+| `turn.completed` | `content`, `message_id?`, `context?` |
+| `error` | `code`, `message` |
 
-```json
-{
-  "protocol": "atlas-runtime",
-  "version": 1,
-  "type": "execution.started",
-  "request_id": "request-1",
-  "conversation_id": "minha-conversa",
-  "data": {
-    "execution_id": "call-1",
-    "capability": "process.exec",
-    "program": "node",
-    "args": ["--version"],
-    "target": "local"
-  }
-}
-```
+`process.exec` usa o `call_id` da tool como `execution_id`, permitindo que clientes atualizem a mesma execução do início ao fim.
+
+`context`, quando disponível, contém:
 
 ```json
 {
-  "protocol": "atlas-runtime",
-  "version": 1,
-  "type": "execution.completed",
-  "request_id": "request-1",
-  "conversation_id": "minha-conversa",
-  "data": {
-    "execution_id": "call-1",
-    "capability": "process.exec",
-    "stdout": "v22.x.x\n",
-    "stderr": "",
-    "exit_code": 0,
-    "duration_ms": 120,
-    "status": "success"
-  }
+  "used_tokens": 6600,
+  "context_window": 256000
 }
 ```
 
-Supported event types are:
+Clientes devem aceitar `message.delta`, `message.completed` ou ambos e ignorar novos tipos de evento quando isso puder ser feito com segurança.
 
-- `turn.started`: the Runtime accepted the turn.
-- `message.delta`: a real streamed text fragment, with `data.message_id` and `data.delta`.
-- `message.completed`: a completed public assistant message, with `data.message_id` and `data.content`.
-- `tool.started`: a Runtime-executed tool started, with `data.tool_id` and `data.name`.
-- `tool.completed`: a Runtime-executed tool finished, with `data.tool_id`, `data.name`, and optional `data.output`.
-- `execution.started`: a `process.exec` invocation started, with `data.execution_id`, `data.capability`, `data.program`, `data.args`, and optional `data.cwd` and `data.target`.
-- `execution.completed`: the matching `process.exec` invocation finished, with `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms`, and `data.status`.
-- `turn.completed`: the turn finished, with `data.content`, optional `data.message_id`, and the
-  Runtime-provided `data.context` usage snapshot when the model exposes a context window:
-  `{ "used_tokens": 6600, "context_window": 256000 }`.
-- `error`: the turn failed, with `data.code` and `data.message`.
+Eventos genéricos de tools não expõem argumentos, Discovery ou objetos de SDK. O Runtime continua responsável por capabilities, autorização e execução.
 
-Clients must handle `message.delta` or `message.completed`; a Runtime may emit
-both when streaming is available. A Runtime only emits an event when the
-underlying Agent execution provides that information. Clients must ignore event
-types added in later protocol versions when they can continue safely.
+## Versionamento
 
-Generic tool event data intentionally does not contain tool arguments, discovery
-requests, or SDK objects. `process.exec` is the explicit exception: its public
-execution lifecycle contains only the structured process invocation fields
-needed by clients to render and correlate one execution cell. The Runtime
-remains responsible for discovery, capabilities, approval policy, and execution.
-
-## Versioning
-
-`version` is an integer major version. Additive event data and new event types
-are compatible with v1. A breaking change requires a new version directory and
-version value; v1 clients must never be required to understand internal
-Runtime changes.
+`version` representa a versão major do contrato. Novos campos opcionais e eventos são compatíveis com v1. Mudanças incompatíveis exigem uma nova versão.
