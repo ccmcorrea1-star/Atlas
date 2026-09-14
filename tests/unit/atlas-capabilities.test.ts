@@ -188,6 +188,109 @@ test('discovers and executes process.exec as a directly materialized Agent tool'
   }
 });
 
+test('keeps a discovered capability available in later turns of the same conversation', async () => {
+  const definition: CapabilityDefinition = {
+    id: 'process.exec',
+    type: 'tool',
+    summary: 'executa processos',
+    description: 'executa um programa local diretamente, sem shell',
+    schema: {
+      type: 'object',
+      properties: {
+        program: { type: 'string' },
+        args: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['program'],
+      additionalProperties: false,
+    },
+  };
+  const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
+  const capabilityRuntime: CapabilityRuntime = {
+    discover: async (request = {}) =>
+      request.path === undefined
+        ? [{ id: 'process', type: 'group', summary: 'ferramentas de processo' }]
+        : [{ id: definition.id, type: definition.type, summary: definition.summary }],
+    getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    execute: async (id, target, arguments_) => {
+      executed.push({ id, arguments_ });
+      return {
+        target,
+        status: 'success',
+        error: '',
+        output: { stdout: 'ok', stderr: '', exit_code: 0, duration_ms: 1 },
+      };
+    },
+  };
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber === 1
+        ? [
+            {
+              id: 'function-call-discover-later',
+              type: 'function_call',
+              status: 'completed',
+              call_id: 'discover-later-call',
+              name: 'discover',
+              arguments: JSON.stringify({ path: 'process' }),
+            },
+          ]
+        : requestNumber === 2 || requestNumber === 4
+          ? [
+              {
+                id: `function-call-process-exec-${requestNumber}`,
+                type: 'function_call',
+                status: 'completed',
+                call_id: `process-exec-later-call-${requestNumber}`,
+                name: materializedToolName(input),
+                arguments: JSON.stringify({ program: 'echo', args: [`turn-${requestNumber}`] }),
+              },
+            ]
+          : [
+              {
+                id: `final-message-${requestNumber}`,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: `Turn ${requestNumber === 3 ? 'one' : 'two'} completed.`,
+                    annotations: [],
+                  },
+                ],
+              },
+            ];
+
+    return responseEnvelope(requestNumber, input, output);
+  });
+
+  try {
+    const options = {
+      apiKey: 'atlas-capabilities-continuation-test-key',
+      baseURL: server.baseURL,
+      conversationId: 'capability-continuation-conversation',
+      capabilityRuntime,
+    };
+    const firstResult = await runAtlas('Descubra as ferramentas de processo.', options);
+    const secondResult = await runAtlas('Execute process.exec novamente.', options);
+
+    assert.equal(firstResult.finalOutput, 'Turn one completed.');
+    assert.equal(secondResult.finalOutput, 'Turn two completed.');
+    assert.equal(server.requests.length, 5);
+    assert.equal(materializedToolNames(server.requests[3] as RequestBody).length, 1);
+    assert.equal(
+      materializedToolName(server.requests[3] as RequestBody),
+      materializedToolName(server.requests[1] as RequestBody),
+    );
+    assert.deepEqual(executed, [
+      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-2'] } },
+      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-4'] } },
+    ]);
+  } finally {
+    await server.close();
+  }
+});
+
 test('keeps provider names safe and dispatches colliding IDs to their capabilities', async () => {
   const definitions: CapabilityDefinition[] = [
     {

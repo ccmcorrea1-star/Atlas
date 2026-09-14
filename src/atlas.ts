@@ -87,6 +87,7 @@ type AtlasRuntime = {
   runner: Runner;
   sessions: Map<string, MemorySession>;
   capabilityRuntime: CapabilityRuntime;
+  materializedCapabilitiesByConversation: Map<string, Map<string, CapabilityDefinition>>;
 };
 
 // A chave e a configuracao do provider, nao o ID da conversa.
@@ -94,8 +95,13 @@ const atlasRuntimes = new Map<string, AtlasRuntime>();
 
 // Cria o Runner com tracing desabilitado para manter a execucao local e previsivel.
 export function createAtlasRunner(options: OpenCodeGoProviderOptions = {}): Runner {
+  return createRunner(options);
+}
+
+function createRunner(options: OpenCodeGoProviderOptions): Runner {
+  const provider = new OpenCodeGoProvider(options);
   return new Runner({
-    modelProvider: new OpenCodeGoProvider(options),
+    modelProvider: provider,
     tracingDisabled: true,
   });
 }
@@ -137,9 +143,10 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
   }
 
   const runtime: AtlasRuntime = {
-    runner: createAtlasRunner(options),
+    runner: createRunner(options),
     sessions: new Map(),
     capabilityRuntime: createCapabilityRuntime(),
+    materializedCapabilitiesByConversation: new Map(),
   };
   atlasRuntimes.set(key, runtime);
   return runtime;
@@ -245,6 +252,7 @@ type AtlasAgent = {
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
   rootGroups: readonly CapabilityDiscoveryResult[],
+  materializedDefinitions: Map<string, CapabilityDefinition>,
 ): AtlasAgent {
   const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
   const agent = Atlas.clone({
@@ -266,10 +274,14 @@ function createAtlasAgent(
       );
     }
     capabilityIdsByToolName.set(toolName, definition.id);
+    materializedDefinitions.set(definition.id, definition);
     agent.tools.push(
       materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName),
     );
   };
+  for (const definition of materializedDefinitions.values()) {
+    addTool(definition);
+  }
   const discover = discoveryTool(capabilityRuntime, addTool);
   agent.tools.push(discover);
   return { agent, capabilityIdsByToolName };
@@ -510,7 +522,15 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   const rootGroups = await capabilityRuntime.discover();
-  const { agent, capabilityIdsByToolName } = createAtlasAgent(capabilityRuntime, rootGroups);
+  // As tools descobertas sobrevivem à recriação do Agent entre turnos da conversa.
+  const materializedDefinitions =
+    runtime.materializedCapabilitiesByConversation.get(sessionId) ?? new Map();
+  runtime.materializedCapabilitiesByConversation.set(sessionId, materializedDefinitions);
+  const { agent, capabilityIdsByToolName } = createAtlasAgent(
+    capabilityRuntime,
+    rootGroups,
+    materializedDefinitions,
+  );
   // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });
 
