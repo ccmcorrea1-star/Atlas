@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::time::Duration;
 
 const ANSI_ESCAPE: char = '\x1b';
+const MAX_OUTPUT_BYTES: usize = 128 * 1024;
+const OUTPUT_TRUNCATION_MARKER: &str = "\n[output truncated]";
 
 /// Presentation helpers are independent from the Runtime protocol.
 /// The transcript layout follows the cell-oriented approach used by the Codex CLI TUI.
@@ -97,7 +99,7 @@ fn collect_tool_output(value: &Value, output: &mut ToolOutput) {
                 has_display_output = true;
             }
             if output.stdout.is_empty() && output.stderr.is_empty() {
-                for key in ["text", "message", "content", "output", "error"] {
+                for key in ["text", "message", "content", "output"] {
                     if let Some(value) = object.get(key) {
                         let text = display_value_text(value).unwrap_or_default();
                         if !text.is_empty() {
@@ -208,7 +210,24 @@ fn value_text(value: &Value) -> Option<String> {
 }
 
 fn clean_output(output: &str) -> String {
-    sanitize_terminal_text(output.trim()).trim_end().to_owned()
+    truncate_text(
+        sanitize_terminal_text(output.trim()).trim_end(),
+        MAX_OUTPUT_BYTES,
+    )
+}
+
+fn truncate_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+
+    let mut end = max_bytes
+        .saturating_sub(OUTPUT_TRUNCATION_MARKER.len())
+        .min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &text[..end], OUTPUT_TRUNCATION_MARKER)
 }
 
 pub(crate) fn sanitize_terminal_text(text: &str) -> String {
@@ -237,9 +256,14 @@ pub(crate) fn sanitize_terminal_text(text: &str) -> String {
 pub(crate) fn format_process_command(program: &str, args: &[String]) -> String {
     std::iter::once(program)
         .chain(args.iter().map(String::as_str))
-        .map(shell_quote)
+        .map(display_argument)
+        .map(|argument| shell_quote(&argument))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn display_argument(argument: &str) -> String {
+    sanitize_terminal_text(argument).replace('\n', "\\n")
 }
 
 fn shell_quote(argument: &str) -> String {
@@ -308,9 +332,10 @@ impl<'a> MarkdownRenderer<'a> {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
             Event::Text(text) => self.push_text(&sanitize_terminal_text(&text)),
-            Event::Code(code) => {
-                self.push_span(code.into_string(), Style::default().fg(Color::Cyan))
-            }
+            Event::Code(code) => self.push_span(
+                sanitize_terminal_text(&code),
+                Style::default().fg(Color::Cyan),
+            ),
             Event::SoftBreak | Event::HardBreak => self.flush_line(),
             Event::Rule => {
                 self.flush_line();
@@ -592,6 +617,30 @@ mod tests {
         assert_eq!(output.stderr, "warn");
         assert_eq!(output.success, Some(false));
         assert_eq!(output.display_text(), "ready\nnow\nwarn");
+    }
+
+    #[test]
+    fn does_not_duplicate_an_error_only_tool_output() {
+        let output = parse_tool_output(r#"{\"error\":\"failed\"}"#);
+
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "failed");
+        assert_eq!(output.display_text(), "failed");
+    }
+
+    #[test]
+    fn sanitizes_dynamic_command_and_inline_code_text() {
+        let command = format_process_command("printf", &["\x1b[2J\nunsafe".to_owned()]);
+        assert!(!command.contains('\x1b'));
+        assert!(command.contains("\\nunsafe"));
+
+        let lines = render_markdown("inline `\x1b[2Junsafe`");
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(!text.contains('\x1b'));
     }
 
     #[test]

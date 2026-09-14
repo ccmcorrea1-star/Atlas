@@ -2,7 +2,16 @@ use crate::presentation::parse_tool_output;
 use crate::runtime::{ContextUsage, RuntimeEvent};
 use crate::transcript::TranscriptLayoutCache;
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+const MAX_MESSAGES: usize = 500;
+const MAX_HISTORY_CONTENT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_OUTPUT_BYTES: usize = 128 * 1024;
+const MAX_METADATA_BYTES: usize = 8 * 1024;
+const MAX_INPUT_BYTES: usize = 64 * 1024;
+const TRUNCATION_MARKER: &str = "\n[output truncated]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageRole {
@@ -18,21 +27,24 @@ pub struct Message {
     pub content: String,
     pub id: Option<String>,
     pub(crate) tool: Option<ToolCall>,
+    truncated: bool,
 }
 
 impl Message {
     fn new(role: MessageRole, content: impl Into<String>, id: Option<String>) -> Self {
+        let (content, truncated) = truncate_text(&content.into(), MAX_MESSAGE_BYTES);
         Self {
             role,
-            content: content.into(),
+            content,
             id,
             tool: None,
+            truncated,
         }
     }
 
     fn tool_with_id(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
-        let name = name.into();
+        let name = bounded_metadata(&name.into());
         Self {
             role: MessageRole::Tool,
             content: String::new(),
@@ -53,6 +65,7 @@ impl Message {
                 completed: false,
                 success: true,
             }),
+            truncated: false,
         }
     }
 
@@ -66,10 +79,13 @@ impl Message {
     ) -> Self {
         let mut message = Self::tool_with_id(id, capability);
         if let Some(tool) = message.tool.as_mut() {
-            tool.program = Some(program);
-            tool.args = args;
-            tool.cwd = cwd;
-            tool.target = target;
+            tool.program = Some(bounded_metadata(&program));
+            tool.args = args
+                .iter()
+                .map(|argument| bounded_metadata(argument))
+                .collect();
+            tool.cwd = cwd.map(|path| bounded_metadata(&path));
+            tool.target = target.map(|target| bounded_metadata(&target));
         }
         message
     }
@@ -91,6 +107,14 @@ pub(crate) struct ToolCall {
     pub(crate) execution_status: Option<String>,
     pub(crate) completed: bool,
     pub(crate) success: bool,
+}
+
+struct ExecutionCompletion {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    duration_ms: u64,
+    status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +140,7 @@ pub struct App {
     manual_scroll: bool,
     context_usage: Option<ContextUsage>,
     shortcuts_open: bool,
+    quit_confirmation: bool,
     transcript_revision: u64,
     transcript_cache: Option<TranscriptLayoutCache>,
 }
@@ -134,6 +159,7 @@ impl App {
             manual_scroll: false,
             context_usage: None,
             shortcuts_open: false,
+            quit_confirmation: false,
             transcript_revision: 0,
             transcript_cache: None,
         }
@@ -189,6 +215,18 @@ impl App {
         self.shortcuts_open = false;
     }
 
+    pub fn quit_confirmation(&self) -> bool {
+        self.quit_confirmation
+    }
+
+    pub fn open_quit_confirmation(&mut self) {
+        self.quit_confirmation = true;
+    }
+
+    pub fn close_quit_confirmation(&mut self) {
+        self.quit_confirmation = false;
+    }
+
     pub fn history_scroll(&self) -> usize {
         self.history_scroll
     }
@@ -204,6 +242,20 @@ impl App {
     }
 
     pub(crate) fn set_transcript_cache(&mut self, cache: TranscriptLayoutCache) {
+        if self.manual_scroll
+            && let Some(previous) = self.transcript_cache.as_ref()
+            && previous.width == cache.width
+        {
+            if cache.total_rows >= previous.total_rows {
+                self.history_scroll = self
+                    .history_scroll
+                    .saturating_add(cache.total_rows - previous.total_rows);
+            } else {
+                self.history_scroll = self
+                    .history_scroll
+                    .saturating_sub(previous.total_rows - cache.total_rows);
+            }
+        }
         self.transcript_cache = Some(cache);
     }
 
@@ -212,6 +264,9 @@ impl App {
     }
 
     pub fn insert_character(&mut self, character: char) {
+        if self.input.len().saturating_add(character.len_utf8()) > MAX_INPUT_BYTES {
+            return;
+        }
         self.input.insert(self.cursor, character);
         self.cursor += character.len_utf8();
     }
@@ -221,7 +276,7 @@ impl App {
     }
 
     pub fn backspace(&mut self) {
-        let Some((start, _)) = self.input[..self.cursor].char_indices().next_back() else {
+        let Some((start, _)) = self.input[..self.cursor].grapheme_indices(true).next_back() else {
             return;
         };
         self.input.drain(start..self.cursor);
@@ -229,7 +284,7 @@ impl App {
     }
 
     pub fn move_cursor_left(&mut self) {
-        if let Some((start, _)) = self.input[..self.cursor].char_indices().next_back() {
+        if let Some((start, _)) = self.input[..self.cursor].grapheme_indices(true).next_back() {
             self.cursor = start;
         }
     }
@@ -294,10 +349,10 @@ impl App {
     }
 
     pub fn delete_forward(&mut self) {
-        let Some(character) = self.input[self.cursor..].chars().next() else {
+        let Some(grapheme) = self.input[self.cursor..].graphemes(true).next() else {
             return;
         };
-        let end = self.cursor + character.len_utf8();
+        let end = self.cursor + grapheme.len();
         self.input.drain(self.cursor..end);
     }
 
@@ -318,10 +373,10 @@ impl App {
             return None;
         }
 
-        let message = self.input.trim().to_owned();
-        if message.is_empty() {
+        if self.input.trim().is_empty() {
             return None;
         }
+        let message = self.input.clone();
 
         self.messages
             .push(Message::new(MessageRole::User, &message, None));
@@ -340,7 +395,7 @@ impl App {
                 if let Some(message) = self.messages.iter_mut().rev().find(|message| {
                     message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
                 }) {
-                    message.content.push_str(&delta);
+                    append_message_delta(message, &delta);
                     self.history_changed();
                 } else {
                     self.messages
@@ -356,7 +411,9 @@ impl App {
                 if let Some(message) = self.messages.iter_mut().rev().find(|message| {
                     message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
                 }) {
+                    let (content, truncated) = truncate_text(&content, MAX_MESSAGE_BYTES);
                     message.content = content;
+                    message.truncated = truncated;
                     self.history_changed();
                 } else {
                     self.messages
@@ -365,7 +422,7 @@ impl App {
                 }
             }
             RuntimeEvent::ToolStarted { tool_id, tool_name } => {
-                self.status = Status::Tool(tool_name.clone());
+                self.status = Status::Tool(bounded_metadata(&tool_name));
                 self.messages
                     .push(Message::tool_with_id(tool_id.clone(), tool_name));
                 self.history_changed();
@@ -378,7 +435,7 @@ impl App {
                 cwd,
                 target,
             } => {
-                self.status = Status::Tool(capability.to_owned());
+                self.status = Status::Tool(bounded_metadata(&capability));
                 if let Some(message) = self.messages.iter_mut().rev().find(|message| {
                     message.role == MessageRole::Tool
                         && message
@@ -387,11 +444,14 @@ impl App {
                             .is_some_and(|tool| tool.id == execution_id)
                 }) {
                     if let Some(tool) = message.tool.as_mut() {
-                        tool.name = capability;
-                        tool.program = Some(program);
-                        tool.args = args;
-                        tool.cwd = cwd;
-                        tool.target = target;
+                        tool.name = bounded_metadata(&capability);
+                        tool.program = Some(bounded_metadata(&program));
+                        tool.args = args
+                            .iter()
+                            .map(|argument| bounded_metadata(argument))
+                            .collect();
+                        tool.cwd = cwd.map(|path| bounded_metadata(&path));
+                        tool.target = target.map(|target| bounded_metadata(&target));
                         tool.started_at = Some(Instant::now());
                         tool.completed = false;
                     }
@@ -443,9 +503,18 @@ impl App {
                         tool.success = parsed_output
                             .as_ref()
                             .and_then(|output| output.success)
-                            .unwrap_or(true);
+                            .unwrap_or_else(|| {
+                                parsed_output
+                                    .as_ref()
+                                    .is_none_or(|output| output.stderr.is_empty())
+                            });
                     }
-                    message.content = normalized_output.clone().unwrap_or_default();
+                    let (content, truncated) = truncate_text(
+                        normalized_output.as_deref().unwrap_or_default(),
+                        MAX_OUTPUT_BYTES,
+                    );
+                    message.content = content;
+                    message.truncated = truncated;
                     completed = true;
                 }
                 if !completed {
@@ -465,9 +534,18 @@ impl App {
                         tool.success = parsed_output
                             .as_ref()
                             .and_then(|output| output.success)
-                            .unwrap_or(true);
+                            .unwrap_or_else(|| {
+                                parsed_output
+                                    .as_ref()
+                                    .is_none_or(|output| output.stderr.is_empty())
+                            });
                     }
-                    message.content = normalized_output.unwrap_or_default();
+                    let (content, truncated) = truncate_text(
+                        normalized_output.as_deref().unwrap_or_default(),
+                        MAX_OUTPUT_BYTES,
+                    );
+                    message.content = content;
+                    message.truncated = truncated;
                     self.messages.push(message);
                 }
                 self.history_changed();
@@ -484,11 +562,13 @@ impl App {
                 self.complete_execution(
                     execution_id,
                     capability,
-                    stdout,
-                    stderr,
-                    exit_code,
-                    duration_ms,
-                    status,
+                    ExecutionCompletion {
+                        stdout,
+                        stderr,
+                        exit_code,
+                        duration_ms,
+                        status,
+                    },
                 );
             }
             RuntimeEvent::TurnStarted => {
@@ -501,10 +581,24 @@ impl App {
                 }
                 self.status = Status::Ready;
                 self.turn_active = false;
+                self.quit_confirmation = false;
             }
             RuntimeEvent::Error { message } => {
-                self.status = Status::Error(message.clone());
+                self.status = Status::Error(bounded_metadata(&message));
                 self.turn_active = false;
+                self.quit_confirmation = false;
+                for transcript_message in &mut self.messages {
+                    let Some(tool) = transcript_message.tool.as_mut() else {
+                        continue;
+                    };
+                    if tool.completed {
+                        continue;
+                    }
+                    tool.completed = true;
+                    tool.success = false;
+                    tool.execution_status = Some("aborted".to_owned());
+                    tool.duration = tool.started_at.map(|started_at| started_at.elapsed());
+                }
                 self.messages.push(Message::new(
                     MessageRole::System,
                     format!("Error: {message}"),
@@ -518,25 +612,52 @@ impl App {
     fn history_changed(&mut self) {
         // Message mutations invalidate wrapping, height, and scroll calculations.
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
-        self.transcript_cache = None;
+        while (self.messages.len() > MAX_MESSAGES
+            || self.history_content_bytes() > MAX_HISTORY_CONTENT_BYTES)
+            && self.messages.len() > 1
+        {
+            let remove_count = self.messages.len() - MAX_MESSAGES;
+            if self.messages.len() > MAX_MESSAGES {
+                self.messages.drain(..remove_count);
+            } else {
+                self.messages.remove(0);
+            }
+        }
         if !self.manual_scroll {
             self.history_scroll = 0;
         }
+    }
+
+    fn history_content_bytes(&self) -> usize {
+        self.messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum()
     }
 
     fn complete_execution(
         &mut self,
         execution_id: String,
         capability: String,
-        stdout: String,
-        stderr: String,
-        exit_code: i32,
-        duration_ms: u64,
-        status: String,
+        completion: ExecutionCompletion,
     ) {
+        let ExecutionCompletion {
+            stdout,
+            stderr,
+            exit_code,
+            duration_ms,
+            status,
+        } = completion;
         self.status = Status::Thinking;
-        let stdout = crate::presentation::sanitize_terminal_text(&stdout);
-        let stderr = crate::presentation::sanitize_terminal_text(&stderr);
+        let (stdout, _) = truncate_text(
+            &crate::presentation::sanitize_terminal_text(&stdout),
+            MAX_OUTPUT_BYTES,
+        );
+        let (stderr, _) = truncate_text(
+            &crate::presentation::sanitize_terminal_text(&stderr),
+            MAX_OUTPUT_BYTES,
+        );
+        let status = bounded_metadata(&status);
         let mut completed = false;
         if let Some(message) = self.messages.iter_mut().rev().find(|message| {
             message.role == MessageRole::Tool
@@ -554,11 +675,14 @@ impl App {
                 tool.completed = true;
                 tool.success = status == "success" && exit_code == 0;
             }
-            message.content = [stdout.as_str(), stderr.as_str()]
+            let content = [stdout.as_str(), stderr.as_str()]
                 .into_iter()
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
+            let (content, truncated) = truncate_text(&content, MAX_OUTPUT_BYTES);
+            message.content = content;
+            message.truncated = truncated;
             completed = true;
         }
         if !completed {
@@ -580,31 +704,70 @@ impl App {
                 tool.completed = true;
                 tool.success = status == "success" && exit_code == 0;
             }
-            message.content = [stdout.as_str(), stderr.as_str()]
+            let content = [stdout.as_str(), stderr.as_str()]
                 .into_iter()
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
+            let (content, truncated) = truncate_text(&content, MAX_OUTPUT_BYTES);
+            message.content = content;
+            message.truncated = truncated;
             self.messages.push(message);
         }
         self.history_changed();
     }
 }
 
+fn truncate_text(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_owned(), false);
+    }
+
+    let marker = TRUNCATION_MARKER;
+    let mut end = max_bytes.saturating_sub(marker.len()).min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}{}", &text[..end], marker), true)
+}
+
+fn bounded_metadata(text: &str) -> String {
+    truncate_text(text, MAX_METADATA_BYTES).0
+}
+
+fn append_message_delta(message: &mut Message, delta: &str) {
+    if message.truncated {
+        return;
+    }
+    let available = MAX_MESSAGE_BYTES
+        .saturating_sub(message.content.len())
+        .saturating_sub(TRUNCATION_MARKER.len());
+    if delta.len() <= available {
+        message.content.push_str(delta);
+        return;
+    }
+
+    let mut end = available.min(delta.len());
+    while end > 0 && !delta.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.content.push_str(&delta[..end]);
+    message.content.push_str(TRUNCATION_MARKER);
+    message.truncated = true;
+}
+
 fn display_width(text: &str) -> usize {
-    text.chars()
-        .map(|character| UnicodeWidthChar::width(character).unwrap_or(0))
-        .sum()
+    UnicodeWidthStr::width(text)
 }
 
 fn position_at_display_column(text: &str, offset: usize, target: usize) -> usize {
     let mut width = 0;
-    for (index, character) in text.char_indices() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if width + character_width > target {
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if width + grapheme_width > target {
             return offset + index;
         }
-        width += character_width;
+        width += grapheme_width;
     }
     offset + text.len()
 }
@@ -806,5 +969,49 @@ mod tests {
 
         assert_eq!(app.input(), "ab\ncd");
         assert_eq!(app.cursor_byte_position(), 2);
+    }
+
+    #[test]
+    fn edits_combining_graphemes_as_one_character() {
+        let mut app = App::new("conversation".to_owned());
+        app.insert_character('e');
+        app.insert_character('\u{301}');
+
+        app.move_cursor_left();
+        assert_eq!(app.cursor_byte_position(), 0);
+        app.delete_forward();
+        assert!(app.input().is_empty());
+    }
+
+    #[test]
+    fn preserves_significant_whitespace_in_submitted_input() {
+        let mut app = App::new("conversation".to_owned());
+        for character in "  code\n".chars() {
+            app.insert_character(character);
+        }
+
+        assert_eq!(app.submit_input().as_deref(), Some("  code\n"));
+        assert_eq!(app.messages()[0].content, "  code\n");
+    }
+
+    #[test]
+    fn marks_pending_tools_as_aborted_when_the_turn_fails() {
+        let mut app = App::new("conversation".to_owned());
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "execution-1".to_owned(),
+            capability: "process.exec".to_owned(),
+            program: "sleep".to_owned(),
+            args: vec!["10".to_owned()],
+            cwd: None,
+            target: Some("local".to_owned()),
+        });
+        app.handle_runtime_event(RuntimeEvent::Error {
+            message: "connection lost".to_owned(),
+        });
+
+        let tool = app.messages()[0].tool.as_ref().expect("execution cell");
+        assert!(tool.completed);
+        assert!(!tool.success);
+        assert_eq!(tool.execution_status.as_deref(), Some("aborted"));
     }
 }
