@@ -43,7 +43,7 @@ pub struct App {
     history_scroll: usize,
     history_content_height: usize,
     manual_scroll: bool,
-    transcript_open: bool,
+
     quit_confirmation: bool,
     queued_inputs: VecDeque<String>,
     submission_pending: bool,
@@ -61,7 +61,7 @@ impl App {
             history_scroll: 0,
             history_content_height: 0,
             manual_scroll: false,
-            transcript_open: false,
+
             quit_confirmation: false,
             queued_inputs: VecDeque::new(),
             submission_pending: false,
@@ -139,15 +139,11 @@ impl App {
     }
 
     pub fn transcript_open(&self) -> bool {
-        self.transcript_open
+        self.transcript_overlay.is_open()
     }
 
     pub fn open_transcript(&mut self) {
-        self.transcript_open = true;
-    }
-
-    pub fn close_transcript(&mut self) {
-        self.transcript_open = false;
+        self.transcript_overlay.open();
     }
 
     pub fn quit_confirmation(&self) -> bool {
@@ -377,7 +373,7 @@ impl App {
     /// Paste belongs to the active Codex view, never to a hidden composer.
     pub fn handle_paste(&mut self, text: &str) {
         if self.shortcuts_open()
-            || self.transcript_open
+            || self.transcript_overlay.is_open()
             || self.quit_confirmation
             || self.bottom_pane.composer.history_search_open
         {
@@ -660,17 +656,8 @@ impl App {
             }
             return true;
         }
-        if self.transcript_open {
-            match action {
-                Some(Action::Cancel) | Some(Action::CloseOverlay) => self.close_transcript(),
-                Some(Action::ScrollUp) => self.transcript_overlay.scroll_up(1),
-                Some(Action::ScrollDown) => self.transcript_overlay.scroll_down(1),
-                Some(Action::PageUp) => self.transcript_overlay.scroll_up(8),
-                Some(Action::PageDown) => self.transcript_overlay.scroll_down(8),
-                Some(Action::JumpTop) => self.transcript_overlay.scroll_to_top(),
-                Some(Action::JumpBottom) => self.transcript_overlay.scroll_to_bottom(),
-                _ => {}
-            }
+        if self.transcript_overlay.is_open() {
+            let _ = self.transcript_overlay.handle_action(action);
             return true;
         }
 
