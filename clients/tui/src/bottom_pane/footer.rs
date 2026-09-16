@@ -8,6 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
@@ -126,6 +127,39 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     line.render(area, buffer);
 }
 
+pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
+    let Some(line) = status_line(app) else {
+        return;
+    };
+    let line_area = Rect::new(
+        area.x.saturating_add(FOOTER_INDENT_COLS as u16),
+        area.y,
+        area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
+        area.height,
+    );
+    line.render(line_area, buffer);
+}
+
+fn status_line(app: &App) -> Option<Line<'static>> {
+    match app.status() {
+        crate::app::Status::Ready => None,
+        crate::app::Status::Thinking | crate::app::Status::Executing => Some(
+            Line::from(Span::styled(
+                format!("• Working ({}s • esc to interrupt)", app.working_seconds()),
+                Style::default(),
+            ))
+            .dim(),
+        ),
+        crate::app::Status::Error(message) => Some(
+            Line::from(Span::styled(
+                format!("! {message}"),
+                Style::default().fg(Color::Red),
+            ))
+            .dim(),
+        ),
+    }
+}
+
 fn fits(width: u16, left: &str, right_width: usize) -> bool {
     FOOTER_INDENT_COLS + UnicodeWidthStr::width(left) + usize::from(right_width > 0) + right_width
         <= usize::from(width)
@@ -190,6 +224,9 @@ fn format_context(used: u64, window: u64) -> String {
 mod tests {
     use super::FooterMode;
     use crate::app::App;
+    use crate::runtime::RuntimeEvent;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
 
     #[test]
     fn shortcut_overlay_height_matches_composer_layout() {
@@ -213,5 +250,41 @@ mod tests {
             super::FooterProps::from_app(&app).mode,
             FooterMode::ComposerEmpty
         );
+    }
+
+    #[test]
+    fn renders_working_status_line_from_runtime_turn_state() {
+        let mut app = App::new("footer-status".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buffer = Buffer::empty(area);
+
+        super::render_status_line(&app, area, &mut buffer);
+        let output = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("Working ("));
+        assert!(output.contains("esc to interrupt"));
+    }
+
+    #[test]
+    fn renders_error_status_line_without_working_hint() {
+        let mut app = App::new("footer-error".to_owned());
+        app.handle_runtime_event(RuntimeEvent::Error {
+            message: "runtime unavailable".to_owned(),
+        });
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buffer = Buffer::empty(area);
+
+        super::render_status_line(&app, area, &mut buffer);
+        let output = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("! runtime unavailable"));
+        assert!(!output.contains("Working ("));
     }
 }

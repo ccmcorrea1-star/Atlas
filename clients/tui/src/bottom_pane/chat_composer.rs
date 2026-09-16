@@ -81,7 +81,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         return;
     }
 
-    render_status(app, area, buffer);
+    footer::render_status_line(app, Rect::new(area.x, area.y, area.width, 1), buffer);
 
     let popup_height = completion_popup_height(app);
     let input_area = Rect {
@@ -201,28 +201,6 @@ pub(crate) fn cursor_position_for(app: &App, area: Rect) -> Option<(u16, u16)> {
     }
     app.textarea()
         .cursor_pos_with_state(input_area, app.textarea().state_for_viewport(input_area))
-}
-
-fn render_status(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
-    let (label, style) = match app.status() {
-        crate::app::Status::Ready => return,
-        crate::app::Status::Thinking | crate::app::Status::Executing => (
-            format!("• Working ({}s • esc to interrupt)", app.working_seconds()),
-            Style::default(),
-        ),
-        crate::app::Status::Error(message) => {
-            (format!("! {message}"), Style::default().fg(Color::Red))
-        }
-    };
-    Line::from(Span::styled(label, style.dim())).render(
-        Rect {
-            x: area.x + LIVE_PREFIX_COLS,
-            y: area.y,
-            width: area.width.saturating_sub(LIVE_PREFIX_COLS),
-            height: 1,
-        },
-        buffer,
-    );
 }
 
 #[cfg(test)]
