@@ -139,12 +139,61 @@ void prepareChild(const std::string& program, const Pipes& pipes) {
   executeDirectly(program, argv.data());
 }
 
-bool drainPipe(int& fd, std::string& output, std::string& error) {
+void consumeOutputEvents(
+    std::string& buffer,
+    std::string_view chunk,
+    const ExecutionOutputCallback& on_output) {
+  buffer.append(chunk.data(), chunk.size());
+  while (true) {
+    const std::size_t newline = buffer.find('\n');
+    if (newline == std::string::npos) {
+      return;
+    }
+    const std::string line = buffer.substr(0, newline);
+    buffer.erase(0, newline + 1);
+    if (!on_output || line.empty()) {
+      continue;
+    }
+    std::string parseError;
+    const auto parsed = parseJson(line, parseError);
+    if (!parsed.has_value()) {
+      continue;
+    }
+    const auto* object = std::get_if<StructuredValue::Object>(&parsed->value);
+    if (object == nullptr) {
+      continue;
+    }
+    const auto event = object->find("event");
+    const auto channel = object->find("channel");
+    const auto delta = object->find("delta");
+    if (event == object->end() || channel == object->end() || delta == object->end()) {
+      continue;
+    }
+    const auto* eventName = std::get_if<std::string>(&event->second.value);
+    const auto* channelName = std::get_if<std::string>(&channel->second.value);
+    const auto* deltaValue = std::get_if<std::string>(&delta->second.value);
+    if (eventName != nullptr && *eventName == "execution.output.delta" &&
+        channelName != nullptr && deltaValue != nullptr) {
+      on_output(*channelName, *deltaValue);
+    }
+  }
+}
+
+bool drainPipe(
+    int& fd,
+    std::string& output,
+    std::string& error,
+    std::string* eventBuffer = nullptr,
+    const ExecutionOutputCallback& on_output = {}) {
   std::array<char, 4096> buffer{};
   while (fd != -1) {
     const ssize_t count = read(fd, buffer.data(), buffer.size());
     if (count > 0) {
-      output.append(buffer.data(), static_cast<std::size_t>(count));
+      const std::size_t size = static_cast<std::size_t>(count);
+      output.append(buffer.data(), size);
+      if (eventBuffer != nullptr) {
+        consumeOutputEvents(*eventBuffer, std::string_view(buffer.data(), size), on_output);
+      }
       continue;
     }
     if (count == 0) {
@@ -173,7 +222,8 @@ std::optional<std::string> runExecutable(
     std::string payload,
     std::string& standardError,
     int& exitCode,
-    std::string& error) {
+    std::string& error,
+    const ExecutionOutputCallback& on_output) {
   // Le e escreve em paralelo para evitar bloquear em qualquer pipe do processo.
   int inputPipe[2] = {-1, -1};
   int outputPipe[2] = {-1, -1};
@@ -225,11 +275,12 @@ std::optional<std::string> runExecutable(
   SigpipeGuard sigpipeGuard;
 
   std::string output;
+  std::string eventBuffer;
   std::size_t written = 0;
   bool childReaped = false;
   int waitStatus = 0;
   while (!childReaped || !allClosed(pipes)) {
-    drainPipe(pipes.output_read, output, error);
+    drainPipe(pipes.output_read, output, error, &eventBuffer, on_output);
     drainPipe(pipes.error_read, standardError, error);
 
     if (pipes.input_write != -1 && written < payload.size()) {
@@ -275,7 +326,7 @@ std::optional<std::string> runExecutable(
       poll(pollFds, pollCount, 20);
     }
   }
-  drainPipe(pipes.output_read, output, error);
+  drainPipe(pipes.output_read, output, error, &eventBuffer, on_output);
   drainPipe(pipes.error_read, standardError, error);
   closePipes(pipes);
 
@@ -323,7 +374,8 @@ std::string outputError(const StructuredValue& output) {
 
 ExecutionResult executeExecutable(
     const ExecutionRequest& request,
-    const CapabilityImplementation& implementation) {
+    const CapabilityImplementation& implementation,
+    const ExecutionOutputCallback& on_output) {
   // O adaptador recebe os argumentos como um objeto JSON e nunca usa shell.
   if (implementation.entrypoint.find('\0') != std::string::npos) {
     return {request.target, ExecutionStatus::failed, {}, "executable entrypoint cannot contain NUL bytes"};
@@ -339,7 +391,8 @@ ExecutionResult executeExecutable(
       serializeJson(StructuredValue(std::move(input))) + "\n",
       standardError,
       exitCode,
-      processError);
+      processError,
+      on_output);
   if (!output.has_value()) {
     const std::string detail = processError.empty() ? standardError : processError;
     return {
@@ -360,8 +413,16 @@ ExecutionResult executeExecutable(
     };
   }
 
+  std::size_t end = output->size();
+  while (end > 0 && ((*output)[end - 1] == '\n' || (*output)[end - 1] == '\r')) {
+    --end;
+  }
+  const std::size_t lastLine = end == 0 ? std::string::npos : output->rfind('\n', end - 1);
+  const std::string response = lastLine == std::string::npos
+      ? output->substr(0, end)
+      : output->substr(lastLine + 1, end - lastLine - 1);
   std::string parseError;
-  const auto parsed = parseJson(output.value(), parseError);
+  const auto parsed = parseJson(response, parseError);
   if (!parsed.has_value()) {
     return {
         request.target,
@@ -396,7 +457,9 @@ ExecutionResult Executor::unavailable(std::string target, std::string kind) {
   return result;
 }
 
-ExecutionResult Executor::execute(const ExecutionRequest& request) const {
+ExecutionResult Executor::execute(
+    const ExecutionRequest& request,
+    const ExecutionOutputCallback& on_output) const {
   if (request.capability_id.empty()) {
     return failure(request.target, "capability id cannot be empty");
   }
@@ -413,7 +476,7 @@ ExecutionResult Executor::execute(const ExecutionRequest& request) const {
         "capability '" + request.capability_id + "' has no valid implementation");
   }
   if (implementation.kind == "executable") {
-    return executeExecutable(request, implementation);
+    return executeExecutable(request, implementation, on_output);
   }
   if (implementation.kind != "native") {
     return unavailable(request.target, implementation.kind);
@@ -446,8 +509,11 @@ ExecutionResult Executor::execute(const ExecutionRequest& request) const {
 ExecutionResult Executor::execute(
     std::string_view capability_id,
     std::string target,
-    StructuredArguments arguments) const {
-  return execute({std::string(capability_id), std::move(target), std::move(arguments)});
+    StructuredArguments arguments,
+    const ExecutionOutputCallback& on_output) const {
+  return execute(
+      {std::string(capability_id), std::move(target), std::move(arguments)},
+      on_output);
 }
 
 }  // namespace atlas::capabilities

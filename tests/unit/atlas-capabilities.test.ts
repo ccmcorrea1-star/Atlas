@@ -188,6 +188,36 @@ test('discovers and executes process.exec as a directly materialized Agent tool'
   }
 });
 
+test('forwards streamed output from the native process capability', async () => {
+  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const runtime = new NativeCapabilityRuntime();
+  const events: Array<{ channel: string; delta: string }> = [];
+  const result = await runtime.execute(
+    'process.exec',
+    'local',
+    {
+      program: '/bin/sh',
+      args: ['-c', 'printf out-one; sleep 0.04; printf err-one >&2; sleep 0.04; printf out-two'],
+    },
+    {
+      onOutput: (channel, delta) => {
+        events.push({ channel, delta });
+      },
+    },
+  );
+  assert.deepEqual(
+    events.map((event) => event.channel),
+    ['stdout', 'stderr', 'stdout'],
+  );
+  assert.deepEqual(
+    events.map((event) => event.delta),
+    ['out-one', 'err-one', 'out-two'],
+  );
+  assert.equal(result.status, 'success');
+  assert.equal(result.stdout, 'out-oneout-two');
+  assert.equal(result.stderr, 'err-one');
+});
+
 test('keeps a discovered capability available in later turns of the same conversation', async () => {
   const definition: CapabilityDefinition = {
     id: 'process.exec',

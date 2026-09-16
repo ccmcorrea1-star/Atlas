@@ -27,7 +27,15 @@ int run(Dispatch dispatch) {
     result.error = "executable dispatch is not configured";
   } else {
     try {
-      result = dispatch(parsed.request.value());
+      const ExecutionOutputCallback on_output = [](std::string_view channel, std::string_view delta) {
+        StructuredValue::Object event{
+            {"event", "execution.output.delta"},
+            {"channel", std::string(channel)},
+            {"delta", std::string(delta)},
+        };
+        std::cout << serializeJson(StructuredValue(std::move(event))) << '\n' << std::flush;
+      };
+      result = dispatch(parsed.request.value(), on_output);
       result.target = parsed.target;
     } catch (const std::exception& exception) {
       result.target = parsed.target;

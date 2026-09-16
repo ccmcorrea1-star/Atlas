@@ -20,6 +20,7 @@ import {
   type CapabilityDefinition,
   type CapabilityDiscoveryRequest,
   type CapabilityDiscoveryResult,
+  type CapabilityExecutionOptions,
   type CapabilityRuntime,
 } from './capability-runtime.js';
 
@@ -195,6 +196,12 @@ function materializeTool(
   capabilityRuntime: CapabilityRuntime,
   toolName: string,
   capabilityIdsByToolName: ReadonlyMap<string, string>,
+  onOutput?: (
+    capabilityId: string,
+    executionId: string,
+    channel: 'stdout' | 'stderr',
+    delta: string,
+  ) => void | Promise<void>,
 ): FunctionTool {
   return {
     type: 'function',
@@ -204,12 +211,26 @@ function materializeTool(
     strict: false,
     needsApproval: async () => false,
     isEnabled: async () => true,
-    invoke: async (_runContext, input) => {
+    invoke: async (_runContext, input, details) => {
       if (capabilityIdsByToolName.get(toolName) !== definition.id) {
         throw new Error(`Unknown provider tool mapping for capability "${definition.id}".`);
       }
       const arguments_ = parseObjectInput(input, definition.id);
-      const result = await capabilityRuntime.execute(definition.id, 'local', arguments_);
+      const executionId = details?.toolCall?.callId;
+      const executionOptions: CapabilityExecutionOptions = {
+        signal: details?.signal,
+        ...(executionId === undefined || onOutput === undefined
+          ? {}
+          : {
+              onOutput: (channel, delta) => onOutput(definition.id, executionId, channel, delta),
+            }),
+      };
+      const result = await capabilityRuntime.execute(
+        definition.id,
+        'local',
+        arguments_,
+        executionOptions,
+      );
       return JSON.stringify(result);
     },
   };
@@ -263,6 +284,12 @@ function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
   rootGroups: readonly CapabilityDiscoveryResult[],
   materializedDefinitions: Map<string, CapabilityDefinition>,
+  onOutput?: (
+    capabilityId: string,
+    executionId: string,
+    channel: 'stdout' | 'stderr',
+    delta: string,
+  ) => void | Promise<void>,
 ): AtlasAgent {
   const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
   const agent = Atlas.clone({
@@ -286,7 +313,7 @@ function createAtlasAgent(
     capabilityIdsByToolName.set(toolName, definition.id);
     materializedDefinitions.set(definition.id, definition);
     agent.tools.push(
-      materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName),
+      materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName, onOutput),
     );
   };
   for (const definition of materializedDefinitions.values()) {
@@ -541,6 +568,19 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     capabilityRuntime,
     rootGroups,
     materializedDefinitions,
+    onEvent === undefined
+      ? undefined
+      : async (capabilityId, executionId, channel, delta) => {
+          if (capabilityId === 'process.exec') {
+            await onEvent({
+              type: 'execution.output.delta',
+              executionId,
+              capability: 'process.exec',
+              channel,
+              delta,
+            });
+          }
+        },
   );
   // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });

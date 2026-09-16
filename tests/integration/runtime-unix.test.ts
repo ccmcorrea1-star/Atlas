@@ -575,7 +575,10 @@ test('does not cancel a turn when conversation identity does not match', async (
       result.events.map((event) => event.type),
       ['turn.started', 'error'],
     );
-    assert.deepEqual(result.cancelEvents.map((event) => event.type), ['error']);
+    assert.deepEqual(
+      result.cancelEvents.map((event) => event.type),
+      ['error'],
+    );
     assert.match(
       String((result.cancelEvents[0]?.data as WireMessage).message),
       /No active turn exists/,

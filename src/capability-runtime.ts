@@ -24,6 +24,11 @@ export type CapabilityExecutionResult = {
   [key: string]: unknown;
 };
 
+export type CapabilityExecutionOptions = {
+  signal?: AbortSignal;
+  onOutput?: (channel: 'stdout' | 'stderr', delta: string) => void | Promise<void>;
+};
+
 export interface CapabilityRuntime {
   discover(request?: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult[]>;
   getDefinition(id: string): Promise<CapabilityDefinition | undefined>;
@@ -31,6 +36,7 @@ export interface CapabilityRuntime {
     id: string,
     target: string,
     arguments_: Record<string, unknown>,
+    options?: CapabilityExecutionOptions,
   ): Promise<CapabilityExecutionResult>;
 }
 
@@ -113,13 +119,18 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     id: string,
     target: string,
     arguments_: Record<string, unknown>,
+    options: CapabilityExecutionOptions = {},
   ): Promise<CapabilityExecutionResult> {
-    const response = await this.request({
-      operation: 'execute',
-      id,
-      target,
-      arguments: arguments_,
-    });
+    const response = await this.request(
+      {
+        operation: 'execute',
+        id,
+        target,
+        arguments: arguments_,
+        ...(options.onOutput === undefined ? {} : { stream: true }),
+      },
+      options,
+    );
     const result = asObject(response, 'Capability execution result');
     return {
       ...result,
@@ -129,7 +140,10 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     };
   }
 
-  private request(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private request(
+    request: Record<string, unknown>,
+    options: Pick<CapabilityExecutionOptions, 'signal' | 'onOutput'> = {},
+  ): Promise<Record<string, unknown>> {
     return new Promise((resolveRequest, rejectRequest) => {
       const child = spawn(this.executablePath, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -137,6 +151,8 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       let output = '';
       let errorOutput = '';
       let settled = false;
+      let streamBuffer = '';
+      let streamQueue = Promise.resolve();
 
       const rejectOnce = (error: Error) => {
         if (!settled) {
@@ -149,6 +165,39 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
         output += chunk;
+        if (options.onOutput === undefined) {
+          return;
+        }
+        streamBuffer += chunk;
+        let newline = streamBuffer.indexOf('\n');
+        while (newline !== -1) {
+          const line = streamBuffer.slice(0, newline).trim();
+          streamBuffer = streamBuffer.slice(newline + 1);
+          newline = streamBuffer.indexOf('\n');
+          if (!line) {
+            continue;
+          }
+          let event: unknown;
+          try {
+            event = JSON.parse(line) as unknown;
+          } catch {
+            continue;
+          }
+          const record =
+            event !== null && typeof event === 'object' && !Array.isArray(event)
+              ? (event as Record<string, unknown>)
+              : undefined;
+          if (record?.event !== 'execution.output.delta') {
+            continue;
+          }
+          const channel = record.channel;
+          const delta = record.delta;
+          if ((channel !== 'stdout' && channel !== 'stderr') || typeof delta !== 'string') {
+            continue;
+          }
+          streamQueue = streamQueue.then(() => options.onOutput?.(channel, delta));
+          streamQueue.catch(rejectOnce);
+        }
       });
       child.stderr.on('data', (chunk: string) => {
         errorOutput += chunk;
@@ -157,33 +206,52 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
         rejectOnce(error);
       });
       child.once('close', (code, signal) => {
-        if (settled) {
-          return;
-        }
-        if (code !== 0) {
-          const detail = errorOutput.trim() || output.trim();
-          rejectOnce(
-            new Error(
-              `Capability runtime exited with ${signal ? `signal ${signal}` : `code ${code}`}${
-                detail ? `: ${detail}` : '.'
-              }`,
-            ),
-          );
-          return;
-        }
+        void (async () => {
+          await streamQueue;
+          if (settled) {
+            return;
+          }
+          if (code !== 0) {
+            const detail = errorOutput.trim() || output.trim();
+            rejectOnce(
+              new Error(
+                `Capability runtime exited with ${signal ? `signal ${signal}` : `code ${code}`}${
+                  detail ? `: ${detail}` : '.'
+                }`,
+              ),
+            );
+            return;
+          }
 
-        try {
-          const parsed = JSON.parse(output) as unknown;
-          settled = true;
-          resolveRequest(asObject(parsed, 'Capability runtime response'));
-        } catch (error) {
-          rejectOnce(
-            new Error(
-              `Capability runtime returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-        }
+          try {
+            const lines = output
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean);
+            const parsed = JSON.parse(lines.at(-1) ?? '') as unknown;
+            settled = true;
+            resolveRequest(asObject(parsed, 'Capability runtime response'));
+          } catch (error) {
+            rejectOnce(
+              new Error(
+                `Capability runtime returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          }
+        })().catch(rejectOnce);
       });
+
+      const abort = () => {
+        child.kill('SIGTERM');
+        rejectOnce(new Error('Capability execution aborted.'));
+      };
+      if (options.signal !== undefined) {
+        if (options.signal.aborted) {
+          abort();
+        } else {
+          options.signal.addEventListener('abort', abort, { once: true });
+        }
+      }
 
       child.stdin.end(JSON.stringify(request));
     });
