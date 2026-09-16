@@ -281,7 +281,9 @@ impl TextArea {
             KeyCode::Down => self.move_cursor_down(),
             KeyCode::Home => self.move_cursor_to_beginning_of_line(),
             KeyCode::End => self.move_cursor_to_end_of_line(),
-            KeyCode::Char(character) if !control && !alt && !character.is_control() => {
+            KeyCode::Char(character)
+                if (!control && !alt || control && alt) && !character.is_control() =>
+            {
                 self.insert_str(&character.to_string());
             }
             _ => {}
@@ -434,6 +436,16 @@ mod tests {
         area.insert_str("e\u{301}");
         area.delete_backward();
         assert!(area.is_empty());
+    }
+
+    #[test]
+    fn inserts_altgr_characters_instead_of_treating_them_as_control_input() {
+        let mut area = TextArea::new();
+        area.input(KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert_eq!(area.text(), "@");
     }
 
     #[test]
