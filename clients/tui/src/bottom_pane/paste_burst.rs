@@ -217,9 +217,12 @@ impl PasteBurst {
         PASTE_BURST_CHAR_INTERVAL + Duration::from_millis(1)
     }
 
-    #[cfg(test)]
     pub(crate) fn recommended_active_flush_delay() -> Duration {
         PASTE_BURST_ACTIVE_IDLE_TIMEOUT + Duration::from_millis(1)
+    }
+
+    pub(crate) fn is_in_progress(&self) -> bool {
+        self.active || !self.buffer.is_empty() || self.pending_first_char.is_some()
     }
 
     /// Entry point: decide how to treat a plain char with current timing.

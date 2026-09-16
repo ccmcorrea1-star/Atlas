@@ -332,7 +332,6 @@ impl App {
 
     pub fn tick(&mut self) {
         self.chatwidget.tick();
-        self.flush_paste_burst_if_due();
     }
 
     pub fn quit(&mut self) {
@@ -354,17 +353,23 @@ impl App {
         self.bottom_pane.composer.textarea.insert_str(text);
     }
 
-    fn flush_paste_burst_if_due(&mut self) {
-        match self
-            .bottom_pane
-            .composer
-            .paste_burst
-            .flush_if_due(Instant::now())
-        {
-            FlushResult::Paste(text) => self.handle_paste(&text),
-            FlushResult::Typed(character) => self.insert_character_direct(character),
-            FlushResult::None => {}
+    pub(crate) fn flush_paste_burst_if_due_at(&mut self, now: Instant) -> bool {
+        match self.bottom_pane.composer.paste_burst.flush_if_due(now) {
+            FlushResult::Paste(text) => {
+                self.handle_paste(&text);
+                true
+            }
+            FlushResult::Typed(character) => {
+                self.insert_character_direct(character);
+                true
+            }
+            FlushResult::None => false,
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_in_paste_burst(&self) -> bool {
+        self.bottom_pane.composer.paste_burst.is_in_progress()
     }
 
     /// Paste belongs to the active Codex view, never to a hidden composer.
@@ -823,7 +828,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::App;
+    use crate::bottom_pane::BottomPaneView;
+    use crate::bottom_pane::ChatComposerView;
     use crate::runtime::RuntimeEvent;
 
     #[test]
@@ -896,7 +905,7 @@ mod tests {
             plain,
         ));
         std::thread::sleep(std::time::Duration::from_millis(12));
-        app.tick();
+        assert!(ChatComposerView.pre_draw_tick(&mut app, Instant::now()));
 
         assert_eq!(app.input(), "ab");
     }
@@ -918,7 +927,7 @@ mod tests {
             plain,
         ));
         std::thread::sleep(std::time::Duration::from_millis(12));
-        app.tick();
+        assert!(ChatComposerView.pre_draw_tick(&mut app, Instant::now()));
 
         assert_eq!(app.input(), "ab\n");
     }

@@ -19,6 +19,7 @@ mod wrapping;
 
 use std::error::Error;
 use std::io::stdout;
+use std::time::Instant;
 
 use clap::Parser;
 use crossterm::cursor::Hide;
@@ -209,7 +210,10 @@ async fn run(
                 terminal.clear()?;
             }
             Event::FocusGained | Event::FocusLost => {}
-            Event::Tick => app.tick(),
+            Event::Tick => {
+                app.tick();
+                bottom_pane.pre_draw_tick(&mut app, Instant::now());
+            }
             Event::Runtime(runtime_event) => {
                 let completed = runtime_event.is_terminal();
                 app.handle_runtime_event(runtime_event);

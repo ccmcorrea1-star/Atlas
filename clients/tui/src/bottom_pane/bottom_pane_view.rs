@@ -1,3 +1,6 @@
+use std::time::Duration;
+use std::time::Instant;
+
 use crossterm::event::KeyEvent;
 use crossterm::event::MouseEvent;
 use ratatui::buffer::Buffer;
@@ -5,7 +8,15 @@ use ratatui::layout::Rect;
 
 use crate::app::App;
 use crate::bottom_pane::chat_composer;
+use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::render::renderable::Renderable;
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViewCompletion {
+    Accepted,
+    Cancelled,
+}
 
 /// A renderable and interactive view hosted by the canonical bottom pane.
 ///
@@ -25,6 +36,35 @@ pub(crate) trait BottomPaneView {
 
     /// Handle mouse input routed to the bottom pane and its popups.
     fn handle_mouse_event(&self, app: &mut App, mouse: MouseEvent) -> bool;
+
+    /// Return whether this view has completed and should be replaced.
+    #[allow(dead_code)]
+    fn is_complete(&self, _app: &App) -> bool {
+        false
+    }
+
+    /// Return the completion reason when this view has finished.
+    #[allow(dead_code)]
+    fn completion(&self, _app: &App) -> Option<ViewCompletion> {
+        None
+    }
+
+    /// Flush time-based input owned by this view before rendering.
+    fn pre_draw_tick(&self, _app: &mut App, _now: Instant) -> bool {
+        false
+    }
+
+    /// Report transient paste state so the event loop can schedule redraws.
+    #[allow(dead_code)]
+    fn is_in_paste_burst(&self, _app: &App) -> bool {
+        false
+    }
+
+    /// Return the next redraw delay requested by this view.
+    #[allow(dead_code)]
+    fn next_frame_delay(&self, _app: &App) -> Option<Duration> {
+        None
+    }
 }
 
 /// The default bottom-pane view for the Atlas chat session.
@@ -48,6 +88,21 @@ impl BottomPaneView for ChatComposerView {
         app.handle_mouse_event(mouse);
         true
     }
+
+    fn pre_draw_tick(&self, app: &mut App, now: Instant) -> bool {
+        app.flush_paste_burst_if_due_at(now)
+    }
+
+    #[allow(dead_code)]
+    fn is_in_paste_burst(&self, app: &App) -> bool {
+        app.is_in_paste_burst()
+    }
+
+    #[allow(dead_code)]
+    fn next_frame_delay(&self, app: &App) -> Option<Duration> {
+        self.is_in_paste_burst(app)
+            .then_some(PasteBurst::recommended_active_flush_delay())
+    }
 }
 
 struct ChatComposerRenderable<'a> {
@@ -70,6 +125,9 @@ impl Renderable for ChatComposerRenderable<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
@@ -114,5 +172,26 @@ mod tests {
                 .cursor_pos(ratatui::layout::Rect::new(0, 0, 80, 4))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn composer_view_flushes_paste_burst_before_rendering() {
+        let view = ChatComposerView;
+        let mut app = App::new("test".to_owned());
+        let plain = crossterm::event::KeyModifiers::NONE;
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            plain,
+        ));
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            plain,
+        ));
+
+        std::thread::sleep(Duration::from_millis(12));
+        assert!(view.pre_draw_tick(&mut app, Instant::now()));
+        assert!(!view.is_in_paste_burst(&app));
+        assert!(view.next_frame_delay(&app).is_none());
+        assert_eq!(app.input(), "ab");
     }
 }
