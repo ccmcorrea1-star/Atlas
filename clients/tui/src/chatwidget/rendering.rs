@@ -34,7 +34,7 @@ pub(crate) fn render(
     ])
     .areas(area);
 
-    session_header::render(header_area, buffer);
+    session_header::render(header_area, buffer, app);
     render_history(buffer, app, history_area);
     bottom_pane.render(app, composer_area, buffer);
     let cursor = bottom_pane.cursor_pos(app, composer_area);

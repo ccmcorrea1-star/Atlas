@@ -541,7 +541,7 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'error'],
+      ['session.updated', 'turn.started', 'error'],
     );
     assert.equal(events.at(-1)?.request_id, 'tui-cancel-request');
     assert.equal((events.at(-1)?.data as WireMessage).message, 'turn cancelled by client');
@@ -573,7 +573,7 @@ test('does not cancel a turn when conversation identity does not match', async (
 
     assert.deepEqual(
       result.events.map((event) => event.type),
-      ['turn.started', 'error'],
+      ['session.updated', 'turn.started', 'error'],
     );
     assert.deepEqual(
       result.cancelEvents.map((event) => event.type),
@@ -652,9 +652,20 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'message.delta', 'message.completed', 'context.updated', 'turn.completed'],
+      [
+        'session.updated',
+        'turn.started',
+        'message.delta',
+        'message.completed',
+        'context.updated',
+        'turn.completed',
+      ],
     );
     assert.equal(events[0]?.request_id, 'tui-integration-request');
+    assert.deepEqual(events[0]?.data, {
+      model: 'gpt-5.6-luna',
+      provider: 'opencode-go',
+    });
     assert.equal(events.at(-1)?.conversation_id, 'runtime-integration-conversation');
     assert.equal((events.at(-1)?.data as WireMessage).content, 'v22.x.x');
     assert.deepEqual((events.at(-1)?.data as WireMessage).context, {
@@ -712,6 +723,7 @@ test('publishes process execution lifecycle events over the public Unix protocol
     assert.deepEqual(
       events.map((event) => event.type),
       [
+        'session.updated',
         'turn.started',
         'execution.started',
         'execution.completed',
@@ -721,8 +733,8 @@ test('publishes process execution lifecycle events over the public Unix protocol
         'turn.completed',
       ],
     );
-    const started = events[1]?.data as WireMessage;
-    const completed = events[2]?.data as WireMessage;
+    const started = events[2]?.data as WireMessage;
+    const completed = events[3]?.data as WireMessage;
     assert.deepEqual(started, {
       execution_id: 'execution-call',
       capability: 'process.exec',
@@ -766,9 +778,9 @@ test('publishes failed process execution status and output over the public proto
       'please fail this process',
     );
 
-    assert.equal(events[1]?.type, 'execution.started');
-    assert.equal(events[2]?.type, 'execution.completed');
-    assert.deepEqual(events[2]?.data, {
+    assert.equal(events[2]?.type, 'execution.started');
+    assert.equal(events[3]?.type, 'execution.completed');
+    assert.deepEqual(events[3]?.data, {
       execution_id: 'execution-call',
       capability: 'process.exec',
       stdout: '',
@@ -805,7 +817,7 @@ test('publishes provider stream failures as a terminal runtime error', async () 
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'error'],
+      ['session.updated', 'turn.started', 'error'],
     );
     assert.equal((events.at(-1)?.data as WireMessage).message, 'simulated provider failure');
   } finally {

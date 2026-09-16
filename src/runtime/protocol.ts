@@ -21,6 +21,7 @@ export type RuntimeTurnCancel = {
 export type RuntimeRequest = RuntimeTurnRequest | RuntimeTurnCancel;
 
 export type RuntimeEventType =
+  | 'session.updated'
   | 'turn.started'
   | 'context.updated'
   | 'message.delta'
@@ -36,6 +37,11 @@ export type RuntimeEventType =
 export type RuntimeContextUsage = {
   used_tokens: number;
   context_window: number;
+};
+
+export type RuntimeSessionUpdatedData = {
+  model: string;
+  provider: string;
 };
 
 export type RuntimeTurnCompletedData = {

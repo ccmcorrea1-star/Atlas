@@ -2,7 +2,11 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
-import { getOpenCodeGoContextWindow } from '../opencode-go.js';
+import {
+  getOpenCodeGoContextWindow,
+  OPENCODE_GO_MODEL_ID,
+  OPENCODE_GO_PROVIDER,
+} from '../opencode-go.js';
 import {
   parseRuntimeMessage,
   runtimeErrorEvent,
@@ -10,6 +14,7 @@ import {
   serializeRuntimeMessage,
   type RuntimeEvent,
   type RuntimeRequest,
+  type RuntimeSessionUpdatedData,
   type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
 } from './protocol.js';
@@ -133,6 +138,11 @@ export class AtlasRuntimeServer {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
     };
+    const sessionData: RuntimeSessionUpdatedData = {
+      model: OPENCODE_GO_MODEL_ID,
+      provider: OPENCODE_GO_PROVIDER,
+    };
+    publish(runtimeEvent(request, 'session.updated', sessionData));
     publish(runtimeEvent(request, 'turn.started'));
 
     let messageId: string | undefined;

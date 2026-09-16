@@ -104,6 +104,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_runtime_event(&mut self, event: RuntimeEvent) {
         match event {
+            RuntimeEvent::SessionUpdated { .. } => {}
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
                 self.turn_active = true;
