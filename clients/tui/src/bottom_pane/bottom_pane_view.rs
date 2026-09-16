@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 
 use crate::app::App;
 use crate::bottom_pane::chat_composer;
+use crate::bottom_pane::footer;
 use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::render::renderable::Renderable;
 
@@ -105,6 +106,139 @@ impl BottomPaneView for ChatComposerView {
     }
 }
 
+/// The view currently occupying the interactive bottom pane.
+pub(crate) enum ActiveBottomPaneView {
+    Composer(ChatComposerView),
+    Shortcuts(ShortcutsView),
+}
+
+impl ActiveBottomPaneView {
+    pub(crate) fn new() -> Self {
+        Self::Composer(ChatComposerView)
+    }
+
+    /// Keep the concrete view aligned with the app-level overlay state.
+    pub(crate) fn sync(&mut self, app: &App) {
+        if app.shortcuts_open() && matches!(self, Self::Composer(_)) {
+            *self = Self::Shortcuts(ShortcutsView);
+        } else if !app.shortcuts_open() && matches!(self, Self::Shortcuts(_)) {
+            *self = Self::Composer(ChatComposerView);
+        }
+    }
+}
+
+impl BottomPaneView for ActiveBottomPaneView {
+    fn renderable<'a>(&self, app: &'a App) -> Box<dyn Renderable + 'a> {
+        match self {
+            Self::Composer(view) => view.renderable(app),
+            Self::Shortcuts(view) => view.renderable(app),
+        }
+    }
+
+    fn handle_key_event(&self, app: &mut App, key: KeyEvent) -> Option<String> {
+        match self {
+            Self::Composer(view) => view.handle_key_event(app, key),
+            Self::Shortcuts(view) => view.handle_key_event(app, key),
+        }
+    }
+
+    fn handle_paste(&self, app: &mut App, text: &str) -> bool {
+        match self {
+            Self::Composer(view) => view.handle_paste(app, text),
+            Self::Shortcuts(view) => view.handle_paste(app, text),
+        }
+    }
+
+    fn handle_mouse_event(&self, app: &mut App, mouse: MouseEvent) -> bool {
+        match self {
+            Self::Composer(view) => view.handle_mouse_event(app, mouse),
+            Self::Shortcuts(view) => view.handle_mouse_event(app, mouse),
+        }
+    }
+
+    fn is_complete(&self, app: &App) -> bool {
+        match self {
+            Self::Composer(view) => view.is_complete(app),
+            Self::Shortcuts(view) => view.is_complete(app),
+        }
+    }
+
+    fn completion(&self, app: &App) -> Option<ViewCompletion> {
+        match self {
+            Self::Composer(view) => view.completion(app),
+            Self::Shortcuts(view) => view.completion(app),
+        }
+    }
+
+    fn pre_draw_tick(&self, app: &mut App, now: Instant) -> bool {
+        match self {
+            Self::Composer(view) => view.pre_draw_tick(app, now),
+            Self::Shortcuts(view) => view.pre_draw_tick(app, now),
+        }
+    }
+
+    fn is_in_paste_burst(&self, app: &App) -> bool {
+        match self {
+            Self::Composer(view) => view.is_in_paste_burst(app),
+            Self::Shortcuts(view) => view.is_in_paste_burst(app),
+        }
+    }
+
+    fn next_frame_delay(&self, app: &App) -> Option<Duration> {
+        match self {
+            Self::Composer(view) => view.next_frame_delay(app),
+            Self::Shortcuts(view) => view.next_frame_delay(app),
+        }
+    }
+}
+
+/// Modal view for the shortcuts surface.
+pub(crate) struct ShortcutsView;
+
+impl BottomPaneView for ShortcutsView {
+    fn renderable<'a>(&self, app: &'a App) -> Box<dyn Renderable + 'a> {
+        Box::new(ShortcutsRenderable { app })
+    }
+
+    fn handle_key_event(&self, _app: &mut App, _key: KeyEvent) -> Option<String> {
+        None
+    }
+
+    fn handle_paste(&self, _app: &mut App, _text: &str) -> bool {
+        true
+    }
+
+    fn handle_mouse_event(&self, _app: &mut App, _mouse: MouseEvent) -> bool {
+        true
+    }
+
+    fn is_complete(&self, app: &App) -> bool {
+        !app.shortcuts_open()
+    }
+
+    fn completion(&self, app: &App) -> Option<ViewCompletion> {
+        self.is_complete(app).then_some(ViewCompletion::Cancelled)
+    }
+}
+
+struct ShortcutsRenderable<'a> {
+    app: &'a App,
+}
+
+impl Renderable for ShortcutsRenderable<'_> {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        footer::render(self.app, area, buffer);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        footer::desired_height(self.app, width)
+    }
+
+    fn cursor_pos(&self, _area: Rect) -> Option<(u16, u16)> {
+        None
+    }
+}
+
 struct ChatComposerRenderable<'a> {
     app: &'a App,
 }
@@ -132,8 +266,10 @@ mod tests {
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
 
+    use super::ActiveBottomPaneView;
     use super::BottomPaneView;
     use super::ChatComposerView;
+    use super::ViewCompletion;
     use crate::app::App;
 
     #[test]
@@ -193,5 +329,24 @@ mod tests {
         assert!(!view.is_in_paste_burst(&app));
         assert!(view.next_frame_delay(&app).is_none());
         assert_eq!(app.input(), "ab");
+    }
+
+    #[test]
+    fn active_view_switches_to_and_from_the_shortcuts_modal() {
+        let mut view = ActiveBottomPaneView::new();
+        let mut app = App::new("test".to_owned());
+
+        assert!(matches!(view, ActiveBottomPaneView::Composer(_)));
+
+        app.open_shortcuts();
+        view.sync(&app);
+        assert!(matches!(view, ActiveBottomPaneView::Shortcuts(_)));
+        assert!(!view.is_complete(&app));
+        assert_eq!(view.renderable(&app).desired_height(80), 11);
+
+        app.close_shortcuts();
+        assert_eq!(view.completion(&app), Some(ViewCompletion::Cancelled));
+        view.sync(&app);
+        assert!(matches!(view, ActiveBottomPaneView::Composer(_)));
     }
 }

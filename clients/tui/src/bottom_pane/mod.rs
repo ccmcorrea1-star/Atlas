@@ -6,8 +6,8 @@ pub(crate) mod prompt_args;
 pub(crate) mod slash_commands;
 pub(crate) mod textarea;
 
+pub(crate) use bottom_pane_view::ActiveBottomPaneView;
 pub(crate) use bottom_pane_view::BottomPaneView;
-pub(crate) use bottom_pane_view::ChatComposerView;
 pub(crate) use chat_composer::ChatComposer;
 
 /// Owns the composer state for the lower interactive pane.

@@ -153,7 +153,7 @@ impl TranscriptAreaRenderable<'_> {
 mod tests {
     use super::TranscriptAreaRenderable;
     use crate::app::App;
-    use crate::bottom_pane::ChatComposerView;
+    use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::history_cell::HistoryCell;
     use crate::render::renderable::Renderable;
     use crate::runtime::RuntimeEvent;

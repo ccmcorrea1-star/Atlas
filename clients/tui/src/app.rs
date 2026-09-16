@@ -832,7 +832,7 @@ mod tests {
 
     use super::App;
     use crate::bottom_pane::BottomPaneView;
-    use crate::bottom_pane::ChatComposerView;
+    use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::runtime::RuntimeEvent;
 
     #[test]
