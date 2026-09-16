@@ -104,6 +104,9 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         if child_area.is_empty() {
             return;
         }
+        if let Some(style) = self.child.background_style() {
+            buffer.set_style(child_area, style);
+        }
         Paragraph::new(self.child.display_lines(child_area.width)).render(child_area, buffer);
     }
 
@@ -125,6 +128,9 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         );
         if child_area.is_empty() {
             return true;
+        }
+        if let Some(style) = self.child.background_style() {
+            buffer.set_style(child_area, style);
         }
         Paragraph::new(self.child.display_lines(child_area.width))
             .scroll((child_offset, 0))
@@ -150,10 +156,12 @@ mod tests {
     use crate::app::App;
     use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::history_cell::HistoryCell;
+    use crate::history_cell::UserHistoryCell;
     use crate::render::renderable::Renderable;
     use crate::runtime::RuntimeEvent;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use ratatui::text::Line;
     use ratatui::text::Span;
 
@@ -240,6 +248,27 @@ mod tests {
         assert_eq!(rows.len(), 24);
         assert!(rows.iter().any(|row| row.contains("stream line 39")));
         assert!(rows.iter().all(|row| row.chars().count() == 80));
+    }
+
+    #[test]
+    fn renders_user_message_background_across_the_cell_width() {
+        let cell = UserHistoryCell::new("hello");
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buffer = Buffer::empty(area);
+        let renderable = TranscriptAreaRenderable {
+            child: &cell,
+            top: 0,
+            right: 0,
+        };
+
+        renderable.render(area, &mut buffer);
+
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.bg == Color::Rgb(51, 51, 51))
+        );
     }
 
     #[test]

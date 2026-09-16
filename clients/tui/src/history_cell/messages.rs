@@ -1,3 +1,4 @@
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -15,6 +16,12 @@ pub(crate) struct UserHistoryCell {
     pub(crate) message: String,
 }
 
+const USER_MESSAGE_BACKGROUND: Color = Color::Rgb(51, 51, 51);
+
+pub(crate) fn user_message_style() -> Style {
+    Style::default().bg(USER_MESSAGE_BACKGROUND)
+}
+
 impl UserHistoryCell {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
@@ -29,11 +36,12 @@ impl HistoryCell for UserHistoryCell {
         if message.is_empty() {
             return Vec::new();
         }
+        let message_style = user_message_style();
         let wrap_width = usize::from(width).saturating_sub(3).max(1);
-        let mut result = vec![Line::default()];
+        let mut result = vec![Line::from("").style(message_style)];
         for (line_index, source) in message.split('\n').enumerate() {
             let wrapped = wrap_line(
-                crate::markdown::render_ansi_line(source, Style::default()),
+                crate::markdown::render_ansi_line(source, message_style),
                 wrap_width,
             );
             for (part_index, line) in wrapped.into_iter().enumerate() {
@@ -42,15 +50,19 @@ impl HistoryCell for UserHistoryCell {
                     line,
                     if first { "› " } else { "  " },
                     if first {
-                        Style::default().add_modifier(Modifier::BOLD | Modifier::DIM)
+                        message_style.add_modifier(Modifier::BOLD | Modifier::DIM)
                     } else {
-                        Style::default().dim()
+                        message_style.dim()
                     },
                 ));
             }
         }
-        result.push(Line::default());
+        result.push(Line::from("").style(message_style));
         result
+    }
+
+    fn background_style(&self) -> Option<Style> {
+        Some(user_message_style())
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
