@@ -73,9 +73,8 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
         let y = area
             .y
             .saturating_add(u16::try_from(start.max(0)).unwrap_or(0));
-        let visible_height = usize::try_from(end.min(viewport_height))
+        let visible_height = usize::try_from(end.min(viewport_height).saturating_sub(start.max(0)))
             .unwrap_or(0)
-            .saturating_sub(skip)
             .min(usize::from(area.height));
         if visible_height == 0 {
             continue;
@@ -175,6 +174,17 @@ mod tests {
         }
     }
 
+    fn screen_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        super::render(area, &mut buffer, app, &ChatComposerView);
+        buffer
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
     #[test]
     fn renders_active_process_exec_and_working_composer() {
         let mut app = App::new("render-test".to_owned());
@@ -200,6 +210,56 @@ mod tests {
         assert!(screen.contains("Running node --version"));
         assert!(screen.contains("Working ("));
         assert!(screen.contains("Ask Codex to do anything"));
+    }
+
+    #[test]
+    fn renders_terminal_error_without_stale_working_status() {
+        let mut app = App::new("render-error".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::Error {
+            message: "provider unavailable".to_owned(),
+        });
+
+        let screen = screen_rows(&mut app, 80, 24).join("\n");
+        assert!(screen.contains("! provider unavailable"));
+        assert!(!screen.contains("Working ("));
+    }
+
+    #[test]
+    fn keeps_long_streaming_output_inside_the_history_viewport() {
+        let mut app = App::new("render-stream".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        for line in 0..40 {
+            app.handle_runtime_event(RuntimeEvent::MessageDelta {
+                message_id: "assistant-1".to_owned(),
+                delta: format!("stream line {line}\n"),
+            });
+        }
+
+        let rows = screen_rows(&mut app, 80, 24);
+        assert_eq!(rows.len(), 24);
+        assert!(rows.iter().any(|row| row.contains("stream line 39")));
+        assert!(rows.iter().all(|row| row.chars().count() == 80));
+    }
+
+    #[test]
+    fn keeps_active_status_and_composer_after_resize() {
+        let mut app = App::new("render-resize-active".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+
+        for (width, height) in [(80, 24), (120, 40), (80, 24)] {
+            let rows = screen_rows(&mut app, width, height);
+            assert_eq!(rows.len(), usize::from(height));
+            assert!(rows.iter().any(|row| row.contains("Working (")));
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains("Ask Codex to do anything"))
+            );
+            assert!(
+                rows.iter()
+                    .all(|row| row.chars().count() == usize::from(width))
+            );
+        }
     }
 
     #[test]
