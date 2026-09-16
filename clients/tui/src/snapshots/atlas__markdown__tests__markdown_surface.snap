@@ -1,0 +1,15 @@
+---
+source: src/markdown.rs
+expression: "lines.into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+## Result
+
+done with atlas
+
+│ quoted
+- one
+- two
+
+│ ┌─ rust
+│ fn main() {}
+│ └─

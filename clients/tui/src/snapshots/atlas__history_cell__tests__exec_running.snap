@@ -1,0 +1,5 @@
+---
+source: src/history_cell.rs
+expression: "cell.display_lines(80).into_iter().map(|line|\nline.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+• Running node --version

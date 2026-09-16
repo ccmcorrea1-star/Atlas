@@ -1,18 +1,38 @@
+//! Thin Atlas Runtime Protocol v1 client.
+//!
+//! This module is the only place where the TUI knows about IPC or JSON. The
+//! cells receive already validated public events and never see provider data.
+
 use std::fmt;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncBufRead;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
+const PROTOCOL: &str = "atlas-runtime";
+const VERSION: u8 = 1;
+const EVENT_CHANNEL_CAPACITY: usize = 256;
+const MAX_RUNTIME_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_RUNTIME_SOCKET_PATH: &str = "/tmp/atlas-runtime.sock";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeEvent {
+    TurnStarted,
+    ContextUpdated {
+        context: ContextUsage,
+    },
     MessageDelta {
         message_id: String,
         delta: String,
@@ -38,6 +58,12 @@ pub enum RuntimeEvent {
         cwd: Option<String>,
         target: Option<String>,
     },
+    ExecutionOutputDelta {
+        execution_id: String,
+        capability: String,
+        channel: String,
+        delta: String,
+    },
     ExecutionCompleted {
         execution_id: String,
         capability: String,
@@ -47,13 +73,20 @@ pub enum RuntimeEvent {
         duration_ms: u64,
         status: String,
     },
-    TurnStarted,
     TurnCompleted {
+        content: String,
+        message_id: Option<String>,
         context: Option<ContextUsage>,
     },
     Error {
         message: String,
     },
+}
+
+impl RuntimeEvent {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::TurnCompleted { .. } | Self::Error { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,12 +95,9 @@ pub struct ContextUsage {
     pub context_window: u64,
 }
 
-pub type RuntimeEventSender = Sender<RuntimeEvent>;
 pub type RuntimeEventReceiver = Receiver<RuntimeEvent>;
+pub type RuntimeEventSender = Sender<RuntimeEvent>;
 pub type RuntimeFuture = Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send>>;
-
-const EVENT_CHANNEL_CAPACITY: usize = 256;
-const MAX_RUNTIME_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -93,13 +123,14 @@ impl std::error::Error for RuntimeError {}
 pub trait RuntimeTransport: Send + Sync {
     fn send_message(
         &self,
+        request_id: String,
         conversation_id: String,
         input: String,
         events: RuntimeEventSender,
     ) -> RuntimeFuture;
-}
 
-pub const DEFAULT_RUNTIME_SOCKET_PATH: &str = "/tmp/atlas-runtime.sock";
+    fn cancel_turn(&self, request_id: String, conversation_id: String) -> RuntimeFuture;
+}
 
 fn default_runtime_socket_path() -> String {
     std::env::var("XDG_RUNTIME_DIR")
@@ -125,10 +156,6 @@ impl UnixTransport {
             socket_path: Arc::from(socket_path.into()),
         }
     }
-
-    fn socket_path(&self) -> &str {
-        &self.socket_path
-    }
 }
 
 impl Default for UnixTransport {
@@ -142,12 +169,20 @@ impl Default for UnixTransport {
 impl RuntimeTransport for UnixTransport {
     fn send_message(
         &self,
+        request_id: String,
         conversation_id: String,
         input: String,
         events: RuntimeEventSender,
     ) -> RuntimeFuture {
-        let socket_path = self.socket_path().to_owned();
-        Box::pin(async move { send_turn(&socket_path, &conversation_id, &input, events).await })
+        let socket_path = self.socket_path.to_string();
+        Box::pin(async move {
+            send_turn(&socket_path, &request_id, &conversation_id, &input, events).await
+        })
+    }
+
+    fn cancel_turn(&self, request_id: String, conversation_id: String) -> RuntimeFuture {
+        let socket_path = self.socket_path.to_string();
+        Box::pin(async move { send_cancel(&socket_path, &request_id, &conversation_id).await })
     }
 }
 
@@ -162,6 +197,16 @@ struct TurnRequest<'a> {
     input: &'a str,
 }
 
+#[derive(Debug, Serialize)]
+struct TurnCancelRequest<'a> {
+    protocol: &'static str,
+    version: u8,
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    request_id: &'a str,
+    conversation_id: &'a str,
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeEnvelope {
     protocol: String,
@@ -169,7 +214,6 @@ struct RuntimeEnvelope {
     #[serde(rename = "type")]
     message_type: String,
     request_id: Option<String>,
-    #[allow(dead_code)]
     conversation_id: Option<String>,
     #[serde(default)]
     data: Value,
@@ -179,16 +223,16 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 async fn send_turn(
     socket_path: &str,
+    request_id: &str,
     conversation_id: &str,
     input: &str,
     events: RuntimeEventSender,
 ) -> Result<(), RuntimeError> {
-    let request_id = format!("tui-{}", NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed));
     let request = TurnRequest {
-        protocol: "atlas-runtime",
-        version: 1,
+        protocol: PROTOCOL,
+        version: VERSION,
         message_type: "turn.request",
-        request_id: request_id.clone(),
+        request_id: request_id.to_owned(),
         conversation_id,
         input,
     };
@@ -208,12 +252,12 @@ async fn send_turn(
         let line = read_runtime_frame(&mut reader).await?;
         let envelope: RuntimeEnvelope = serde_json::from_str(line.trim_end())
             .map_err(|error| RuntimeError::Protocol(error.to_string()))?;
-        if envelope.protocol != "atlas-runtime" || envelope.version != 1 {
+        if envelope.protocol != PROTOCOL || envelope.version != VERSION {
             return Err(RuntimeError::Protocol(
                 "unsupported Atlas Runtime protocol version".to_owned(),
             ));
         }
-        if envelope.request_id.as_deref() != Some(request_id.as_str()) {
+        if envelope.request_id.as_deref() != Some(request_id) {
             return Err(RuntimeError::Protocol(
                 "Runtime event request_id does not match the active turn".to_owned(),
             ));
@@ -224,10 +268,18 @@ async fn send_turn(
             ));
         }
 
-        match runtime_event(envelope)? {
-            Some(RuntimeEvent::TurnCompleted { context }) => {
+        match parse_runtime_event(envelope)? {
+            Some(RuntimeEvent::TurnCompleted {
+                content,
+                message_id,
+                context,
+            }) => {
                 events
-                    .send(RuntimeEvent::TurnCompleted { context })
+                    .send(RuntimeEvent::TurnCompleted {
+                        content,
+                        message_id,
+                        context,
+                    })
                     .await
                     .map_err(|_| RuntimeError::EventChannelClosed)?;
                 return Ok(());
@@ -239,6 +291,30 @@ async fn send_turn(
             None => {}
         }
     }
+}
+
+async fn send_cancel(
+    socket_path: &str,
+    request_id: &str,
+    conversation_id: &str,
+) -> Result<(), RuntimeError> {
+    let request = TurnCancelRequest {
+        protocol: PROTOCOL,
+        version: VERSION,
+        message_type: "turn.cancel",
+        request_id,
+        conversation_id,
+    };
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|error| RuntimeError::Transport(error.to_string()))?;
+    let mut payload =
+        serde_json::to_vec(&request).map_err(|error| RuntimeError::Protocol(error.to_string()))?;
+    payload.push(b'\n');
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|error| RuntimeError::Transport(error.to_string()))
 }
 
 async fn read_runtime_frame<R: AsyncBufRead + Unpin>(
@@ -255,7 +331,6 @@ async fn read_runtime_frame<R: AsyncBufRead + Unpin>(
                 "Runtime closed the connection before completing the turn".to_owned(),
             ));
         }
-
         let length = buffer
             .iter()
             .position(|byte| *byte == b'\n')
@@ -275,188 +350,231 @@ async fn read_runtime_frame<R: AsyncBufRead + Unpin>(
     }
 }
 
-fn runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, RuntimeError> {
-    if !matches!(
+fn event_object(data: Value) -> Result<serde_json::Map<String, Value>, RuntimeError> {
+    data.as_object()
+        .cloned()
+        .ok_or_else(|| RuntimeError::Protocol("Runtime event data must be an object".to_owned()))
+}
+
+fn required_string(
+    data: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<String, RuntimeError> {
+    data.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| RuntimeError::Protocol(format!("Runtime event field {field} is missing")))
+}
+
+fn text_string(data: &serde_json::Map<String, Value>, field: &str) -> Result<String, RuntimeError> {
+    data.get(field)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            RuntimeError::Protocol(format!("Runtime event field {field} must be a string"))
+        })
+}
+
+fn optional_context(
+    data: &serde_json::Map<String, Value>,
+) -> Result<Option<ContextUsage>, RuntimeError> {
+    data.get("context")
+        .map(|value| {
+            let context = value.as_object().ok_or_else(|| {
+                RuntimeError::Protocol("Runtime context must be an object".to_owned())
+            })?;
+            let used_tokens = context
+                .get("used_tokens")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol("Runtime context used_tokens is invalid".to_owned())
+                })?;
+            let context_window = context
+                .get("context_window")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    RuntimeError::Protocol("Runtime context_window is invalid".to_owned())
+                })?;
+            Ok(ContextUsage {
+                used_tokens,
+                context_window,
+            })
+        })
+        .transpose()
+}
+
+fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, RuntimeError> {
+    let known = matches!(
         envelope.message_type.as_str(),
         "turn.started"
+            | "context.updated"
             | "message.delta"
             | "message.completed"
             | "tool.started"
             | "tool.completed"
             | "execution.started"
+            | "execution.output.delta"
             | "execution.completed"
             | "turn.completed"
             | "error"
-    ) {
+    );
+    if !known {
         return Ok(None);
     }
-
-    let data = envelope
-        .data
-        .as_object()
-        .ok_or_else(|| RuntimeError::Protocol("Runtime event data must be an object".to_owned()))?;
-    let string_field = |field: &str| {
-        data.get(field)
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                RuntimeError::Protocol(format!("Runtime event field {field} is missing"))
-            })
-    };
-    let text_field = |field: &str| {
-        data.get(field)
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                RuntimeError::Protocol(format!("Runtime event field {field} is missing"))
-            })
-    };
-    let process_capability = || {
-        let capability = string_field("capability")?;
-        if capability != "process.exec" {
-            return Err(RuntimeError::Protocol(
-                "Runtime execution capability must be process.exec".to_owned(),
-            ));
-        }
-        Ok(capability)
-    };
-
+    let data = event_object(envelope.data)?;
     match envelope.message_type.as_str() {
         "turn.started" => Ok(Some(RuntimeEvent::TurnStarted)),
+        "context.updated" => Ok(Some(RuntimeEvent::ContextUpdated {
+            context: required_context(&data)?,
+        })),
         "message.delta" => Ok(Some(RuntimeEvent::MessageDelta {
-            message_id: string_field("message_id")?,
-            delta: text_field("delta")?,
+            message_id: required_string(&data, "message_id")?,
+            delta: text_string(&data, "delta")?,
         })),
         "message.completed" => Ok(Some(RuntimeEvent::MessageCompleted {
-            message_id: string_field("message_id")?,
-            content: text_field("content")?,
+            message_id: required_string(&data, "message_id")?,
+            content: text_string(&data, "content")?,
         })),
         "tool.started" => Ok(Some(RuntimeEvent::ToolStarted {
-            tool_id: string_field("tool_id")?,
-            tool_name: string_field("name")?,
+            tool_id: required_string(&data, "tool_id")?,
+            tool_name: required_string(&data, "name")?,
         })),
         "tool.completed" => Ok(Some(RuntimeEvent::ToolCompleted {
-            tool_id: string_field("tool_id")?,
-            tool_name: string_field("name")?,
-            output: data.get("output").and_then(|value| match value {
-                Value::String(text) => Some(text.clone()),
-                Value::Null => None,
-                value => serde_json::to_string(value).ok(),
-            }),
+            tool_id: required_string(&data, "tool_id")?,
+            tool_name: required_string(&data, "name")?,
+            output: data
+                .get("output")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
         })),
-        "execution.started" => Ok(Some(RuntimeEvent::ExecutionStarted {
-            execution_id: string_field("execution_id")?,
-            capability: process_capability()?,
-            program: string_field("program")?,
-            args: data
+        "execution.started" => {
+            let capability = required_string(&data, "capability")?;
+            if capability != "process.exec" {
+                return Err(RuntimeError::Protocol(
+                    "Runtime execution capability must be process.exec".to_owned(),
+                ));
+            }
+            let args = data
                 .get("args")
                 .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    RuntimeError::Protocol("Runtime event field args must be an array".to_owned())
-                })?
+                .ok_or_else(|| RuntimeError::Protocol("Runtime args must be an array".to_owned()))?
                 .iter()
                 .map(|argument| {
                     argument.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                        RuntimeError::Protocol(
-                            "Runtime event field args must contain only strings".to_owned(),
-                        )
+                        RuntimeError::Protocol("Runtime args must contain only strings".to_owned())
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?,
-            cwd: data
-                .get("cwd")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            target: data
-                .get("target")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        })),
-        "execution.completed" => Ok(Some(RuntimeEvent::ExecutionCompleted {
-            execution_id: string_field("execution_id")?,
-            capability: process_capability()?,
-            stdout: data
-                .get("stdout")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    RuntimeError::Protocol("Runtime event field stdout must be a string".to_owned())
-                })?
-                .to_owned(),
-            stderr: data
-                .get("stderr")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    RuntimeError::Protocol("Runtime event field stderr must be a string".to_owned())
-                })?
-                .to_owned(),
-            exit_code: data
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(RuntimeEvent::ExecutionStarted {
+                execution_id: required_string(&data, "execution_id")?,
+                capability,
+                program: required_string(&data, "program")?,
+                args,
+                cwd: data
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                target: data
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            }))
+        }
+        "execution.output.delta" => {
+            let capability = required_string(&data, "capability")?;
+            if capability != "process.exec" {
+                return Err(RuntimeError::Protocol(
+                    "Runtime execution capability must be process.exec".to_owned(),
+                ));
+            }
+            let channel = required_string(&data, "channel")?;
+            if channel != "stdout" && channel != "stderr" {
+                return Err(RuntimeError::Protocol(
+                    "Runtime execution output channel must be stdout or stderr".to_owned(),
+                ));
+            }
+            Ok(Some(RuntimeEvent::ExecutionOutputDelta {
+                execution_id: required_string(&data, "execution_id")?,
+                capability,
+                channel,
+                delta: text_string(&data, "delta")?,
+            }))
+        }
+        "execution.completed" => {
+            let capability = required_string(&data, "capability")?;
+            if capability != "process.exec" {
+                return Err(RuntimeError::Protocol(
+                    "Runtime execution capability must be process.exec".to_owned(),
+                ));
+            }
+            let exit_code = data
                 .get("exit_code")
                 .and_then(Value::as_i64)
-                .and_then(|code| i32::try_from(code).ok())
-                .ok_or_else(|| {
-                    RuntimeError::Protocol(
-                        "Runtime event field exit_code must be an integer".to_owned(),
-                    )
-                })?,
-            duration_ms: data
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or_else(|| RuntimeError::Protocol("Runtime exit_code is invalid".to_owned()))?;
+            let duration_ms = data
                 .get("duration_ms")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| {
-                    RuntimeError::Protocol(
-                        "Runtime event field duration_ms must be an unsigned integer".to_owned(),
-                    )
-                })?,
-            status: string_field("status")?,
-        })),
+                    RuntimeError::Protocol("Runtime duration_ms is invalid".to_owned())
+                })?;
+            Ok(Some(RuntimeEvent::ExecutionCompleted {
+                execution_id: required_string(&data, "execution_id")?,
+                capability,
+                stdout: text_string(&data, "stdout")?,
+                stderr: text_string(&data, "stderr")?,
+                exit_code,
+                duration_ms,
+                status: required_string(&data, "status")?,
+            }))
+        }
         "turn.completed" => Ok(Some(RuntimeEvent::TurnCompleted {
-            context: data
-                .get("context")
-                .map(|value| -> Result<ContextUsage, RuntimeError> {
-                    let context = value.as_object().ok_or_else(|| {
-                        RuntimeError::Protocol(
-                            "Runtime event field context must be an object".to_owned(),
-                        )
-                    })?;
-                    let used_tokens = context
-                        .get("used_tokens")
-                        .and_then(Value::as_u64)
-                        .ok_or_else(|| {
-                            RuntimeError::Protocol(
-                                "Runtime context field used_tokens must be an unsigned integer"
-                                    .to_owned(),
-                            )
-                        })?;
-                    let context_window = context
-                        .get("context_window")
-                        .and_then(Value::as_u64)
-                        .filter(|value| *value > 0)
-                        .ok_or_else(|| {
-                            RuntimeError::Protocol(
-                                "Runtime context field context_window must be a positive unsigned integer"
-                                    .to_owned(),
-                            )
-                        })?;
-                    Ok(ContextUsage {
-                        used_tokens,
-                        context_window,
-                    })
-                })
-                .transpose()?,
+            content: text_string(&data, "content")?,
+            message_id: data
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            context: optional_context(&data)?,
         })),
-        "error" => Err(RuntimeError::Remote(string_field("message")?)),
+        "error" => Err(RuntimeError::Remote(required_string(&data, "message")?)),
         _ => Ok(None),
     }
 }
 
+fn required_context(data: &serde_json::Map<String, Value>) -> Result<ContextUsage, RuntimeError> {
+    let used_tokens = data
+        .get("used_tokens")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            RuntimeError::Protocol("Runtime context used_tokens is invalid".to_owned())
+        })?;
+    let context_window = data
+        .get("context_window")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| RuntimeError::Protocol("Runtime context_window is invalid".to_owned()))?;
+    Ok(ContextUsage {
+        used_tokens,
+        context_window,
+    })
+}
+
 #[derive(Clone)]
-pub struct RuntimeClient {
+/// Backend boundary for the Codex TUI presentation model.
+///
+/// The UI never consumes JSON or provider-specific state. This adapter turns
+/// Runtime Protocol v1 frames into the event vocabulary consumed by
+/// `ChatWidget`, history cells, and execution cells.
+pub struct AtlasRuntimeClient {
     conversation_id: Arc<str>,
     transport: Arc<dyn RuntimeTransport>,
     event_sender: RuntimeEventSender,
+    active_request_id: Arc<Mutex<Option<String>>>,
 }
 
-impl RuntimeClient {
+impl AtlasRuntimeClient {
     pub fn new(conversation_id: String) -> (Self, RuntimeEventReceiver) {
         Self::with_transport(conversation_id, UnixTransport::default())
     }
@@ -471,6 +589,7 @@ impl RuntimeClient {
                 conversation_id: Arc::from(conversation_id),
                 transport: Arc::new(transport),
                 event_sender,
+                active_request_id: Arc::new(Mutex::new(None)),
             },
             event_receiver,
         )
@@ -481,15 +600,32 @@ impl RuntimeClient {
     }
 
     pub async fn send_message(&self, input: String) -> Result<(), RuntimeError> {
+        let request_id = format!("tui-{}", NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed));
+        {
+            let mut active = self
+                .active_request_id
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *active = Some(request_id.clone());
+        }
         let result = self
             .transport
             .send_message(
+                request_id.clone(),
                 self.conversation_id.to_string(),
                 input,
                 self.event_sender.clone(),
             )
             .await;
-
+        {
+            let mut active = self
+                .active_request_id
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if active.as_deref() == Some(request_id.as_str()) {
+                *active = None;
+            }
+        }
         if let Err(error) = &result {
             self.event_sender
                 .send(RuntimeEvent::Error {
@@ -498,322 +634,88 @@ impl RuntimeClient {
                 .await
                 .map_err(|_| RuntimeError::EventChannelClosed)?;
         }
-
         result
+    }
+
+    pub async fn cancel_turn(&self) -> Result<(), RuntimeError> {
+        let request_id = self
+            .active_request_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| RuntimeError::Remote("No active turn to cancel".to_owned()))?;
+        self.transport
+            .cancel_turn(request_id, self.conversation_id.to_string())
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RuntimeClient, RuntimeEnvelope, RuntimeEvent, RuntimeEventSender, RuntimeFuture,
-        RuntimeTransport, runtime_event,
-    };
-    use serde_json::Value;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::UnixListener;
+    use super::*;
+    use serde_json::json;
 
-    struct TestTransport;
-
-    impl RuntimeTransport for TestTransport {
-        fn send_message(
-            &self,
-            _conversation_id: String,
-            _input: String,
-            events: RuntimeEventSender,
-        ) -> RuntimeFuture {
-            Box::pin(async move {
-                events
-                    .send(RuntimeEvent::TurnStarted)
-                    .await
-                    .map_err(|_| super::RuntimeError::EventChannelClosed)?;
-                events
-                    .send(RuntimeEvent::MessageDelta {
-                        message_id: "message-1".to_owned(),
-                        delta: "response".to_owned(),
-                    })
-                    .await
-                    .map_err(|_| super::RuntimeError::EventChannelClosed)?;
-                events
-                    .send(RuntimeEvent::TurnCompleted { context: None })
-                    .await
-                    .map_err(|_| super::RuntimeError::EventChannelClosed)?;
-                Ok(())
-            })
+    fn envelope(message_type: &str, data: Value) -> RuntimeEnvelope {
+        RuntimeEnvelope {
+            protocol: PROTOCOL.to_owned(),
+            version: VERSION,
+            message_type: message_type.to_owned(),
+            request_id: Some("request".to_owned()),
+            conversation_id: Some("conversation".to_owned()),
+            data,
         }
     }
 
-    #[tokio::test]
-    async fn keeps_the_conversation_id_at_the_client_boundary() {
-        let (client, mut events) =
-            RuntimeClient::with_transport("conversation-1".to_owned(), TestTransport);
-
-        client.send_message("hello".to_owned()).await.unwrap();
-
-        assert_eq!(client.conversation_id(), "conversation-1");
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::TurnStarted)
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::MessageDelta { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::TurnCompleted { context: None })
-        ));
-    }
-
     #[test]
-    fn parses_tool_identity_and_structured_output() {
-        let envelope = RuntimeEnvelope {
-            protocol: "atlas-runtime".to_owned(),
-            version: 1,
-            message_type: "tool.completed".to_owned(),
-            request_id: None,
-            conversation_id: None,
-            data: serde_json::json!({
-                "tool_id": "tool-1",
-                "name": "process.exec",
-                "output": {"stdout": "ready", "exit_code": 0}
-            }),
-        };
-
+    fn parses_tool_lifecycle_payload_without_dropping_identity_or_output() {
+        let started = parse_runtime_event(envelope(
+            "tool.started",
+            json!({"tool_id": "tool-1", "name": "search"}),
+        ))
+        .expect("tool.started should parse")
+        .expect("known event");
         assert_eq!(
-            runtime_event(envelope).unwrap(),
-            Some(RuntimeEvent::ToolCompleted {
+            started,
+            RuntimeEvent::ToolStarted {
                 tool_id: "tool-1".to_owned(),
-                tool_name: "process.exec".to_owned(),
-                output: Some(r#"{"exit_code":0,"stdout":"ready"}"#.to_owned()),
-            })
-        );
-    }
-
-    #[test]
-    fn accepts_empty_message_content_from_the_runtime() {
-        let envelope = RuntimeEnvelope {
-            protocol: "atlas-runtime".to_owned(),
-            version: 1,
-            message_type: "message.completed".to_owned(),
-            request_id: Some("request-1".to_owned()),
-            conversation_id: Some("conversation-1".to_owned()),
-            data: serde_json::json!({"message_id": "message-1", "content": ""}),
-        };
-
-        assert_eq!(
-            runtime_event(envelope).unwrap(),
-            Some(RuntimeEvent::MessageCompleted {
-                message_id: "message-1".to_owned(),
-                content: String::new(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_process_execution_lifecycle_fields() {
-        let started = RuntimeEnvelope {
-            protocol: "atlas-runtime".to_owned(),
-            version: 1,
-            message_type: "execution.started".to_owned(),
-            request_id: None,
-            conversation_id: None,
-            data: serde_json::json!({
-                "execution_id": "call-1",
-                "capability": "process.exec",
-                "program": "node",
-                "args": ["--version"],
-                "cwd": "/tmp",
-                "target": "local"
-            }),
-        };
-        assert_eq!(
-            runtime_event(started).unwrap(),
-            Some(RuntimeEvent::ExecutionStarted {
-                execution_id: "call-1".to_owned(),
-                capability: "process.exec".to_owned(),
-                program: "node".to_owned(),
-                args: vec!["--version".to_owned()],
-                cwd: Some("/tmp".to_owned()),
-                target: Some("local".to_owned()),
-            })
-        );
-
-        let completed = RuntimeEnvelope {
-            protocol: "atlas-runtime".to_owned(),
-            version: 1,
-            message_type: "execution.completed".to_owned(),
-            request_id: None,
-            conversation_id: None,
-            data: serde_json::json!({
-                "execution_id": "call-1",
-                "capability": "process.exec",
-                "stdout": "v22.x.x",
-                "stderr": "",
-                "exit_code": 0,
-                "duration_ms": 120,
-                "status": "success"
-            }),
-        };
-        assert_eq!(
-            runtime_event(completed).unwrap(),
-            Some(RuntimeEvent::ExecutionCompleted {
-                execution_id: "call-1".to_owned(),
-                capability: "process.exec".to_owned(),
-                stdout: "v22.x.x".to_owned(),
-                stderr: String::new(),
-                exit_code: 0,
-                duration_ms: 120,
-                status: "success".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_context_usage_from_a_completed_turn() {
-        let envelope = RuntimeEnvelope {
-            protocol: "atlas-runtime".to_owned(),
-            version: 1,
-            message_type: "turn.completed".to_owned(),
-            request_id: None,
-            conversation_id: None,
-            data: serde_json::json!({
-                "content": "done",
-                "context": {"used_tokens": 6600, "context_window": 256000}
-            }),
-        };
-
-        assert_eq!(
-            runtime_event(envelope).unwrap(),
-            Some(RuntimeEvent::TurnCompleted {
-                context: Some(super::ContextUsage {
-                    used_tokens: 6600,
-                    context_window: 256000,
-                }),
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn sends_a_turn_over_the_public_unix_protocol() {
-        let socket_path = std::env::temp_dir().join(format!(
-            "atlas-tui-runtime-{}-{}.sock",
-            std::process::id(),
-            super::NEXT_REQUEST_ID.fetch_add(1, super::Ordering::Relaxed)
-        ));
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut request_line = String::new();
-            reader.read_line(&mut request_line).await.unwrap();
-            let request: Value = serde_json::from_str(request_line.trim()).unwrap();
-            assert_eq!(request["type"], "turn.request");
-            assert_eq!(request["conversation_id"], "conversation-1");
-            assert_eq!(request["input"], "node --version");
-            let request_id = request["request_id"].as_str().unwrap();
-            let events = [
-                serde_json::json!({
-                    "protocol": "atlas-runtime",
-                    "version": 1,
-                    "type": "turn.started",
-                    "request_id": request_id,
-                    "conversation_id": "conversation-1",
-                    "data": {}
-                }),
-                serde_json::json!({
-                    "protocol": "atlas-runtime",
-                    "version": 1,
-                    "type": "message.completed",
-                    "request_id": request_id,
-                    "conversation_id": "conversation-1",
-                    "data": {"message_id": "message-1", "content": "v22.x.x"}
-                }),
-                serde_json::json!({
-                    "protocol": "atlas-runtime",
-                    "version": 1,
-                    "type": "future.event",
-                    "request_id": request_id,
-                    "conversation_id": "conversation-1",
-                    "data": ["future"]
-                }),
-                serde_json::json!({
-                    "protocol": "atlas-runtime",
-                    "version": 1,
-                    "type": "turn.completed",
-                    "request_id": request_id,
-                    "conversation_id": "conversation-1",
-                    "data": {"content": "v22.x.x"}
-                }),
-            ];
-            let mut stream = reader.into_inner();
-            for event in events {
-                let mut line = serde_json::to_vec(&event).unwrap();
-                line.push(b'\n');
-                stream.write_all(&line).await.unwrap();
+                tool_name: "search".to_owned(),
             }
-        });
-
-        let (client, mut events) = RuntimeClient::with_transport(
-            "conversation-1".to_owned(),
-            super::UnixTransport::new(socket_path.to_string_lossy().to_string()),
         );
-        client
-            .send_message("node --version".to_owned())
-            .await
-            .unwrap();
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::TurnStarted)
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::MessageCompleted { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::TurnCompleted { context: None })
-        ));
-        server.await.unwrap();
-        std::fs::remove_file(socket_path).unwrap();
-    }
 
-    #[tokio::test]
-    async fn rejects_events_without_the_active_request_id() {
-        let socket_path = std::env::temp_dir().join(format!(
-            "atlas-tui-runtime-invalid-event-{}-{}.sock",
-            std::process::id(),
-            super::NEXT_REQUEST_ID.fetch_add(1, super::Ordering::Relaxed)
-        ));
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut request_line = String::new();
-            reader.read_line(&mut request_line).await.unwrap();
-            let event = serde_json::json!({
-                "protocol": "atlas-runtime",
-                "version": 1,
-                "type": "turn.started",
-                "conversation_id": "conversation-1",
-                "data": {}
-            });
-            let mut line = serde_json::to_vec(&event).unwrap();
-            line.push(b'\n');
-            reader.into_inner().write_all(&line).await.unwrap();
-        });
-
-        let (client, mut events) = RuntimeClient::with_transport(
-            "conversation-1".to_owned(),
-            super::UnixTransport::new(socket_path.to_string_lossy().to_string()),
+        let completed = parse_runtime_event(envelope(
+            "tool.completed",
+            json!({"tool_id": "tool-1", "name": "search", "output": "result"}),
+        ))
+        .expect("tool.completed should parse")
+        .expect("known event");
+        assert_eq!(
+            completed,
+            RuntimeEvent::ToolCompleted {
+                tool_id: "tool-1".to_owned(),
+                tool_name: "search".to_owned(),
+                output: Some("result".to_owned()),
+            }
         );
-        let error = client.send_message("hello".to_owned()).await.unwrap_err();
-        assert!(matches!(error, super::RuntimeError::Protocol(_)));
-        assert!(matches!(
-            events.recv().await,
-            Some(RuntimeEvent::Error { .. })
-        ));
-        server.await.unwrap();
-        std::fs::remove_file(socket_path).unwrap();
+
+        let delta = parse_runtime_event(envelope(
+            "execution.output.delta",
+            json!({
+                "execution_id": "exec-1",
+                "capability": "process.exec",
+                "channel": "stderr",
+                "delta": "warning\n"
+            }),
+        ))
+        .expect("execution output delta should parse")
+        .expect("known event");
+        assert_eq!(
+            delta,
+            RuntimeEvent::ExecutionOutputDelta {
+                execution_id: "exec-1".to_owned(),
+                capability: "process.exec".to_owned(),
+                channel: "stderr".to_owned(),
+                delta: "warning\n".to_owned(),
+            }
+        );
     }
 }

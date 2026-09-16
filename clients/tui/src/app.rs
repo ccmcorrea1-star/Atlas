@@ -1,191 +1,103 @@
-use crate::presentation::parse_tool_output;
-use crate::runtime::{ContextUsage, RuntimeEvent};
-use crate::transcript::TranscriptLayoutCache;
-use std::time::{Duration, Instant};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use std::collections::VecDeque;
+use std::path::Path;
+use std::time::Instant;
 
-const MAX_MESSAGES: usize = 500;
-const MAX_HISTORY_CONTENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
-const MAX_OUTPUT_BYTES: usize = 128 * 1024;
-const MAX_METADATA_BYTES: usize = 8 * 1024;
-const MAX_INPUT_BYTES: usize = 64 * 1024;
-const TRUNCATION_MARKER: &str = "\n[output truncated]";
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageRole {
-    User,
-    Atlas,
-    Tool,
-    System,
-}
+use crate::bottom_pane::BottomPane;
+use crate::bottom_pane::paste_burst::CharDecision;
+use crate::bottom_pane::paste_burst::FlushResult;
+use crate::bottom_pane::prompt_args::parse_slash_name;
+use crate::bottom_pane::slash_commands::SlashCommand;
+use crate::bottom_pane::slash_commands::exact;
+use crate::bottom_pane::slash_commands::matching;
+use crate::bottom_pane::textarea::TextArea;
+use crate::chatwidget::ChatWidget;
+use crate::file_search;
+use crate::history_cell::HistoryCell;
+use crate::keymap::Action;
+use crate::pager_overlay::TranscriptOverlay;
+use crate::runtime::ContextUsage;
+use crate::runtime::RuntimeEvent;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Message {
-    pub role: MessageRole,
-    pub content: String,
-    pub id: Option<String>,
-    pub(crate) tool: Option<ToolCall>,
-    truncated: bool,
-}
-
-impl Message {
-    fn new(role: MessageRole, content: impl Into<String>, id: Option<String>) -> Self {
-        let (content, truncated) = truncate_text(&content.into(), MAX_MESSAGE_BYTES);
-        Self {
-            role,
-            content,
-            id,
-            tool: None,
-            truncated,
-        }
-    }
-
-    fn tool_with_id(id: impl Into<String>, name: impl Into<String>) -> Self {
-        let id = id.into();
-        let name = bounded_metadata(&name.into());
-        Self {
-            role: MessageRole::Tool,
-            content: String::new(),
-            id: Some(id.clone()),
-            tool: Some(ToolCall {
-                id,
-                name,
-                program: None,
-                args: Vec::new(),
-                cwd: None,
-                target: None,
-                output: None,
-                stderr: None,
-                started_at: Some(Instant::now()),
-                duration: None,
-                exit_code: None,
-                execution_status: None,
-                completed: false,
-                success: true,
-            }),
-            truncated: false,
-        }
-    }
-
-    fn execution_with_id(
-        id: impl Into<String>,
-        capability: impl Into<String>,
-        program: String,
-        args: Vec<String>,
-        cwd: Option<String>,
-        target: Option<String>,
-    ) -> Self {
-        let mut message = Self::tool_with_id(id, capability);
-        if let Some(tool) = message.tool.as_mut() {
-            tool.program = Some(bounded_metadata(&program));
-            tool.args = args
-                .iter()
-                .map(|argument| bounded_metadata(argument))
-                .collect();
-            tool.cwd = cwd.map(|path| bounded_metadata(&path));
-            tool.target = target.map(|target| bounded_metadata(&target));
-        }
-        message
-    }
-}
+const MAX_COMPLETION_ROWS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ToolCall {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) program: Option<String>,
-    pub(crate) args: Vec<String>,
-    pub(crate) cwd: Option<String>,
-    pub(crate) target: Option<String>,
-    pub(crate) output: Option<String>,
-    pub(crate) stderr: Option<String>,
-    pub(crate) started_at: Option<Instant>,
-    pub(crate) duration: Option<Duration>,
-    pub(crate) exit_code: Option<i32>,
-    pub(crate) execution_status: Option<String>,
-    pub(crate) completed: bool,
-    pub(crate) success: bool,
-}
-
-struct ExecutionCompletion {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
-    duration_ms: u64,
-    status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     Ready,
-    Sending,
     Thinking,
-    Tool(String),
+    Executing,
     Error(String),
 }
 
 #[derive(Debug)]
 pub struct App {
-    #[allow(dead_code)]
-    conversation_id: String,
-    messages: Vec<Message>,
-    input: String,
-    cursor: usize,
-    status: Status,
-    turn_active: bool,
+    chatwidget: ChatWidget,
+    transcript_overlay: TranscriptOverlay,
+    bottom_pane: BottomPane,
     should_quit: bool,
     history_scroll: usize,
+    history_content_height: usize,
     manual_scroll: bool,
-    context_usage: Option<ContextUsage>,
     shortcuts_open: bool,
+    transcript_open: bool,
     quit_confirmation: bool,
-    animation_tick: u64,
-    transcript_revision: u64,
-    transcript_cache: Option<TranscriptLayoutCache>,
+    queued_inputs: VecDeque<String>,
+    submission_pending: bool,
+    cancel_requested: bool,
+    external_editor_requested: bool,
 }
 
 impl App {
-    pub fn new(conversation_id: String) -> Self {
+    pub fn new(_conversation_id: String) -> Self {
         Self {
-            conversation_id,
-            messages: Vec::new(),
-            input: String::new(),
-            cursor: 0,
-            status: Status::Ready,
-            turn_active: false,
+            chatwidget: ChatWidget::new(),
+            transcript_overlay: TranscriptOverlay::default(),
+            bottom_pane: BottomPane::new(),
             should_quit: false,
             history_scroll: 0,
+            history_content_height: 0,
             manual_scroll: false,
-            context_usage: None,
             shortcuts_open: false,
+            transcript_open: false,
             quit_confirmation: false,
-            animation_tick: 0,
-            transcript_revision: 0,
-            transcript_cache: None,
+            queued_inputs: VecDeque::new(),
+            submission_pending: false,
+            cancel_requested: false,
+            external_editor_requested: false,
         }
     }
 
-    #[allow(dead_code)]
-    pub fn conversation_id(&self) -> &str {
-        &self.conversation_id
+    pub fn cells(&self) -> &[Box<dyn HistoryCell>] {
+        self.chatwidget.cells()
     }
 
-    pub fn messages(&self) -> &[Message] {
-        &self.messages
+    pub(crate) fn active_cells(&self) -> &[Box<dyn HistoryCell>] {
+        self.chatwidget.active_cells()
+    }
+
+    pub(crate) fn active_revision(&self) -> u64 {
+        self.chatwidget.active_revision()
+    }
+
+    pub(crate) fn transcript_overlay(&self) -> &TranscriptOverlay {
+        &self.transcript_overlay
     }
 
     pub fn input(&self) -> &str {
-        &self.input
+        self.bottom_pane.composer.textarea.text()
     }
 
-    pub fn cursor_byte_position(&self) -> usize {
-        self.cursor
+    pub(crate) fn textarea(&self) -> &TextArea {
+        &self.bottom_pane.composer.textarea
     }
 
     pub fn status(&self) -> &Status {
-        &self.status
+        self.chatwidget.status()
     }
 
     pub fn should_quit(&self) -> bool {
@@ -193,16 +105,23 @@ impl App {
     }
 
     pub fn turn_active(&self) -> bool {
-        self.turn_active
+        self.chatwidget.turn_active()
+    }
+
+    pub fn take_cancel_requested(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_requested)
+    }
+
+    pub fn take_external_editor_requested(&mut self) -> bool {
+        std::mem::take(&mut self.external_editor_requested)
+    }
+
+    pub(crate) fn working_seconds(&self) -> u64 {
+        self.chatwidget.working_seconds()
     }
 
     pub fn context_usage(&self) -> Option<ContextUsage> {
-        self.context_usage
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_context_usage(&mut self, context: ContextUsage) {
-        self.context_usage = Some(context);
+        self.chatwidget.context_usage()
     }
 
     pub fn shortcuts_open(&self) -> bool {
@@ -217,16 +136,177 @@ impl App {
         self.shortcuts_open = false;
     }
 
+    pub fn transcript_open(&self) -> bool {
+        self.transcript_open
+    }
+
+    pub fn open_transcript(&mut self) {
+        self.transcript_open = true;
+    }
+
+    pub fn close_transcript(&mut self) {
+        self.transcript_open = false;
+    }
+
     pub fn quit_confirmation(&self) -> bool {
         self.quit_confirmation
     }
 
-    pub(crate) fn animation_tick(&self) -> u64 {
-        self.animation_tick
+    pub(crate) fn esc_backtrack_hint(&self) -> bool {
+        self.bottom_pane.composer.esc_backtrack_hint
     }
 
-    pub(crate) fn tick(&mut self) {
-        self.animation_tick = self.animation_tick.wrapping_add(1);
+    pub(crate) fn history_search_open(&self) -> bool {
+        self.bottom_pane.composer.history_search_open
+    }
+
+    pub(crate) fn history_search_query(&self) -> &str {
+        &self.bottom_pane.composer.history_search_query
+    }
+
+    pub(crate) fn history_search_has_match(&self) -> bool {
+        !self.bottom_pane.composer.history_search_matches.is_empty()
+    }
+
+    pub(crate) fn slash_popup_commands(&self) -> Vec<SlashCommand> {
+        if !self.slash_popup_active() {
+            return Vec::new();
+        }
+        let prefix = self.input().lines().next().unwrap_or_default();
+        matching(prefix).collect()
+    }
+
+    fn slash_popup_active(&self) -> bool {
+        if self.bottom_pane.composer.slash_popup_suppressed
+            || self.shortcuts_open
+            || self.bottom_pane.composer.history_search_open
+        {
+            return false;
+        }
+        let first_line = self.input().lines().next().unwrap_or_default();
+        if self.input().contains('\n') {
+            return false;
+        }
+        first_line == "/"
+            || parse_slash_name(first_line).is_some_and(|(_, rest, _)| rest.is_empty())
+    }
+
+    fn all_completion_popup_items(&self) -> Vec<(String, String)> {
+        if self.slash_popup_active() {
+            return self
+                .slash_popup_commands()
+                .into_iter()
+                .map(|command| (command.name.to_owned(), command.description.to_owned()))
+                .collect();
+        }
+        self.file_popup_items()
+    }
+
+    pub(crate) fn completion_popup_items(&self) -> Vec<(String, String)> {
+        let start = self.completion_popup_start();
+        self.all_completion_popup_items()
+            .into_iter()
+            .skip(start)
+            .take(MAX_COMPLETION_ROWS)
+            .collect()
+    }
+
+    pub(crate) fn completion_selection(&self) -> usize {
+        self.bottom_pane
+            .composer
+            .completion_selection
+            .min(self.all_completion_popup_items().len().saturating_sub(1))
+    }
+
+    pub(crate) fn completion_popup_selected_row(&self) -> Option<usize> {
+        self.completion_selection()
+            .checked_sub(self.completion_popup_start())
+            .filter(|row| *row < self.completion_popup_items().len())
+    }
+
+    fn completion_popup_start(&self) -> usize {
+        self.completion_selection()
+            .saturating_sub(MAX_COMPLETION_ROWS.saturating_sub(1))
+    }
+
+    fn move_completion_selection(&mut self, down: bool) {
+        let item_count = self.all_completion_popup_items().len();
+        if item_count == 0 {
+            self.bottom_pane.composer.completion_selection = 0;
+            return;
+        }
+        self.bottom_pane.composer.completion_selection = if down {
+            (self.bottom_pane.composer.completion_selection + 1) % item_count
+        } else {
+            if self.bottom_pane.composer.completion_selection == 0 {
+                item_count - 1
+            } else {
+                self.bottom_pane.composer.completion_selection - 1
+            }
+        };
+    }
+
+    fn file_popup_items(&self) -> Vec<(String, String)> {
+        if !self.file_popup_active() {
+            return Vec::new();
+        }
+        let Some((_, _, query)) = self.file_token() else {
+            return Vec::new();
+        };
+        let Ok(root) = std::env::current_dir() else {
+            return Vec::new();
+        };
+        file_search::search(Path::new(&root), &query)
+            .into_iter()
+            .map(|path| {
+                let display = path.to_string_lossy().into_owned();
+                (format!("@{display}"), "file".to_owned())
+            })
+            .collect()
+    }
+
+    fn file_token(&self) -> Option<(usize, usize, String)> {
+        let cursor = self.bottom_pane.composer.textarea.cursor();
+        let before = &self.input()[..cursor];
+        let start = before.rfind('@')?;
+        if start > 0 {
+            let previous = before[..start].chars().next_back()?;
+            if !previous.is_whitespace() {
+                return None;
+            }
+        }
+        let query = &before[start + 1..];
+        if query.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some((start, cursor, query.to_owned()))
+    }
+
+    fn file_popup_active(&self) -> bool {
+        !self.bottom_pane.composer.file_popup_suppressed
+            && !self.shortcuts_open
+            && !self.bottom_pane.composer.history_search_open
+            && !self.slash_popup_active()
+            && self.file_token().is_some()
+    }
+
+    fn complete_file_mention(&mut self) {
+        let Some((start, cursor, _)) = self.file_token() else {
+            return;
+        };
+        let Some((label, _)) = self
+            .all_completion_popup_items()
+            .into_iter()
+            .nth(self.completion_selection())
+        else {
+            return;
+        };
+        self.bottom_pane
+            .composer
+            .textarea
+            .replace_range(start..cursor, &format!("{label} "));
+        self.bottom_pane.composer.file_popup_suppressed = true;
+        self.bottom_pane.composer.completion_selection = 0;
     }
 
     pub fn open_quit_confirmation(&mut self) {
@@ -241,32 +321,18 @@ impl App {
         self.history_scroll
     }
 
-    pub(crate) fn transcript_revision(&self) -> u64 {
-        self.transcript_revision
-    }
-
-    pub(crate) fn transcript_cache(&self, width: u16) -> Option<&TranscriptLayoutCache> {
-        self.transcript_cache
-            .as_ref()
-            .filter(|cache| cache.revision == self.transcript_revision && cache.width == width)
-    }
-
-    pub(crate) fn set_transcript_cache(&mut self, cache: TranscriptLayoutCache) {
-        if self.manual_scroll
-            && let Some(previous) = self.transcript_cache.as_ref()
-            && previous.width == cache.width
-        {
-            if cache.total_rows >= previous.total_rows {
-                self.history_scroll = self
-                    .history_scroll
-                    .saturating_add(cache.total_rows - previous.total_rows);
-            } else {
-                self.history_scroll = self
-                    .history_scroll
-                    .saturating_sub(previous.total_rows - cache.total_rows);
-            }
+    pub(crate) fn record_history_content_height(&mut self, height: usize) {
+        if self.manual_scroll && height > self.history_content_height {
+            self.history_scroll = self
+                .history_scroll
+                .saturating_add(height - self.history_content_height);
         }
-        self.transcript_cache = Some(cache);
+        self.history_content_height = height;
+    }
+
+    pub fn tick(&mut self) {
+        self.chatwidget.tick();
+        self.flush_paste_burst_if_due();
     }
 
     pub fn quit(&mut self) {
@@ -274,96 +340,51 @@ impl App {
     }
 
     pub fn insert_character(&mut self, character: char) {
-        if self.input.len().saturating_add(character.len_utf8()) > MAX_INPUT_BYTES {
+        self.insert_character_direct(character);
+    }
+
+    fn insert_character_direct(&mut self, character: char) {
+        self.bottom_pane
+            .composer
+            .textarea
+            .insert_str(&character.to_string());
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        self.bottom_pane.composer.textarea.insert_str(text);
+    }
+
+    fn flush_paste_burst_if_due(&mut self) {
+        match self
+            .bottom_pane
+            .composer
+            .paste_burst
+            .flush_if_due(Instant::now())
+        {
+            FlushResult::Paste(text) => self.handle_paste(&text),
+            FlushResult::Typed(character) => self.insert_character_direct(character),
+            FlushResult::None => {}
+        }
+    }
+
+    /// Paste belongs to the active Codex view, never to a hidden composer.
+    pub fn handle_paste(&mut self, text: &str) {
+        if self.shortcuts_open
+            || self.transcript_open
+            || self.quit_confirmation
+            || self.bottom_pane.composer.history_search_open
+        {
             return;
         }
-        self.input.insert(self.cursor, character);
-        self.cursor += character.len_utf8();
+        self.bottom_pane
+            .composer
+            .paste_burst
+            .clear_after_explicit_paste();
+        self.insert_text(text);
     }
 
     pub fn insert_newline(&mut self) {
         self.insert_character('\n');
-    }
-
-    pub fn backspace(&mut self) {
-        let Some((start, _)) = self.input[..self.cursor].grapheme_indices(true).next_back() else {
-            return;
-        };
-        self.input.drain(start..self.cursor);
-        self.cursor = start;
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        if let Some((start, _)) = self.input[..self.cursor].grapheme_indices(true).next_back() {
-            self.cursor = start;
-        }
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        if let Some(grapheme) = self.input[self.cursor..].graphemes(true).next() {
-            self.cursor += grapheme.len();
-        }
-    }
-
-    pub fn move_cursor_home(&mut self) {
-        self.cursor = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-    }
-
-    pub fn move_cursor_end(&mut self) {
-        self.cursor = self.input[self.cursor..]
-            .find('\n')
-            .map_or(self.input.len(), |index| self.cursor + index);
-    }
-
-    pub fn move_cursor_up(&mut self) {
-        let current_start = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if current_start == 0 {
-            return;
-        }
-        let previous_end = current_start - 1;
-        let previous_start = self.input[..previous_end]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let target_column = display_width(&self.input[current_start..self.cursor]);
-        self.cursor = position_at_display_column(
-            &self.input[previous_start..previous_end],
-            previous_start,
-            target_column,
-        );
-    }
-
-    pub fn move_cursor_down(&mut self) {
-        let current_end = self.input[self.cursor..]
-            .find('\n')
-            .map_or(self.input.len(), |index| self.cursor + index);
-        if current_end == self.input.len() {
-            return;
-        }
-        let next_start = current_end + 1;
-        let next_end = self.input[next_start..]
-            .find('\n')
-            .map_or(self.input.len(), |index| next_start + index);
-        let current_start = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let target_column = display_width(&self.input[current_start..self.cursor]);
-        self.cursor = position_at_display_column(
-            &self.input[next_start..next_end],
-            next_start,
-            target_column,
-        );
-    }
-
-    pub fn delete_forward(&mut self) {
-        let Some(grapheme) = self.input[self.cursor..].graphemes(true).next() else {
-            return;
-        };
-        let end = self.cursor + grapheme.len();
-        self.input.drain(self.cursor..end);
     }
 
     pub fn scroll_up(&mut self, amount: usize) {
@@ -378,713 +399,837 @@ impl App {
         }
     }
 
-    pub fn scroll_to_bottom(&mut self) {
-        self.history_scroll = 0;
-        self.manual_scroll = false;
-    }
-
     pub fn scroll_to_top(&mut self) {
         self.history_scroll = usize::MAX;
         self.manual_scroll = true;
     }
 
+    pub fn scroll_to_bottom(&mut self) {
+        self.history_scroll = 0;
+        self.manual_scroll = false;
+    }
+
     pub fn submit_input(&mut self) -> Option<String> {
-        if self.turn_active {
+        if self.input().trim().is_empty() {
             return None;
         }
-
-        if self.input.trim().is_empty() {
+        let command = self.input().trim().to_owned();
+        if let Some(command_item) = exact(&command) {
+            self.clear_input();
+            self.bottom_pane.composer.slash_popup_suppressed = false;
+            match command_item.name {
+                "/help" => self.open_shortcuts(),
+                "/quit" => self.quit(),
+                _ => {}
+            }
             return None;
         }
-        let message = self.input.clone();
-
-        self.messages
-            .push(Message::new(MessageRole::User, &message, None));
-        self.input.clear();
-        self.cursor = 0;
-        self.status = Status::Sending;
-        self.turn_active = true;
-        self.history_changed();
+        let message = self.input().to_owned();
+        if self.bottom_pane.composer.history_entries.last() != Some(&message) {
+            self.bottom_pane
+                .composer
+                .history_entries
+                .push(message.clone());
+        }
+        self.bottom_pane.composer.history_index = None;
+        self.clear_input();
+        if self.turn_active() || self.submission_pending {
+            self.queued_inputs.push_back(message);
+            return None;
+        }
+        self.chatwidget.add_user_message(message.clone());
+        self.submission_pending = true;
         Some(message)
     }
 
+    pub fn take_queued_input(&mut self) -> Option<String> {
+        let input = self.queued_inputs.pop_front()?;
+        self.chatwidget.add_user_message(input.clone());
+        self.submission_pending = true;
+        Some(input)
+    }
+
+    pub fn apply_external_editor_text(&mut self, text: &str) {
+        self.bottom_pane
+            .composer
+            .textarea
+            .set_text_clearing_elements(text);
+        self.bottom_pane.composer.slash_popup_suppressed = false;
+    }
+
     pub fn handle_runtime_event(&mut self, event: RuntimeEvent) {
-        match event {
-            RuntimeEvent::MessageDelta { message_id, delta } => {
-                self.status = Status::Thinking;
-                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-                    message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
-                }) {
-                    append_message_delta(message, &delta);
-                    self.history_changed();
-                } else {
-                    self.messages
-                        .push(Message::new(MessageRole::Atlas, delta, Some(message_id)));
-                    self.history_changed();
-                }
-            }
-            RuntimeEvent::MessageCompleted {
-                message_id,
-                content,
-            } => {
-                self.status = Status::Thinking;
-                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-                    message.role == MessageRole::Atlas && message.id.as_deref() == Some(&message_id)
-                }) {
-                    let (content, truncated) = truncate_text(&content, MAX_MESSAGE_BYTES);
-                    message.content = content;
-                    message.truncated = truncated;
-                    self.history_changed();
-                } else {
-                    self.messages
-                        .push(Message::new(MessageRole::Atlas, content, Some(message_id)));
-                    self.history_changed();
-                }
-            }
-            RuntimeEvent::ToolStarted { tool_id, tool_name } => {
-                self.status = Status::Tool(bounded_metadata(&tool_name));
-                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-                    message.role == MessageRole::Tool
-                        && message.tool.as_ref().is_some_and(|tool| tool.id == tool_id)
-                }) {
-                    if let Some(tool) = message.tool.as_mut() {
-                        tool.name = bounded_metadata(&tool_name);
-                        if tool.completed {
-                            tool.completed = false;
-                            tool.success = true;
-                            tool.started_at = Some(Instant::now());
-                            tool.duration = None;
-                            tool.exit_code = None;
-                            tool.execution_status = None;
-                        }
-                    }
-                } else {
-                    self.messages
-                        .push(Message::tool_with_id(tool_id.clone(), tool_name));
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::ExecutionStarted {
-                execution_id,
-                capability,
-                program,
-                args,
-                cwd,
-                target,
-            } => {
-                self.status = Status::Tool(bounded_metadata(&capability));
-                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-                    message.role == MessageRole::Tool
-                        && message
-                            .tool
-                            .as_ref()
-                            .is_some_and(|tool| tool.id == execution_id)
-                }) {
-                    if let Some(tool) = message.tool.as_mut() {
-                        tool.name = bounded_metadata(&capability);
-                        tool.program = Some(bounded_metadata(&program));
-                        tool.args = args
-                            .iter()
-                            .map(|argument| bounded_metadata(argument))
-                            .collect();
-                        tool.cwd = cwd.map(|path| bounded_metadata(&path));
-                        tool.target = target.map(|target| bounded_metadata(&target));
-                        tool.started_at = Some(Instant::now());
-                        tool.completed = false;
-                    }
-                } else {
-                    self.messages.push(Message::execution_with_id(
-                        execution_id,
-                        capability,
-                        program,
-                        args,
-                        cwd,
-                        target,
-                    ));
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::ToolCompleted {
-                tool_id,
-                tool_name,
-                output,
-            } => {
-                self.status = Status::Thinking;
-                let parsed_output = output.as_deref().map(parse_tool_output);
-                let normalized_output = parsed_output
-                    .as_ref()
-                    .map(|output| output.display_text())
-                    .filter(|output| !output.is_empty());
-                let mut completed = false;
-                if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-                    message.role == MessageRole::Tool
-                        && message.tool.as_ref().is_some_and(|tool| tool.id == tool_id)
-                }) {
-                    if let Some(tool) = message.tool.as_mut() {
-                        tool.output = parsed_output
-                            .as_ref()
-                            .map(|output| output.stdout.clone())
-                            .filter(|output| !output.is_empty());
-                        tool.stderr = parsed_output
-                            .as_ref()
-                            .map(|output| output.stderr.clone())
-                            .filter(|output| !output.is_empty());
-                        tool.duration = Some(
-                            parsed_output
-                                .as_ref()
-                                .and_then(|output| output.duration)
-                                .or_else(|| tool.started_at.map(|started_at| started_at.elapsed()))
-                                .unwrap_or_default(),
-                        );
-                        tool.completed = true;
-                        tool.success = parsed_output
-                            .as_ref()
-                            .and_then(|output| output.success)
-                            .unwrap_or_else(|| {
-                                parsed_output
-                                    .as_ref()
-                                    .is_none_or(|output| output.stderr.is_empty())
-                            });
-                    }
-                    let (content, truncated) = truncate_text(
-                        normalized_output.as_deref().unwrap_or_default(),
-                        MAX_OUTPUT_BYTES,
-                    );
-                    message.content = content;
-                    message.truncated = truncated;
-                    completed = true;
-                }
-                if !completed {
-                    let mut message = Message::tool_with_id(tool_id.clone(), tool_name);
-                    if let Some(tool) = message.tool.as_mut() {
-                        tool.output = parsed_output
-                            .as_ref()
-                            .map(|output| output.stdout.clone())
-                            .filter(|output| !output.is_empty());
-                        tool.stderr = parsed_output
-                            .as_ref()
-                            .map(|output| output.stderr.clone())
-                            .filter(|output| !output.is_empty());
-                        tool.started_at = None;
-                        tool.duration = parsed_output.as_ref().and_then(|output| output.duration);
-                        tool.completed = true;
-                        tool.success = parsed_output
-                            .as_ref()
-                            .and_then(|output| output.success)
-                            .unwrap_or_else(|| {
-                                parsed_output
-                                    .as_ref()
-                                    .is_none_or(|output| output.stderr.is_empty())
-                            });
-                    }
-                    let (content, truncated) = truncate_text(
-                        normalized_output.as_deref().unwrap_or_default(),
-                        MAX_OUTPUT_BYTES,
-                    );
-                    message.content = content;
-                    message.truncated = truncated;
-                    self.messages.push(message);
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::ExecutionCompleted {
-                execution_id,
-                capability,
-                stdout,
-                stderr,
-                exit_code,
-                duration_ms,
-                status,
-            } => {
-                self.complete_execution(
-                    execution_id,
-                    capability,
-                    ExecutionCompletion {
-                        stdout,
-                        stderr,
-                        exit_code,
-                        duration_ms,
-                        status,
-                    },
-                );
-            }
-            RuntimeEvent::TurnStarted => {
-                self.status = Status::Thinking;
-                self.turn_active = true;
-            }
-            RuntimeEvent::TurnCompleted { context } => {
-                if let Some(context) = context {
-                    self.context_usage = Some(context);
-                }
-                self.status = Status::Ready;
-                self.turn_active = false;
-                self.quit_confirmation = false;
-            }
-            RuntimeEvent::Error { message } => {
-                self.status = Status::Error(bounded_metadata(&message));
-                self.turn_active = false;
-                self.quit_confirmation = false;
-                for transcript_message in &mut self.messages {
-                    let Some(tool) = transcript_message.tool.as_mut() else {
-                        continue;
-                    };
-                    if tool.completed {
-                        continue;
-                    }
-                    tool.completed = true;
-                    tool.success = false;
-                    tool.execution_status = Some("aborted".to_owned());
-                    tool.duration = tool.started_at.map(|started_at| started_at.elapsed());
-                }
-                self.messages.push(Message::new(
-                    MessageRole::System,
-                    format!("Error: {message}"),
-                    None,
-                ));
-                self.history_changed();
-            }
+        let terminal = event.is_terminal();
+        self.chatwidget.handle_runtime_event(event);
+        if terminal {
+            self.submission_pending = false;
         }
     }
 
-    fn history_changed(&mut self) {
-        // Message mutations invalidate wrapping, height, and scroll calculations.
-        self.transcript_revision = self.transcript_revision.wrapping_add(1);
-        while (self.messages.len() > MAX_MESSAGES
-            || self.history_content_bytes() > MAX_HISTORY_CONTENT_BYTES)
-            && self.messages.len() > 1
+    fn complete_slash_command(&mut self) {
+        let command_name = self
+            .all_completion_popup_items()
+            .into_iter()
+            .nth(self.completion_selection())
+            .map(|(name, _)| name);
+        if let Some(command_name) = command_name {
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&command_name);
+            self.bottom_pane.composer.slash_popup_suppressed = true;
+            self.bottom_pane.composer.completion_selection = 0;
+        }
+    }
+
+    pub fn handle_key_event(&mut self, key: KeyEvent) -> Option<String> {
+        self.bottom_pane.composer.esc_backtrack_hint = false;
+        if key.modifiers == KeyModifiers::NONE
+            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
         {
-            let remove_count = self.messages.len() - MAX_MESSAGES;
-            if self.messages.len() > MAX_MESSAGES {
-                self.messages.drain(..remove_count);
+            self.bottom_pane.composer.slash_popup_suppressed = false;
+            self.bottom_pane.composer.file_popup_suppressed = false;
+            self.bottom_pane.composer.completion_selection = 0;
+        }
+        if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
+            && key.modifiers == KeyModifiers::NONE
+            && !self.completion_popup_items().is_empty()
+        {
+            if self.slash_popup_active() {
+                self.complete_slash_command();
             } else {
-                self.messages.remove(0);
+                self.complete_file_mention();
+            }
+            return None;
+        }
+        let modified = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+
+        if !modified && let KeyCode::Char(character) = key.code {
+            match self
+                .bottom_pane
+                .composer
+                .paste_burst
+                .on_plain_char(character, Instant::now())
+            {
+                CharDecision::RetainFirstChar => return None,
+                CharDecision::BeginBufferFromPending
+                | CharDecision::BufferAppend
+                | CharDecision::BeginBuffer { .. } => {
+                    self.bottom_pane
+                        .composer
+                        .paste_burst
+                        .append_char_to_buffer(character, Instant::now());
+                    return None;
+                }
             }
         }
-        if !self.manual_scroll {
-            self.history_scroll = 0;
+
+        if !modified
+            && matches!(key.code, KeyCode::Enter | KeyCode::Tab)
+            && self
+                .bottom_pane
+                .composer
+                .paste_burst
+                .append_control_char_if_active(
+                    if key.code == KeyCode::Enter {
+                        '\n'
+                    } else {
+                        '\t'
+                    },
+                    Instant::now(),
+                )
+        {
+            return None;
+        }
+
+        if let Some(text) = self
+            .bottom_pane
+            .composer
+            .paste_burst
+            .flush_before_modified_input()
+        {
+            self.handle_paste(&text);
+        }
+        self.bottom_pane
+            .composer
+            .paste_burst
+            .clear_window_after_non_char();
+
+        match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.insert_newline();
+                None
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.bottom_pane.composer.textarea.input(key);
+                None
+            }
+            KeyCode::Enter | KeyCode::Tab => self.submit_input(),
+            _ => {
+                self.bottom_pane.composer.textarea.input(key);
+                None
+            }
         }
     }
 
-    fn history_content_bytes(&self) -> usize {
-        self.messages
+    pub fn handle_global_key(&mut self, key: KeyEvent) -> bool {
+        let action = crate::keymap::resolve(key);
+        if self.quit_confirmation {
+            match action {
+                Some(Action::ConfirmQuit) | Some(Action::ClearDraft) => self.quit(),
+                Some(Action::Cancel) | Some(Action::DeclineQuit) => self.close_quit_confirmation(),
+                _ => {}
+            }
+            return true;
+        }
+        if self.bottom_pane.composer.esc_backtrack_hint {
+            if action == Some(Action::Cancel) {
+                self.edit_previous_message();
+            } else {
+                self.bottom_pane.composer.esc_backtrack_hint = false;
+            }
+            if action == Some(Action::Cancel) {
+                return true;
+            }
+        }
+        if self.all_completion_popup_items().len() > 1 {
+            match (key.code, key.modifiers) {
+                (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                    self.move_completion_selection(false);
+                    return true;
+                }
+                (KeyCode::Down, KeyModifiers::NONE)
+                | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                    self.move_completion_selection(true);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if self.file_popup_active() && action == Some(Action::Cancel) {
+            self.bottom_pane.composer.file_popup_suppressed = true;
+            return true;
+        }
+        if self.slash_popup_active() && action == Some(Action::Cancel) {
+            self.bottom_pane.composer.slash_popup_suppressed = true;
+            return true;
+        }
+        if self.file_popup_active() || self.slash_popup_active() {
+            return false;
+        }
+        if self.bottom_pane.composer.history_search_open {
+            match key.code {
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.bottom_pane
+                        .composer
+                        .history_search_query
+                        .push(character);
+                    self.refresh_history_search();
+                }
+                KeyCode::Backspace => {
+                    self.bottom_pane.composer.history_search_query.pop();
+                    self.refresh_history_search();
+                }
+                _ => match action {
+                    Some(Action::Cancel) => self.cancel_history_search(),
+                    Some(Action::ConfirmQuit) => self.accept_history_search(),
+                    Some(Action::OpenHistorySearch) | Some(Action::ScrollUp) => {
+                        self.step_history_search(true)
+                    }
+                    Some(Action::ScrollDown) => self.step_history_search(false),
+                    _ => return true,
+                },
+            }
+            return true;
+        }
+        if self.shortcuts_open {
+            if action == Some(Action::Cancel) || action == Some(Action::OpenShortcuts) {
+                self.close_shortcuts();
+            }
+            return true;
+        }
+        if self.transcript_open {
+            match action {
+                Some(Action::Cancel) | Some(Action::CloseOverlay) => self.close_transcript(),
+                Some(Action::ScrollUp) => self.transcript_overlay.scroll_up(1),
+                Some(Action::ScrollDown) => self.transcript_overlay.scroll_down(1),
+                Some(Action::PageUp) => self.transcript_overlay.scroll_up(8),
+                Some(Action::PageDown) => self.transcript_overlay.scroll_down(8),
+                Some(Action::JumpTop) => self.transcript_overlay.scroll_to_top(),
+                Some(Action::JumpBottom) => self.transcript_overlay.scroll_to_bottom(),
+                _ => {}
+            }
+            return true;
+        }
+
+        if action == Some(Action::OpenHistorySearch)
+            && !self.bottom_pane.composer.history_entries.is_empty()
+        {
+            self.bottom_pane.composer.history_search_open = true;
+            self.bottom_pane.composer.history_search_query.clear();
+            self.bottom_pane.composer.history_search_draft = self.input().to_owned();
+            self.bottom_pane.composer.history_search_matches =
+                (0..self.bottom_pane.composer.history_entries.len()).collect();
+            self.bottom_pane.composer.history_search_match = None;
+            self.bottom_pane.composer.history_index = None;
+            return true;
+        }
+        if action == Some(Action::OpenExternalEditor) && !self.turn_active() {
+            self.external_editor_requested = true;
+            return true;
+        }
+        if action == Some(Action::OpenTranscript) {
+            self.open_transcript();
+            return true;
+        }
+        if action == Some(Action::OpenShortcuts) && self.input().is_empty() {
+            self.open_shortcuts();
+            return true;
+        }
+        match action {
+            Some(Action::PageUp) => self.scroll_up(8),
+            Some(Action::PageDown) => self.scroll_down(8),
+            Some(Action::JumpTop) => self.scroll_to_top(),
+            Some(Action::JumpBottom) => self.scroll_to_bottom(),
+            Some(Action::Cancel) if self.turn_active() => {
+                self.cancel_requested = true;
+            }
+            Some(Action::Cancel) => self.bottom_pane.composer.esc_backtrack_hint = true,
+            Some(Action::ClearDraft) => {
+                if self.input().is_empty() {
+                    self.open_quit_confirmation();
+                } else {
+                    self.clear_input();
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if self.file_popup_active() || self.slash_popup_active() {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_up(3),
+            MouseEventKind::ScrollDown => self.scroll_down(3),
+            _ => {}
+        }
+    }
+
+    fn clear_input(&mut self) {
+        self.bottom_pane
+            .composer
+            .textarea
+            .set_text_clearing_elements("");
+    }
+
+    fn cancel_history_search(&mut self) {
+        self.bottom_pane.composer.history_search_open = false;
+        self.bottom_pane.composer.history_search_query.clear();
+        self.bottom_pane.composer.history_search_matches.clear();
+        self.bottom_pane.composer.history_search_match = None;
+        self.bottom_pane.composer.history_index = None;
+        let draft = self.bottom_pane.composer.history_search_draft.clone();
+        self.bottom_pane
+            .composer
+            .textarea
+            .set_text_clearing_elements(&draft);
+    }
+
+    fn accept_history_search(&mut self) {
+        self.bottom_pane.composer.history_search_open = false;
+        self.bottom_pane.composer.history_search_query.clear();
+        self.bottom_pane.composer.history_search_matches.clear();
+        self.bottom_pane.composer.history_search_match = None;
+        self.bottom_pane.composer.history_index = None;
+    }
+
+    fn refresh_history_search(&mut self) {
+        let query = self
+            .bottom_pane
+            .composer
+            .history_search_query
+            .to_lowercase();
+        self.bottom_pane.composer.history_search_matches = self
+            .bottom_pane
+            .composer
+            .history_entries
             .iter()
-            .map(|message| message.content.len())
-            .sum()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (query.is_empty() || entry.to_lowercase().contains(&query)).then_some(index)
+            })
+            .collect();
+        self.bottom_pane.composer.history_search_match = None;
+        if let Some(&index) = self.bottom_pane.composer.history_search_matches.last() {
+            self.bottom_pane.composer.history_search_match =
+                Some(self.bottom_pane.composer.history_search_matches.len() - 1);
+            self.bottom_pane.composer.history_index = Some(index);
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&self.bottom_pane.composer.history_entries[index]);
+        } else {
+            self.bottom_pane.composer.history_index = None;
+            let draft = self.bottom_pane.composer.history_search_draft.clone();
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&draft);
+        }
     }
 
-    fn complete_execution(
-        &mut self,
-        execution_id: String,
-        capability: String,
-        completion: ExecutionCompletion,
-    ) {
-        let ExecutionCompletion {
-            stdout,
-            stderr,
-            exit_code,
-            duration_ms,
-            status,
-        } = completion;
-        self.status = Status::Thinking;
-        let (stdout, _) = truncate_text(
-            &crate::presentation::sanitize_terminal_text(&stdout),
-            MAX_OUTPUT_BYTES,
-        );
-        let (stderr, _) = truncate_text(
-            &crate::presentation::sanitize_terminal_text(&stderr),
-            MAX_OUTPUT_BYTES,
-        );
-        let status = bounded_metadata(&status);
-        let mut completed = false;
-        if let Some(message) = self.messages.iter_mut().rev().find(|message| {
-            message.role == MessageRole::Tool
-                && message
-                    .tool
-                    .as_ref()
-                    .is_some_and(|tool| tool.id == execution_id)
-        }) {
-            if let Some(tool) = message.tool.as_mut() {
-                tool.output = (!stdout.is_empty()).then_some(stdout.clone());
-                tool.stderr = (!stderr.is_empty()).then_some(stderr.clone());
-                tool.duration = Some(Duration::from_millis(duration_ms));
-                tool.exit_code = Some(exit_code);
-                tool.execution_status = Some(status.clone());
-                tool.completed = true;
-                tool.success = status == "success" && exit_code == 0;
+    fn step_history_search(&mut self, previous: bool) {
+        if self.bottom_pane.composer.history_search_matches.is_empty() {
+            return;
+        }
+        let next = match (self.bottom_pane.composer.history_search_match, previous) {
+            (None, _) => self.bottom_pane.composer.history_search_matches.len() - 1,
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) => {
+                if index + 1 >= self.bottom_pane.composer.history_search_matches.len() {
+                    0
+                } else {
+                    index + 1
+                }
             }
-            let content = [stdout.as_str(), stderr.as_str()]
-                .into_iter()
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let (content, truncated) = truncate_text(&content, MAX_OUTPUT_BYTES);
-            message.content = content;
-            message.truncated = truncated;
-            completed = true;
+        };
+        self.bottom_pane.composer.history_search_match = Some(next);
+        let history_index = self.bottom_pane.composer.history_search_matches[next];
+        self.bottom_pane.composer.history_index = Some(history_index);
+        self.bottom_pane
+            .composer
+            .textarea
+            .set_text_clearing_elements(&self.bottom_pane.composer.history_entries[history_index]);
+    }
+
+    fn edit_previous_message(&mut self) {
+        if let Some(message) = self.chatwidget.take_previous_user_message() {
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&message);
         }
-        if !completed {
-            let mut message = Message::execution_with_id(
-                execution_id,
-                capability,
-                String::new(),
-                Vec::new(),
-                None,
-                None,
-            );
-            if let Some(tool) = message.tool.as_mut() {
-                tool.output = (!stdout.is_empty()).then_some(stdout.clone());
-                tool.stderr = (!stderr.is_empty()).then_some(stderr.clone());
-                tool.started_at = None;
-                tool.duration = Some(Duration::from_millis(duration_ms));
-                tool.exit_code = Some(exit_code);
-                tool.execution_status = Some(status.clone());
-                tool.completed = true;
-                tool.success = status == "success" && exit_code == 0;
-            }
-            let content = [stdout.as_str(), stderr.as_str()]
-                .into_iter()
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let (content, truncated) = truncate_text(&content, MAX_OUTPUT_BYTES);
-            message.content = content;
-            message.truncated = truncated;
-            self.messages.push(message);
-        }
-        self.history_changed();
+        self.bottom_pane.composer.esc_backtrack_hint = false;
     }
-}
-
-fn truncate_text(text: &str, max_bytes: usize) -> (String, bool) {
-    if text.len() <= max_bytes {
-        return (text.to_owned(), false);
-    }
-
-    let marker = TRUNCATION_MARKER;
-    let mut end = max_bytes.saturating_sub(marker.len()).min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (format!("{}{}", &text[..end], marker), true)
-}
-
-fn bounded_metadata(text: &str) -> String {
-    truncate_text(text, MAX_METADATA_BYTES).0
-}
-
-fn append_message_delta(message: &mut Message, delta: &str) {
-    if message.truncated {
-        return;
-    }
-    let available = MAX_MESSAGE_BYTES
-        .saturating_sub(message.content.len())
-        .saturating_sub(TRUNCATION_MARKER.len());
-    if delta.len() <= available {
-        message.content.push_str(delta);
-        return;
-    }
-
-    let mut end = available.min(delta.len());
-    while end > 0 && !delta.is_char_boundary(end) {
-        end -= 1;
-    }
-    message.content.push_str(&delta[..end]);
-    message.content.push_str(TRUNCATION_MARKER);
-    message.truncated = true;
-}
-
-fn display_width(text: &str) -> usize {
-    UnicodeWidthStr::width(text)
-}
-
-fn position_at_display_column(text: &str, offset: usize, target: usize) -> usize {
-    let mut width = 0;
-    for (index, grapheme) in text.grapheme_indices(true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if width + grapheme_width > target {
-            return offset + index;
-        }
-        width += grapheme_width;
-    }
-    offset + text.len()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{App, MessageRole, Status};
+    use super::App;
     use crate::runtime::RuntimeEvent;
-    use std::time::Duration;
 
     #[test]
-    fn keeps_input_and_cursor_consistent_for_unicode() {
-        let mut app = App::new("conversation".to_owned());
-        app.insert_character('á');
-        app.insert_character('t');
-        app.move_cursor_left();
-        app.backspace();
+    fn streams_into_an_active_cell_before_committing_to_history() {
+        let mut app = App::new("streaming".to_owned());
+        app.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message-1".to_owned(),
+            delta: "partial".to_owned(),
+        });
+        assert!(app.cells().is_empty());
+        assert_eq!(app.active_cells().len(), 1);
 
-        assert_eq!(app.input(), "t");
-        assert_eq!(app.cursor_byte_position(), 0);
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message-1".to_owned(),
+            content: "complete".to_owned(),
+        });
+        assert!(app.active_cells().is_empty());
+        assert_eq!(app.cells().len(), 1);
     }
 
     #[test]
-    fn appends_message_deltas_to_the_same_atlas_message() {
-        let mut app = App::new("conversation".to_owned());
+    fn does_not_duplicate_message_completed_at_turn_completion() {
+        let mut app = App::new("completed".to_owned());
         app.handle_runtime_event(RuntimeEvent::MessageDelta {
             message_id: "message-1".to_owned(),
-            delta: "Hello".to_owned(),
+            delta: "partial".to_owned(),
         });
-        app.handle_runtime_event(RuntimeEvent::MessageDelta {
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
             message_id: "message-1".to_owned(),
-            delta: " world".to_owned(),
+            content: "complete".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "complete".to_owned(),
+            message_id: Some("message-1".to_owned()),
+            context: None,
         });
 
-        assert_eq!(app.messages().len(), 1);
-        assert_eq!(app.messages()[0].role, MessageRole::Atlas);
-        assert_eq!(app.messages()[0].content, "Hello world");
-        assert_eq!(app.status(), &Status::Thinking);
+        assert_eq!(app.cells().len(), 1);
     }
 
     #[test]
-    fn keeps_editing_input_but_ignores_enter_while_thinking() {
-        let mut app = App::new("conversation".to_owned());
-        app.insert_character('f');
-        app.insert_character('i');
-        app.insert_character('r');
-        app.insert_character('s');
-        app.insert_character('t');
+    fn queues_second_submission_until_the_first_turn_finishes() {
+        let mut app = App::new("queue".to_owned());
+        app.insert_text("first");
         assert_eq!(app.submit_input().as_deref(), Some("first"));
+        app.insert_text("second");
+        assert_eq!(app.submit_input(), None);
+        assert_eq!(app.cells().len(), 1);
 
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
-        app.insert_character('s');
-        app.insert_character('e');
-        app.insert_character('c');
-        app.insert_character('o');
-        app.insert_character('n');
-        app.insert_character('d');
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        assert_eq!(app.take_queued_input().as_deref(), Some("second"));
+        assert_eq!(app.cells().len(), 3);
+    }
 
+    #[test]
+    fn paste_burst_commits_fast_ascii_as_one_paste_on_tick() {
+        let mut app = App::new("paste-burst".to_owned());
+        let plain = crossterm::event::KeyModifiers::NONE;
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            plain,
+        ));
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            plain,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(12));
+        app.tick();
+
+        assert_eq!(app.input(), "ab");
+    }
+
+    #[test]
+    fn paste_burst_enter_becomes_newline_instead_of_submission() {
+        let mut app = App::new("paste-enter".to_owned());
+        let plain = crossterm::event::KeyModifiers::NONE;
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            plain,
+        ));
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            plain,
+        ));
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            plain,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(12));
+        app.tick();
+
+        assert_eq!(app.input(), "ab\n");
+    }
+
+    #[test]
+    fn reverse_history_search_filters_matches_and_restores_draft_on_cancel() {
+        let mut app = App::new("history-search".to_owned());
+        app.insert_text("first command");
+        assert_eq!(app.submit_input().as_deref(), Some("first command"));
+        app.insert_text("Second command");
         assert_eq!(app.submit_input(), None);
-        assert_eq!(app.submit_input(), None);
-        assert_eq!(app.input(), "second");
-        assert_eq!(app.messages().len(), 1);
+        app.insert_text("draft");
 
-        app.handle_runtime_event(RuntimeEvent::TurnCompleted { context: None });
-        assert_eq!(app.submit_input().as_deref(), Some("second"));
-        assert_eq!(app.messages().len(), 2);
-    }
-
-    #[test]
-    fn keeps_tool_start_and_completion_in_one_transcript_cell() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ToolStarted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "demo.tool".to_owned(),
-        });
-        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "demo.tool".to_owned(),
-            output: Some(r#"{\"stdout\":\"ok\",\"exit_code\":0,\"duration_ms\":10}"#.to_owned()),
-        });
-
-        assert_eq!(app.messages().len(), 1);
-        let message = &app.messages()[0];
-        assert_eq!(message.role, MessageRole::Tool);
-        assert_eq!(message.content, "ok");
-        let tool = message.tool.as_ref().expect("tool cell");
-        assert!(tool.completed);
-        assert_eq!(tool.duration, Some(Duration::from_millis(10)));
-    }
-
-    #[test]
-    fn keeps_execution_start_and_completion_by_execution_id() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
-            execution_id: "execution-1".to_owned(),
-            capability: "process.exec".to_owned(),
-            program: "node".to_owned(),
-            args: vec!["--version".to_owned()],
-            cwd: Some("/tmp".to_owned()),
-            target: Some("local".to_owned()),
-        });
-        app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
-            execution_id: "execution-1".to_owned(),
-            capability: "process.exec".to_owned(),
-            stdout: "v22.x.x".to_owned(),
-            stderr: String::new(),
-            exit_code: 0,
-            duration_ms: 120,
-            status: "success".to_owned(),
-        });
-
-        assert_eq!(app.messages().len(), 1);
-        let tool = app.messages()[0].tool.as_ref().expect("execution cell");
-        assert_eq!(tool.id, "execution-1");
-        assert_eq!(tool.program.as_deref(), Some("node"));
-        assert_eq!(tool.args, ["--version"]);
-        assert_eq!(tool.cwd.as_deref(), Some("/tmp"));
-        assert_eq!(tool.exit_code, Some(0));
-        assert_eq!(tool.execution_status.as_deref(), Some("success"));
-        assert!(tool.completed);
-        assert!(tool.success);
-    }
-
-    #[test]
-    fn does_not_duplicate_an_execution_when_completion_is_repeated() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
-            execution_id: "execution-1".to_owned(),
-            capability: "process.exec".to_owned(),
-            program: "node".to_owned(),
-            args: vec!["--version".to_owned()],
-            cwd: None,
-            target: Some("local".to_owned()),
-        });
-        for output in ["first", "second"] {
-            app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
-                execution_id: "execution-1".to_owned(),
-                capability: "process.exec".to_owned(),
-                stdout: output.to_owned(),
-                stderr: String::new(),
-                exit_code: 0,
-                duration_ms: 8,
-                status: "success".to_owned(),
-            });
-        }
-
-        assert_eq!(app.messages().len(), 1);
-        assert_eq!(app.messages()[0].content, "second");
-    }
-
-    #[test]
-    fn preserves_manual_transcript_scroll_when_new_content_arrives() {
-        let mut app = App::new("conversation".to_owned());
-        app.scroll_up(4);
-        app.handle_runtime_event(RuntimeEvent::MessageDelta {
-            message_id: "message-1".to_owned(),
-            delta: "new content".to_owned(),
-        });
-
-        assert_eq!(app.history_scroll(), 4);
-        app.scroll_down(4);
-        assert_eq!(app.history_scroll(), 0);
-    }
-
-    #[test]
-    fn matches_same_named_tools_by_id() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ToolStarted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "demo.tool".to_owned(),
-        });
-        app.handle_runtime_event(RuntimeEvent::ToolStarted {
-            tool_id: "tool-2".to_owned(),
-            tool_name: "demo.tool".to_owned(),
-        });
-        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "demo.tool".to_owned(),
-            output: Some(r#"{\"stdout\":\"first\"}"#.to_owned()),
-        });
-
-        assert_eq!(app.messages()[0].content, "first");
-        assert!(
-            !app.messages()[1]
-                .tool
-                .as_ref()
-                .expect("tool cell")
-                .completed
+        let ctrl_r = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::CONTROL,
         );
-    }
-
-    #[test]
-    fn moves_multiline_composer_by_visual_line() {
-        let mut app = App::new("conversation".to_owned());
-        for character in "ab\ncd".chars() {
-            app.insert_character(character);
+        assert!(app.handle_global_key(ctrl_r));
+        assert!(app.history_search_open());
+        for character in "SECOND".chars() {
+            assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(character),
+                crossterm::event::KeyModifiers::NONE,
+            )));
         }
-        app.move_cursor_up();
+        assert_eq!(app.input(), "Second command");
+        assert_eq!(app.history_search_query(), "SECOND");
 
-        assert_eq!(app.input(), "ab\ncd");
-        assert_eq!(app.cursor_byte_position(), 2);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert!(!app.history_search_open());
+        assert_eq!(app.input(), "draft");
     }
 
     #[test]
-    fn edits_combining_graphemes_as_one_character() {
-        let mut app = App::new("conversation".to_owned());
-        app.insert_character('e');
-        app.insert_character('\u{301}');
+    fn reverse_history_search_reports_no_match_without_losing_draft() {
+        let mut app = App::new("history-search-empty".to_owned());
+        app.insert_text("known command");
+        assert_eq!(app.submit_input().as_deref(), Some("known command"));
+        app.insert_text("draft");
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('z'),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert!(!app.history_search_has_match());
+        assert_eq!(app.input(), "draft");
+    }
 
-        app.move_cursor_left();
-        assert_eq!(app.cursor_byte_position(), 0);
-        app.delete_forward();
+    #[test]
+    fn slash_popup_completes_and_dispatches_help_locally() {
+        let mut app = App::new("slash-help".to_owned());
+        app.insert_text("/");
+        assert_eq!(app.slash_popup_commands().len(), 2);
+
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), "/help");
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert!(app.shortcuts_open());
         assert!(app.input().is_empty());
     }
 
     #[test]
-    fn moves_right_over_a_combining_grapheme_as_one_character() {
-        let mut app = App::new("conversation".to_owned());
-        app.insert_character('e');
-        app.insert_character('\u{301}');
-        app.move_cursor_home();
-        app.move_cursor_right();
-
-        assert_eq!(app.cursor_byte_position(), "e\u{301}".len());
+    fn enter_confirms_the_selected_slash_completion_instead_of_submitting() {
+        let mut app = App::new("slash-enter".to_owned());
+        app.insert_text("/");
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), "/help");
+        assert!(!app.shortcuts_open());
+        assert!(app.cells().is_empty());
     }
 
     #[test]
-    fn deduplicates_repeated_generic_tool_start_events() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ToolStarted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "filesystem.read".to_owned(),
-        });
-        app.handle_runtime_event(RuntimeEvent::ToolStarted {
-            tool_id: "tool-1".to_owned(),
-            tool_name: "filesystem.read".to_owned(),
-        });
+    fn completion_popup_moves_selection_before_tab_completion() {
+        let mut app = App::new("slash-selection".to_owned());
+        app.insert_text("/");
+        assert_eq!(app.completion_selection(), 0);
 
-        assert_eq!(app.messages().len(), 1);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert_eq!(app.completion_selection(), 1);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.completion_selection(), 0);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.completion_selection(), 1);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert_eq!(app.completion_selection(), 0);
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert_eq!(app.completion_selection(), 1);
+
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), "/quit");
     }
 
     #[test]
-    fn ctrl_home_and_end_control_transcript_scroll_without_moving_composer() {
-        let mut app = App::new("conversation".to_owned());
-        app.scroll_to_top();
-        assert!(app.manual_scroll);
-        app.scroll_to_bottom();
+    fn slash_popup_escape_only_dismisses_the_popup() {
+        let mut app = App::new("slash-escape".to_owned());
+        app.insert_text("/");
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert!(!app.shortcuts_open());
+        assert!(!app.take_cancel_requested());
+        assert_eq!(app.input(), "/");
+        assert!(app.slash_popup_commands().is_empty());
+    }
+
+    #[test]
+    fn popup_keeps_transcript_scroll_keys_inside_the_composer() {
+        let mut app = App::new("popup-scroll".to_owned());
+        app.insert_text("/");
+        assert!(!app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::PageUp,
+            crossterm::event::KeyModifiers::NONE,
+        )));
         assert_eq!(app.history_scroll(), 0);
-        assert!(!app.manual_scroll);
+        assert!(!app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('t'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
     }
 
     #[test]
-    fn preserves_significant_whitespace_in_submitted_input() {
-        let mut app = App::new("conversation".to_owned());
-        for character in "  code\n".chars() {
-            app.insert_character(character);
-        }
-
-        assert_eq!(app.submit_input().as_deref(), Some("  code\n"));
-        assert_eq!(app.messages()[0].content, "  code\n");
+    fn popup_keeps_mouse_scroll_inside_the_composer() {
+        let mut app = App::new("popup-mouse-scroll".to_owned());
+        app.insert_text("/");
+        app.handle_mouse_event(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        assert_eq!(app.history_scroll(), 0);
     }
 
     #[test]
-    fn marks_pending_tools_as_aborted_when_the_turn_fails() {
-        let mut app = App::new("conversation".to_owned());
-        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
-            execution_id: "execution-1".to_owned(),
-            capability: "process.exec".to_owned(),
-            program: "sleep".to_owned(),
-            args: vec!["10".to_owned()],
-            cwd: None,
-            target: Some("local".to_owned()),
-        });
-        app.handle_runtime_event(RuntimeEvent::Error {
-            message: "connection lost".to_owned(),
-        });
+    fn app_routes_control_p_and_control_n_to_multiline_composer_navigation() {
+        let mut app = App::new("emacs-navigation".to_owned());
+        app.insert_text("first\nsecond");
+        let up = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let down = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
 
-        let tool = app.messages()[0].tool.as_ref().expect("execution cell");
-        assert!(tool.completed);
-        assert!(!tool.success);
-        assert_eq!(tool.execution_status.as_deref(), Some("aborted"));
+        assert!(!app.handle_global_key(up));
+        app.handle_key_event(up);
+        assert_eq!(app.textarea().cursor(), 5);
+        app.handle_key_event(down);
+        assert_eq!(app.textarea().cursor(), 12);
+    }
+
+    #[test]
+    fn slash_quit_dispatches_without_sending_a_runtime_turn() {
+        let mut app = App::new("slash-quit".to_owned());
+        app.insert_text("/quit");
+        assert!(app.submit_input().is_none());
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn file_picker_completes_a_local_at_mention() {
+        let mut app = App::new("file-picker".to_owned());
+        app.insert_text("@Cargo.toml");
+        assert!(
+            app.completion_popup_items()
+                .iter()
+                .any(|(label, _)| label == "@Cargo.toml")
+        );
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), "@Cargo.toml ");
+    }
+
+    #[test]
+    fn enter_confirms_the_selected_file_completion_instead_of_submitting() {
+        let mut app = App::new("file-picker-enter".to_owned());
+        app.insert_text("@Cargo.toml");
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), "@Cargo.toml ");
+        assert!(app.cells().is_empty());
+    }
+
+    #[test]
+    fn file_picker_uses_the_navigated_selection() {
+        let mut app = App::new("file-picker-selection".to_owned());
+        app.insert_text("@Cargo");
+        let items = app.completion_popup_items();
+        let second = items
+            .get(1)
+            .map(|(label, _)| label.clone())
+            .expect("Cargo query should produce at least two local entries");
+
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert_eq!(app.completion_selection(), 1);
+        assert!(
+            app.handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .is_none()
+        );
+        assert_eq!(app.input(), format!("{second} "));
+    }
+
+    #[test]
+    fn file_picker_escape_does_not_cancel_a_turn() {
+        let mut app = App::new("file-picker-escape".to_owned());
+        app.insert_text("@Cargo");
+        assert!(!app.completion_popup_items().is_empty());
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        assert!(app.completion_popup_items().is_empty());
+        assert!(!app.take_cancel_requested());
+        assert_eq!(app.input(), "@Cargo");
+    }
+
+    #[test]
+    fn ctrl_g_requests_editor_only_when_idle() {
+        let mut app = App::new("editor-request".to_owned());
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(app.handle_global_key(key));
+        assert!(app.take_external_editor_requested());
+        assert!(!app.take_external_editor_requested());
+    }
+
+    #[test]
+    fn ctrl_c_clears_draft_before_quit_confirmation() {
+        let mut app = App::new("ctrl-c".to_owned());
+        app.insert_text("draft");
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(app.handle_global_key(key));
+        assert!(app.input().is_empty());
+        assert!(!app.quit_confirmation());
+    }
+
+    #[test]
+    fn manual_scroll_preserves_viewport_when_history_grows() {
+        let mut app = App::new("scroll".to_owned());
+        app.record_history_content_height(20);
+        app.scroll_up(3);
+        app.record_history_content_height(25);
+        assert_eq!(app.history_scroll(), 8);
     }
 }

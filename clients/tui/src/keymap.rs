@@ -1,0 +1,50 @@
+//! Key action resolution for the Codex-style TUI.
+//!
+//! Input handlers consume actions rather than scattering terminal key details
+//! through view state. The default bindings intentionally mirror the Codex
+//! CLI's primary bindings; a future RuntimeKeymap can replace this resolver
+//! without changing the views.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Action {
+    Cancel,
+    CloseOverlay,
+    ConfirmQuit,
+    DeclineQuit,
+    ClearDraft,
+    OpenExternalEditor,
+    OpenHistorySearch,
+    OpenTranscript,
+    OpenShortcuts,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    JumpTop,
+    JumpBottom,
+}
+
+pub(crate) fn resolve(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let none = key.modifiers == KeyModifiers::NONE;
+    match key.code {
+        KeyCode::Esc if none => Some(Action::Cancel),
+        KeyCode::Char('q') if none => Some(Action::CloseOverlay),
+        KeyCode::Char('n') if none => Some(Action::DeclineQuit),
+        KeyCode::Char('y') | KeyCode::Enter if none => Some(Action::ConfirmQuit),
+        KeyCode::Char('c') if ctrl => Some(Action::ClearDraft),
+        KeyCode::Char('g') if ctrl => Some(Action::OpenExternalEditor),
+        KeyCode::Char('r') if ctrl => Some(Action::OpenHistorySearch),
+        KeyCode::Char('t') if ctrl => Some(Action::OpenTranscript),
+        KeyCode::Char('?') if none => Some(Action::OpenShortcuts),
+        KeyCode::Up if none => Some(Action::ScrollUp),
+        KeyCode::Down if none => Some(Action::ScrollDown),
+        KeyCode::PageUp if none => Some(Action::PageUp),
+        KeyCode::PageDown if none => Some(Action::PageDown),
+        KeyCode::Home if ctrl => Some(Action::JumpTop),
+        KeyCode::End if ctrl => Some(Action::JumpBottom),
+        _ => None,
+    }
+}
