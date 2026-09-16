@@ -1,5 +1,6 @@
 ---
 source: src/bottom_pane/chat_composer.rs
+assertion_line: 285
 expression: "rows(&empty, 100, 14)"
 ---
                                                                                                     
@@ -15,4 +16,4 @@ expression: "rows(&empty, 100, 14)"
                                                                                                     
                                                                                                     
                                                                                                     
-  ? for shortcuts                                                                  100% context left
+  ? for shortcuts                                                                 0/256k (100% left)

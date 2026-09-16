@@ -217,7 +217,44 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn format_context(used: u64, window: u64) -> String {
     let remaining = window.saturating_sub(used).saturating_mul(100) / window.max(1);
-    format!("{remaining}% context left")
+    format!(
+        "{}/{} ({}% left)",
+        format_tokens_compact(used),
+        format_tokens_compact(window),
+        remaining
+    )
+}
+
+fn format_tokens_compact(value: u64) -> String {
+    if value < 1_000 {
+        return value.to_string();
+    }
+
+    let value_f64 = value as f64;
+    let (scaled, suffix) = if value >= 1_000_000_000 {
+        (value_f64 / 1_000_000_000.0, "b")
+    } else if value >= 1_000_000 {
+        (value_f64 / 1_000_000.0, "m")
+    } else {
+        (value_f64 / 1_000.0, "k")
+    };
+    let decimals = if scaled < 10.0 {
+        2
+    } else if scaled < 100.0 {
+        1
+    } else {
+        0
+    };
+    let mut formatted = format!("{scaled:.decimals$}");
+    if formatted.contains('.') {
+        while formatted.ends_with('0') {
+            formatted.pop();
+        }
+        if formatted.ends_with('.') {
+            formatted.pop();
+        }
+    }
+    format!("{formatted}{suffix}")
 }
 
 #[cfg(test)]
@@ -286,5 +323,14 @@ mod tests {
             .collect::<String>();
         assert!(output.contains("! runtime unavailable"));
         assert!(!output.contains("Working ("));
+    }
+
+    #[test]
+    fn formats_context_as_used_over_window_with_remaining_percentage() {
+        assert_eq!(super::format_context(100, 156_000), "100/156k (99% left)");
+        assert_eq!(
+            super::format_context(1_234, 1_000_000),
+            "1.23k/1m (99% left)"
+        );
     }
 }
