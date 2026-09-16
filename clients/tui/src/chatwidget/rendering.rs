@@ -21,19 +21,15 @@ pub(crate) fn render(
     if area.is_empty() {
         return None;
     }
-    let composer_height = {
-        let composer = bottom_pane.renderable(app);
-        composer
-            .desired_height(area.width)
-            .min(area.height.saturating_sub(1))
-    };
+    let composer_height = bottom_pane
+        .desired_height(app, area.width)
+        .min(area.height.saturating_sub(1));
     let [history_area, composer_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)]).areas(area);
 
     render_history(buffer, app, history_area);
-    let composer = bottom_pane.renderable(app);
-    composer.render(composer_area, buffer);
-    let cursor = composer.cursor_pos(composer_area);
+    bottom_pane.render(app, composer_area, buffer);
+    let cursor = bottom_pane.cursor_pos(app, composer_area);
     if app.transcript_open() {
         app.transcript_overlay().render(app, area, buffer);
     }
