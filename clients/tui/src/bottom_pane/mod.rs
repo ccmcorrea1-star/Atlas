@@ -6,30 +6,55 @@ pub(crate) mod prompt_args;
 pub(crate) mod slash_commands;
 pub(crate) mod textarea;
 
+pub(crate) use bottom_pane_view::ActiveBottomPaneView;
 pub(crate) use bottom_pane_view::BottomPaneView;
-pub(crate) use bottom_pane_view::ChatComposerView;
 pub(crate) use chat_composer::ChatComposer;
 
 /// Owns the composer state for the lower interactive pane.
 ///
 /// Runtime/transcript coordination remains in `App`; this container is the
 /// structural owner of draft editing and its local interaction state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BottomPaneSurface {
+    Composer,
+    Shortcuts,
+}
+
 #[derive(Debug)]
 pub(crate) struct BottomPane {
     pub(crate) composer: ChatComposer,
+    surface: BottomPaneSurface,
 }
 
 impl BottomPane {
     pub(crate) fn new() -> Self {
         Self {
             composer: ChatComposer::new(),
+            surface: BottomPaneSurface::Composer,
         }
+    }
+
+    pub(crate) fn surface(&self) -> BottomPaneSurface {
+        self.surface
+    }
+
+    pub(crate) fn shortcuts_open(&self) -> bool {
+        self.surface == BottomPaneSurface::Shortcuts
+    }
+
+    pub(crate) fn open_shortcuts(&mut self) {
+        self.surface = BottomPaneSurface::Shortcuts;
+    }
+
+    pub(crate) fn close_shortcuts(&mut self) {
+        self.surface = BottomPaneSurface::Composer;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::BottomPane;
+    use super::BottomPaneSurface;
 
     #[test]
     fn starts_with_isolated_composer_state() {
@@ -38,5 +63,6 @@ mod tests {
         assert!(pane.composer.textarea.is_empty());
         assert!(pane.composer.history_entries.is_empty());
         assert!(!pane.composer.history_search_open);
+        assert_eq!(pane.surface(), BottomPaneSurface::Composer);
     }
 }

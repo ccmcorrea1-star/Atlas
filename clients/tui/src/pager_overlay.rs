@@ -15,10 +15,12 @@ use std::cell::Cell;
 use std::cell::RefCell;
 
 use crate::app::App;
+use crate::keymap::Action;
 use crate::wrapping::wrap_line;
 
 #[derive(Debug, Default)]
 pub(crate) struct TranscriptOverlay {
+    open: Cell<bool>,
     live_tail_cache: RefCell<Option<LiveTailCache>>,
     scroll_offset: Cell<usize>,
     last_max_scroll: Cell<usize>,
@@ -31,7 +33,58 @@ struct LiveTailCache {
     lines: Vec<Line<'static>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptViewCompletion {
+    Closed,
+}
+
 impl TranscriptOverlay {
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.get()
+    }
+
+    pub(crate) fn open(&self) {
+        self.open.set(true);
+    }
+
+    pub(crate) fn close(&self) {
+        self.open.set(false);
+    }
+
+    pub(crate) fn handle_action(&self, action: Option<Action>) -> Option<TranscriptViewCompletion> {
+        match action {
+            Some(Action::Cancel) | Some(Action::CloseOverlay) => {
+                self.close();
+                Some(TranscriptViewCompletion::Closed)
+            }
+            Some(Action::ScrollUp) => {
+                self.scroll_up(1);
+                None
+            }
+            Some(Action::ScrollDown) => {
+                self.scroll_down(1);
+                None
+            }
+            Some(Action::PageUp) => {
+                self.scroll_up(8);
+                None
+            }
+            Some(Action::PageDown) => {
+                self.scroll_down(8);
+                None
+            }
+            Some(Action::JumpTop) => {
+                self.scroll_to_top();
+                None
+            }
+            Some(Action::JumpBottom) => {
+                self.scroll_to_bottom();
+                None
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn scroll_up(&self, amount: usize) {
         let current = self.scroll_offset.get();
         let current = if current == usize::MAX {
@@ -207,7 +260,8 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buffer = Buffer::empty(area);
 
-        TranscriptOverlay::default().render(&app, area, &mut buffer);
+        let overlay = TranscriptOverlay::default();
+        overlay.render(&app, area, &mut buffer);
 
         let rows = (area.y..area.bottom())
             .map(|y| {
@@ -219,5 +273,20 @@ mod tests {
         assert!(rows[0].starts_with("/ T R A N S C R I P T"));
         assert!(rows[8].contains("to scroll"));
         assert!(rows[9].contains("q close"));
+    }
+
+    #[test]
+    fn owns_open_state_and_returns_completion_when_closed() {
+        let overlay = TranscriptOverlay::default();
+        assert!(!overlay.is_open());
+
+        overlay.open();
+        assert!(overlay.is_open());
+        assert_eq!(overlay.handle_action(Some(Action::PageDown)), None);
+        assert_eq!(
+            overlay.handle_action(Some(Action::CloseOverlay)),
+            Some(TranscriptViewCompletion::Closed)
+        );
+        assert!(!overlay.is_open());
     }
 }

@@ -43,8 +43,7 @@ pub struct App {
     history_scroll: usize,
     history_content_height: usize,
     manual_scroll: bool,
-    shortcuts_open: bool,
-    transcript_open: bool,
+
     quit_confirmation: bool,
     queued_inputs: VecDeque<String>,
     submission_pending: bool,
@@ -62,8 +61,7 @@ impl App {
             history_scroll: 0,
             history_content_height: 0,
             manual_scroll: false,
-            shortcuts_open: false,
-            transcript_open: false,
+
             quit_confirmation: false,
             queued_inputs: VecDeque::new(),
             submission_pending: false,
@@ -96,6 +94,10 @@ impl App {
         &self.bottom_pane.composer.textarea
     }
 
+    pub(crate) fn bottom_pane(&self) -> &BottomPane {
+        &self.bottom_pane
+    }
+
     pub fn status(&self) -> &Status {
         self.chatwidget.status()
     }
@@ -125,27 +127,23 @@ impl App {
     }
 
     pub fn shortcuts_open(&self) -> bool {
-        self.shortcuts_open
+        self.bottom_pane.shortcuts_open()
     }
 
     pub fn open_shortcuts(&mut self) {
-        self.shortcuts_open = true;
+        self.bottom_pane.open_shortcuts();
     }
 
     pub fn close_shortcuts(&mut self) {
-        self.shortcuts_open = false;
+        self.bottom_pane.close_shortcuts();
     }
 
     pub fn transcript_open(&self) -> bool {
-        self.transcript_open
+        self.transcript_overlay.is_open()
     }
 
     pub fn open_transcript(&mut self) {
-        self.transcript_open = true;
-    }
-
-    pub fn close_transcript(&mut self) {
-        self.transcript_open = false;
+        self.transcript_overlay.open();
     }
 
     pub fn quit_confirmation(&self) -> bool {
@@ -178,7 +176,7 @@ impl App {
 
     fn slash_popup_active(&self) -> bool {
         if self.bottom_pane.composer.slash_popup_suppressed
-            || self.shortcuts_open
+            || self.shortcuts_open()
             || self.bottom_pane.composer.history_search_open
         {
             return false;
@@ -284,7 +282,7 @@ impl App {
 
     fn file_popup_active(&self) -> bool {
         !self.bottom_pane.composer.file_popup_suppressed
-            && !self.shortcuts_open
+            && !self.shortcuts_open()
             && !self.bottom_pane.composer.history_search_open
             && !self.slash_popup_active()
             && self.file_token().is_some()
@@ -374,8 +372,8 @@ impl App {
 
     /// Paste belongs to the active Codex view, never to a hidden composer.
     pub fn handle_paste(&mut self, text: &str) {
-        if self.shortcuts_open
-            || self.transcript_open
+        if self.shortcuts_open()
+            || self.transcript_overlay.is_open()
             || self.quit_confirmation
             || self.bottom_pane.composer.history_search_open
         {
@@ -652,23 +650,14 @@ impl App {
             }
             return true;
         }
-        if self.shortcuts_open {
+        if self.shortcuts_open() {
             if action == Some(Action::Cancel) || action == Some(Action::OpenShortcuts) {
                 self.close_shortcuts();
             }
             return true;
         }
-        if self.transcript_open {
-            match action {
-                Some(Action::Cancel) | Some(Action::CloseOverlay) => self.close_transcript(),
-                Some(Action::ScrollUp) => self.transcript_overlay.scroll_up(1),
-                Some(Action::ScrollDown) => self.transcript_overlay.scroll_down(1),
-                Some(Action::PageUp) => self.transcript_overlay.scroll_up(8),
-                Some(Action::PageDown) => self.transcript_overlay.scroll_down(8),
-                Some(Action::JumpTop) => self.transcript_overlay.scroll_to_top(),
-                Some(Action::JumpBottom) => self.transcript_overlay.scroll_to_bottom(),
-                _ => {}
-            }
+        if self.transcript_overlay.is_open() {
+            let _ = self.transcript_overlay.handle_action(action);
             return true;
         }
 
@@ -832,7 +821,7 @@ mod tests {
 
     use super::App;
     use crate::bottom_pane::BottomPaneView;
-    use crate::bottom_pane::ChatComposerView;
+    use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::runtime::RuntimeEvent;
 
     #[test]

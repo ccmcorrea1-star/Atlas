@@ -38,8 +38,8 @@ use ratatui::layout::Position;
 use tokio::task::JoinHandle;
 
 use crate::app::App;
+use crate::bottom_pane::ActiveBottomPaneView;
 use crate::bottom_pane::BottomPaneView;
-use crate::bottom_pane::ChatComposerView;
 use crate::event::Event;
 use crate::event::EventHandler;
 use crate::runtime::AtlasRuntimeClient;
@@ -134,11 +134,12 @@ async fn run(
     terminal.clear()?;
 
     let mut app = App::new(runtime.conversation_id().to_owned());
-    let bottom_pane = ChatComposerView;
+    let mut bottom_pane = ActiveBottomPaneView::new();
     let mut events = EventHandler::new(runtime_events);
     let mut active_send: Option<JoinHandle<Result<(), RuntimeError>>> = None;
 
     while !app.should_quit() {
+        let _ = bottom_pane.sync(&app);
         terminal.draw(|frame| {
             if let Some(position) = chatwidget::rendering::render(
                 frame.area(),

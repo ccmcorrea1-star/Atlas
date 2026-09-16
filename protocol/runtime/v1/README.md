@@ -73,6 +73,16 @@ Clientes devem aceitar `message.delta`, `message.completed` ou ambos. Um Runtime
 
 Dados genéricos de tools não contêm argumentos, requisições de Discovery ou objetos de SDK. `process.exec` é a exceção explícita: seu lifecycle público contém apenas os campos estruturados necessários para renderizar e correlacionar uma célula de execução. O Runtime continua responsável por Discovery, capabilities, autorização e execução.
 
+## Superfícies disponíveis no cliente TUI
+
+O cliente TUI mapeia os eventos públicos para as superfícies canônicas existentes:
+
+- `message.*`, `tool.*` e `execution.*` alimentam as history cells e o transcript pager;
+- `turn.started`, `context.updated`, `turn.completed` e `error` alimentam o status do turno, o footer e o contexto visível;
+- `turn.cancel` fecha o ciclo de cancelamento real do turno ativo.
+
+O v1 não oferece eventos ou requisições para approvals, `request_user_input`, elicitation MCP, anexos, keymap configurável ou sessões/modos adicionais. Essas superfícies não devem aparecer como atalhos ou views no cliente até que exista semântica equivalente no Runtime. Clientes v1 ignoram eventos aditivos desconhecidos quando puderem continuar com segurança.
+
 Quando disponível, `context` contém:
 
 ```json

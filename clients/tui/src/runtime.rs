@@ -718,4 +718,11 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn ignores_unknown_future_events_without_breaking_the_active_turn() {
+        let event = parse_runtime_event(envelope("future.event", json!({"new_field": "ignored"})))
+            .expect("unknown additive events are compatible with v1");
+        assert_eq!(event, None);
+    }
 }
