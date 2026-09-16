@@ -74,7 +74,7 @@ impl ExecCell {
             }
 
             if let Some(duration_ms) = self.duration_ms() {
-                let mut result = if self.exit_code() == Some(0) {
+                let mut result = if self.succeeded() {
                     Line::from("✓".green().bold())
                 } else {
                     Line::from(vec![
@@ -132,11 +132,33 @@ impl ExecCell {
             ));
         }
 
+        if !self.capability().is_empty() {
+            lines.push(prefixed_line(
+                Line::from(format!("capability: {}", self.capability())),
+                "  │ ",
+                Style::default().dim(),
+            ));
+        }
+        if let Some(cwd) = self.cwd() {
+            lines.push(prefixed_line(
+                Line::from(format!("cwd: {cwd}")),
+                "  │ ",
+                Style::default().dim(),
+            ));
+        }
+        if let Some(target) = self.target() {
+            lines.push(prefixed_line(
+                Line::from(format!("target: {target}")),
+                "  │ ",
+                Style::default().dim(),
+            ));
+        }
+
         if self.state() == ExecState::Ran {
             let output = output_lines(self.output(), TOOL_CALL_MAX_LINES, width);
             lines.extend(output);
             if let Some(duration_ms) = self.duration_ms() {
-                let result = if self.exit_code() == Some(0) {
+                let result = if self.succeeded() {
                     "✓".green().bold()
                 } else {
                     "✗".red().bold()
@@ -274,10 +296,11 @@ mod tests {
     fn transcript_uses_codex_expanded_command_and_result() {
         let mut cell = ExecCell::new(
             "execution".to_owned(),
+            "process.exec".to_owned(),
             "bash".to_owned(),
             vec!["-lc".to_owned(), "echo hello".to_owned()],
-            None,
-            None,
+            Some("/tmp".to_owned()),
+            Some("local".to_owned()),
         );
         cell.complete(
             "hello\nworld".to_owned(),
@@ -286,6 +309,28 @@ mod tests {
             12,
             "success".to_owned(),
         );
+        assert!(cell.succeeded());
+
+        let mut failed = ExecCell::new(
+            "failure".to_owned(),
+            "process.exec".to_owned(),
+            "bash".to_owned(),
+            Vec::new(),
+            None,
+            None,
+        );
+        failed.complete(String::new(), String::new(), 0, 1, "error".to_owned());
+        assert!(!failed.succeeded());
+
+        let display = cell.display_lines(80);
+        let display = display.iter().map(line_text).collect::<Vec<_>>();
+        assert!(
+            display
+                .iter()
+                .any(|line| line.contains("capability: process.exec"))
+        );
+        assert!(display.iter().any(|line| line.contains("cwd: /tmp")));
+        assert!(display.iter().any(|line| line.contains("target: local")));
 
         let lines = cell.transcript_lines(80);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();

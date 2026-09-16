@@ -24,6 +24,34 @@ use crate::wrapping::position_at_display_column;
 use crate::wrapping::wrap_text;
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
+const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
+fn is_word_separator(ch: char) -> bool {
+    WORD_SEPARATORS.contains(ch)
+}
+
+fn split_word_pieces(run: &str) -> Vec<(usize, &str)> {
+    let mut pieces = Vec::new();
+    for (segment_start, segment) in run.split_word_bound_indices() {
+        let mut piece_start = 0;
+        let mut chars = segment.char_indices();
+        let Some((_, first_char)) = chars.next() else {
+            continue;
+        };
+        let mut in_separator = is_word_separator(first_char);
+        for (index, character) in chars {
+            let separator = is_word_separator(character);
+            if separator == in_separator {
+                continue;
+            }
+            pieces.push((segment_start + piece_start, &segment[piece_start..index]));
+            piece_start = index;
+            in_separator = separator;
+        }
+        pieces.push((segment_start + piece_start, &segment[piece_start..]));
+    }
+    pieces
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TextAreaState {
@@ -115,17 +143,7 @@ impl TextArea {
 
     pub(crate) fn delete_backward_word(&mut self) {
         let end = self.cursor_pos;
-        let mut start = end;
-        let mut saw_word = false;
-        for (index, grapheme) in self.text[..end].grapheme_indices(true).rev() {
-            let is_word = grapheme.chars().any(char::is_alphanumeric);
-            if is_word {
-                saw_word = true;
-            } else if saw_word {
-                break;
-            }
-            start = index;
-        }
+        let start = self.beginning_of_previous_word();
         if start < end {
             self.kill_buffer = self.text[start..end].to_owned();
             self.replace_range(start..end, "");
@@ -134,18 +152,7 @@ impl TextArea {
 
     pub(crate) fn delete_forward_word(&mut self) {
         let start = self.cursor_pos;
-        let mut end = start;
-        let mut saw_word = false;
-        for (offset, grapheme) in self.text[start..].grapheme_indices(true) {
-            let is_word = grapheme.chars().any(char::is_alphanumeric);
-            if is_word {
-                saw_word = true;
-            } else if saw_word {
-                end = start + offset;
-                break;
-            }
-            end = start + offset + grapheme.len();
-        }
+        let end = self.end_of_next_word();
         if start < end {
             self.kill_buffer = self.text[start..end].to_owned();
             self.replace_range(start..end, "");
@@ -333,6 +340,66 @@ impl TextArea {
             .render(area, buffer);
     }
 
+    fn beginning_of_previous_word(&self) -> usize {
+        let prefix = &self.text[..self.cursor_pos];
+        let Some((first_non_ws, character)) = prefix
+            .char_indices()
+            .rev()
+            .find(|&(_, character)| !character.is_whitespace())
+        else {
+            return 0;
+        };
+        let run_start = prefix[..first_non_ws]
+            .char_indices()
+            .rev()
+            .find(|&(_, character)| character.is_whitespace())
+            .map_or(0, |(index, character)| index + character.len_utf8());
+        let run_end = first_non_ws + character.len_utf8();
+        let mut pieces = split_word_pieces(&prefix[run_start..run_end])
+            .into_iter()
+            .rev()
+            .peekable();
+        let Some((piece_start, piece)) = pieces.next() else {
+            return run_start;
+        };
+        let mut start = run_start + piece_start;
+        if piece.chars().all(is_word_separator) {
+            while let Some((index, piece)) = pieces.peek() {
+                if !piece.chars().all(is_word_separator) {
+                    break;
+                }
+                start = run_start + *index;
+                pieces.next();
+            }
+        }
+        start
+    }
+
+    fn end_of_next_word(&self) -> usize {
+        let suffix = &self.text[self.cursor_pos..];
+        let Some(first_non_ws) = suffix.find(|character: char| !character.is_whitespace()) else {
+            return self.text.len();
+        };
+        let run = &suffix[first_non_ws..];
+        let run = &run[..run.find(char::is_whitespace).unwrap_or(run.len())];
+        let mut pieces = split_word_pieces(run).into_iter().peekable();
+        let Some((start, piece)) = pieces.next() else {
+            return self.cursor_pos + first_non_ws;
+        };
+        let word_start = self.cursor_pos + first_non_ws + start;
+        let mut end = word_start + piece.len();
+        if piece.chars().all(is_word_separator) {
+            while let Some((index, piece)) = pieces.peek() {
+                if !piece.chars().all(is_word_separator) {
+                    break;
+                }
+                end = self.cursor_pos + first_non_ws + *index + piece.len();
+                pieces.next();
+            }
+        }
+        end
+    }
+
     fn beginning_of_line(&self, position: usize) -> usize {
         self.text[..position]
             .rfind('\n')
@@ -367,6 +434,24 @@ mod tests {
         area.insert_str("e\u{301}");
         area.delete_backward();
         assert!(area.is_empty());
+    }
+
+    #[test]
+    fn word_deletion_follows_codex_separator_and_unicode_boundaries() {
+        let mut area = TextArea::new();
+        area.insert_str("alpha::βeta");
+        area.delete_backward_word();
+        assert_eq!(area.text(), "alpha::");
+        area.delete_backward_word();
+        assert_eq!(area.text(), "alpha");
+
+        let mut forward = TextArea::new();
+        forward.insert_str("::βeta");
+        for _ in 0..6 {
+            forward.move_cursor_left();
+        }
+        forward.delete_forward_word();
+        assert_eq!(forward.text(), "βeta");
     }
 
     #[test]

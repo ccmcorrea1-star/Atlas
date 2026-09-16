@@ -68,10 +68,12 @@ pub(crate) enum ExecState {
 #[derive(Debug)]
 pub(crate) struct ExecCell {
     execution_id: String,
+    capability: String,
     program: String,
     args: Vec<String>,
-    _cwd: Option<String>,
-    _target: Option<String>,
+    cwd: Option<String>,
+    target: Option<String>,
+    status: Option<String>,
     output: Option<CommandOutput>,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
@@ -81,6 +83,7 @@ pub(crate) struct ExecCell {
 impl ExecCell {
     pub(crate) fn new(
         execution_id: String,
+        capability: String,
         program: String,
         args: Vec<String>,
         cwd: Option<String>,
@@ -88,10 +91,12 @@ impl ExecCell {
     ) -> Self {
         Self {
             execution_id,
+            capability,
             program,
             args,
-            _cwd: cwd,
-            _target: target,
+            cwd,
+            target,
+            status: None,
             output: None,
             exit_code: None,
             duration_ms: None,
@@ -113,7 +118,7 @@ impl ExecCell {
         stderr: String,
         exit_code: i32,
         duration_ms: u64,
-        _status: String,
+        status: String,
     ) {
         let streamed_output = self
             .output
@@ -125,6 +130,7 @@ impl ExecCell {
         }
         self.exit_code = Some(exit_code);
         self.duration_ms = Some(duration_ms);
+        self.status = Some(status);
         self.state = ExecState::Ran;
     }
 
@@ -147,6 +153,23 @@ impl ExecCell {
 
     pub(crate) fn command(&self) -> String {
         crate::markdown::format_process_command(&self.program, &self.args)
+    }
+
+    pub(crate) fn capability(&self) -> &str {
+        &self.capability
+    }
+
+    pub(crate) fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    pub(crate) fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    pub(crate) fn succeeded(&self) -> bool {
+        self.exit_code == Some(0)
+            && !matches!(self.status.as_deref(), Some("error" | "failed" | "aborted"))
     }
 
     pub(crate) fn exit_code(&self) -> Option<i32> {
