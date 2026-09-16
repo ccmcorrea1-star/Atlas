@@ -234,36 +234,32 @@ impl App {
     pub(crate) fn completion_selection(&self) -> usize {
         self.bottom_pane
             .composer
-            .completion_selection
+            .completion_popup
+            .selected()
             .min(self.all_completion_popup_items().len().saturating_sub(1))
     }
 
     pub(crate) fn completion_popup_selected_row(&self) -> Option<usize> {
-        self.completion_selection()
-            .checked_sub(self.completion_popup_start())
-            .filter(|row| *row < self.completion_popup_items().len())
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .selected_visible_row(self.all_completion_popup_items().len(), MAX_COMPLETION_ROWS)
     }
 
     fn completion_popup_start(&self) -> usize {
-        self.completion_selection()
-            .saturating_sub(MAX_COMPLETION_ROWS.saturating_sub(1))
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .visible_range(self.all_completion_popup_items().len(), MAX_COMPLETION_ROWS)
+            .start
     }
 
     fn move_completion_selection(&mut self, down: bool) {
         let item_count = self.all_completion_popup_items().len();
-        if item_count == 0 {
-            self.bottom_pane.composer.completion_selection = 0;
-            return;
-        }
-        self.bottom_pane.composer.completion_selection = if down {
-            (self.bottom_pane.composer.completion_selection + 1) % item_count
-        } else {
-            if self.bottom_pane.composer.completion_selection == 0 {
-                item_count - 1
-            } else {
-                self.bottom_pane.composer.completion_selection - 1
-            }
-        };
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .move_by(item_count, down, MAX_COMPLETION_ROWS);
     }
 
     fn file_popup_items(&self) -> Vec<(String, String)> {
@@ -326,7 +322,7 @@ impl App {
             .textarea
             .replace_range(start..cursor, &format!("{label} "));
         self.bottom_pane.composer.file_popup_suppressed = true;
-        self.bottom_pane.composer.completion_selection = 0;
+        self.bottom_pane.composer.completion_popup.reset();
     }
 
     pub fn open_quit_confirmation(&mut self) {
@@ -506,7 +502,7 @@ impl App {
                 .textarea
                 .set_text_clearing_elements(&command_name);
             self.bottom_pane.composer.slash_popup_suppressed = true;
-            self.bottom_pane.composer.completion_selection = 0;
+            self.bottom_pane.composer.completion_popup.reset();
         }
     }
 
@@ -521,7 +517,7 @@ impl App {
         {
             self.bottom_pane.composer.slash_popup_suppressed = false;
             self.bottom_pane.composer.file_popup_suppressed = false;
-            self.bottom_pane.composer.completion_selection = 0;
+            self.bottom_pane.composer.completion_popup.reset();
         }
         if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
             && key.modifiers == KeyModifiers::NONE
@@ -744,6 +740,11 @@ impl App {
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         if self.file_popup_active() || self.slash_popup_active() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.move_completion_selection(false),
+                MouseEventKind::ScrollDown => self.move_completion_selection(true),
+                _ => {}
+            }
             return;
         }
         match mouse.kind {

@@ -3,6 +3,7 @@ pub(crate) mod chat_composer;
 pub(crate) mod footer;
 pub(crate) mod paste_burst;
 pub(crate) mod prompt_args;
+pub(crate) mod selection_popup;
 pub(crate) mod slash_commands;
 pub(crate) mod textarea;
 
