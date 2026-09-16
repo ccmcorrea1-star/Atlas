@@ -28,6 +28,10 @@ pub(crate) enum HistoryRenderMode {
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
 
+    fn background_style(&self) -> Option<ratatui::style::Style> {
+        None
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
     }

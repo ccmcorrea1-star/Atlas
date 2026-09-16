@@ -55,6 +55,7 @@ O Runtime aborta a requisição real do modelo quando o provider suporta `AbortS
 Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
 
 - `turn.started`: o Runtime aceitou o turno.
+- `session.updated`: metadados públicos da sessão, com `data.model` e `data.provider`.
 - `context.updated`: snapshot do uso de contexto, com `data.used_tokens` e `data.context_window`.
 - `message.delta`: fragmento de texto transmitido, com `data.message_id` e `data.delta`.
 - `message.completed`: mensagem pública completa, com `data.message_id` e `data.content`.

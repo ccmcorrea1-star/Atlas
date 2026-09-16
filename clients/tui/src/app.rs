@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
@@ -19,6 +21,7 @@ use crate::bottom_pane::textarea::TextArea;
 use crate::chatwidget::ChatWidget;
 use crate::file_search;
 use crate::history_cell::HistoryCell;
+use crate::history_store::HistoryStore;
 use crate::keymap::Action;
 use crate::pager_overlay::TranscriptOverlay;
 use crate::runtime::ContextUsage;
@@ -39,6 +42,7 @@ pub struct App {
     chatwidget: ChatWidget,
     transcript_overlay: TranscriptOverlay,
     bottom_pane: BottomPane,
+    history_store: HistoryStore,
     should_quit: bool,
     history_scroll: usize,
     history_content_height: usize,
@@ -49,14 +53,34 @@ pub struct App {
     submission_pending: bool,
     cancel_requested: bool,
     external_editor_requested: bool,
+    session_model: Option<String>,
+    session_provider: Option<String>,
 }
 
 impl App {
-    pub fn new(_conversation_id: String) -> Self {
+    pub fn new(conversation_id: String) -> Self {
+        #[cfg(test)]
+        let _ = conversation_id;
+        #[cfg(test)]
+        let history_store = HistoryStore::disabled();
+        #[cfg(not(test))]
+        let history_store = HistoryStore::for_conversation(&conversation_id);
+        Self::with_history_store(history_store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_history_dir(conversation_id: &str, root: impl Into<PathBuf>) -> Self {
+        Self::with_history_store(HistoryStore::new(root, conversation_id))
+    }
+
+    fn with_history_store(history_store: HistoryStore) -> Self {
+        let mut bottom_pane = BottomPane::new();
+        bottom_pane.composer.history_entries = history_store.load();
         Self {
             chatwidget: ChatWidget::new(),
             transcript_overlay: TranscriptOverlay::default(),
-            bottom_pane: BottomPane::new(),
+            bottom_pane,
+            history_store,
             should_quit: false,
             history_scroll: 0,
             history_content_height: 0,
@@ -67,6 +91,8 @@ impl App {
             submission_pending: false,
             cancel_requested: false,
             external_editor_requested: false,
+            session_model: None,
+            session_provider: None,
         }
     }
 
@@ -124,6 +150,14 @@ impl App {
 
     pub fn context_usage(&self) -> Option<ContextUsage> {
         self.chatwidget.context_usage()
+    }
+
+    pub(crate) fn session_model(&self) -> Option<&str> {
+        self.session_model.as_deref()
+    }
+
+    pub(crate) fn session_provider(&self) -> Option<&str> {
+        self.session_provider.as_deref()
     }
 
     pub fn shortcuts_open(&self) -> bool {
@@ -212,36 +246,32 @@ impl App {
     pub(crate) fn completion_selection(&self) -> usize {
         self.bottom_pane
             .composer
-            .completion_selection
+            .completion_popup
+            .selected()
             .min(self.all_completion_popup_items().len().saturating_sub(1))
     }
 
     pub(crate) fn completion_popup_selected_row(&self) -> Option<usize> {
-        self.completion_selection()
-            .checked_sub(self.completion_popup_start())
-            .filter(|row| *row < self.completion_popup_items().len())
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .selected_visible_row(self.all_completion_popup_items().len(), MAX_COMPLETION_ROWS)
     }
 
     fn completion_popup_start(&self) -> usize {
-        self.completion_selection()
-            .saturating_sub(MAX_COMPLETION_ROWS.saturating_sub(1))
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .visible_range(self.all_completion_popup_items().len(), MAX_COMPLETION_ROWS)
+            .start
     }
 
     fn move_completion_selection(&mut self, down: bool) {
         let item_count = self.all_completion_popup_items().len();
-        if item_count == 0 {
-            self.bottom_pane.composer.completion_selection = 0;
-            return;
-        }
-        self.bottom_pane.composer.completion_selection = if down {
-            (self.bottom_pane.composer.completion_selection + 1) % item_count
-        } else {
-            if self.bottom_pane.composer.completion_selection == 0 {
-                item_count - 1
-            } else {
-                self.bottom_pane.composer.completion_selection - 1
-            }
-        };
+        self.bottom_pane
+            .composer
+            .completion_popup
+            .move_by(item_count, down, MAX_COMPLETION_ROWS);
     }
 
     fn file_popup_items(&self) -> Vec<(String, String)> {
@@ -304,7 +334,7 @@ impl App {
             .textarea
             .replace_range(start..cursor, &format!("{label} "));
         self.bottom_pane.composer.file_popup_suppressed = true;
-        self.bottom_pane.composer.completion_selection = 0;
+        self.bottom_pane.composer.completion_popup.reset();
     }
 
     pub fn open_quit_confirmation(&mut self) {
@@ -428,13 +458,17 @@ impl App {
             return None;
         }
         let message = self.input().to_owned();
-        if self.bottom_pane.composer.history_entries.last() != Some(&message) {
-            self.bottom_pane
-                .composer
-                .history_entries
-                .push(message.clone());
-        }
+        self.bottom_pane
+            .composer
+            .history_entries
+            .push(message.clone());
+        self.bottom_pane.composer.history_entries =
+            HistoryStore::bounded_entries(&self.bottom_pane.composer.history_entries);
+        let _ = self
+            .history_store
+            .save(&self.bottom_pane.composer.history_entries);
         self.bottom_pane.composer.history_index = None;
+        self.bottom_pane.composer.history_navigation_draft = None;
         self.clear_input();
         if self.turn_active() || self.submission_pending {
             self.queued_inputs.push_back(message);
@@ -461,6 +495,11 @@ impl App {
     }
 
     pub fn handle_runtime_event(&mut self, event: RuntimeEvent) {
+        if let RuntimeEvent::SessionUpdated { model, provider } = event {
+            self.session_model = Some(model);
+            self.session_provider = Some(provider);
+            return;
+        }
         let terminal = event.is_terminal();
         self.chatwidget.handle_runtime_event(event);
         if terminal {
@@ -480,18 +519,22 @@ impl App {
                 .textarea
                 .set_text_clearing_elements(&command_name);
             self.bottom_pane.composer.slash_popup_suppressed = true;
-            self.bottom_pane.composer.completion_selection = 0;
+            self.bottom_pane.composer.completion_popup.reset();
         }
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> Option<String> {
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.bottom_pane.composer.history_index = None;
+            self.bottom_pane.composer.history_navigation_draft = None;
+        }
         self.bottom_pane.composer.esc_backtrack_hint = false;
         if key.modifiers == KeyModifiers::NONE
             && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
         {
             self.bottom_pane.composer.slash_popup_suppressed = false;
             self.bottom_pane.composer.file_popup_suppressed = false;
-            self.bottom_pane.composer.completion_selection = 0;
+            self.bottom_pane.composer.completion_popup.reset();
         }
         if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
             && key.modifiers == KeyModifiers::NONE
@@ -650,6 +693,12 @@ impl App {
             }
             return true;
         }
+        if action == Some(Action::ScrollUp) && self.navigate_history(true) {
+            return true;
+        }
+        if action == Some(Action::ScrollDown) && self.navigate_history(false) {
+            return true;
+        }
         if self.shortcuts_open() {
             if action == Some(Action::Cancel) || action == Some(Action::OpenShortcuts) {
                 self.close_shortcuts();
@@ -708,6 +757,11 @@ impl App {
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         if self.file_popup_active() || self.slash_popup_active() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.move_completion_selection(false),
+                MouseEventKind::ScrollDown => self.move_completion_selection(true),
+                _ => {}
+            }
             return;
         }
         match mouse.kind {
@@ -735,6 +789,66 @@ impl App {
             .composer
             .textarea
             .set_text_clearing_elements(&draft);
+    }
+
+    fn history_cursor_at_boundary(&self, older: bool) -> bool {
+        let text = self.input();
+        let cursor = self.bottom_pane.composer.textarea.cursor().min(text.len());
+        if older {
+            !text[..cursor].contains('\n')
+        } else {
+            !text[cursor..].contains('\n')
+        }
+    }
+
+    fn navigate_history(&mut self, older: bool) -> bool {
+        if self.bottom_pane.composer.history_entries.is_empty()
+            || !self.history_cursor_at_boundary(older)
+        {
+            return false;
+        }
+        if older {
+            if self.bottom_pane.composer.history_index.is_none() {
+                self.bottom_pane.composer.history_navigation_draft = Some(self.input().to_owned());
+            }
+            let next = self.bottom_pane.composer.history_index.map_or(
+                self.bottom_pane.composer.history_entries.len() - 1,
+                |index| index.saturating_sub(1),
+            );
+            self.bottom_pane.composer.history_index = Some(next);
+            let entry = self.bottom_pane.composer.history_entries[next].clone();
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&entry);
+            true
+        } else {
+            let Some(index) = self.bottom_pane.composer.history_index else {
+                return false;
+            };
+            if index + 1 < self.bottom_pane.composer.history_entries.len() {
+                let next = index + 1;
+                self.bottom_pane.composer.history_index = Some(next);
+                let entry = self.bottom_pane.composer.history_entries[next].clone();
+                self.bottom_pane
+                    .composer
+                    .textarea
+                    .set_text_clearing_elements(&entry);
+            } else {
+                self.bottom_pane.composer.history_index = None;
+                let draft = self
+                    .bottom_pane
+                    .composer
+                    .history_navigation_draft
+                    .take()
+                    .unwrap_or_default();
+                self.bottom_pane
+                    .composer
+                    .textarea
+                    .set_text_clearing_elements(&draft);
+            }
+            true
+        }
     }
 
     fn accept_history_search(&mut self) {
@@ -818,11 +932,40 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     use super::App;
     use crate::bottom_pane::BottomPaneView;
     use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::runtime::RuntimeEvent;
+
+    #[test]
+    fn restores_history_per_conversation_after_reopening_the_app() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("atlas-app-history-{}-{suffix}", std::process::id()));
+
+        let mut first = App::new_with_history_dir("conversation-a", &root);
+        first.insert_text("first line\nsecond line");
+        assert_eq!(
+            first.submit_input().as_deref(),
+            Some("first line\nsecond line")
+        );
+
+        let restored = App::new_with_history_dir("conversation-a", &root);
+        assert_eq!(
+            restored.bottom_pane.composer.history_entries,
+            vec!["first line\nsecond line".to_owned()]
+        );
+
+        let isolated = App::new_with_history_dir("conversation-b", &root);
+        assert!(isolated.bottom_pane.composer.history_entries.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn streams_into_an_active_cell_before_committing_to_history() {
@@ -919,6 +1062,64 @@ mod tests {
         assert!(ChatComposerView.pre_draw_tick(&mut app, Instant::now()));
 
         assert_eq!(app.input(), "ab\n");
+    }
+
+    #[test]
+    fn navigates_prompt_history_and_restores_the_original_draft() {
+        let mut app = App::new("history-navigation".to_owned());
+        app.insert_text("first");
+        assert_eq!(app.submit_input().as_deref(), Some("first"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("second");
+        assert_eq!(app.submit_input().as_deref(), Some("second"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("draft");
+
+        let up = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let down = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(app.handle_global_key(up));
+        assert_eq!(app.input(), "second");
+        assert!(app.handle_global_key(up));
+        assert_eq!(app.input(), "first");
+        assert!(app.handle_global_key(down));
+        assert_eq!(app.input(), "second");
+        assert!(app.handle_global_key(down));
+        assert_eq!(app.input(), "draft");
+    }
+
+    #[test]
+    fn keeps_up_and_down_as_textarea_navigation_inside_multiline_drafts() {
+        let mut app = App::new("history-navigation-multiline".to_owned());
+        app.insert_text("history");
+        assert_eq!(app.submit_input().as_deref(), Some("history"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("first\nsecond");
+        let cursor_before = app.textarea().cursor();
+        let up = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(!app.handle_global_key(up));
+        assert!(app.handle_key_event(up).is_none());
+        assert!(app.textarea().cursor() < cursor_before);
     }
 
     #[test]

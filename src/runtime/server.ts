@@ -2,7 +2,11 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
-import { getOpenCodeGoContextWindow } from '../opencode-go.js';
+import {
+  getOpenCodeGoContextWindow,
+  OPENCODE_GO_MODEL_ID,
+  OPENCODE_GO_PROVIDER,
+} from '../opencode-go.js';
 import {
   parseRuntimeMessage,
   runtimeErrorEvent,
@@ -10,6 +14,7 @@ import {
   serializeRuntimeMessage,
   type RuntimeEvent,
   type RuntimeRequest,
+  type RuntimeSessionUpdatedData,
   type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
 } from './protocol.js';
@@ -36,7 +41,7 @@ export class AtlasRuntimeServer {
   private readonly contextWindow: number | undefined;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
-  private readonly activeTurns = new Map<string, AbortController>();
+  private readonly activeTurns = new Map<string, Map<string, AbortController>>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath =
@@ -76,7 +81,9 @@ export class AtlasRuntimeServer {
 
     const request = message;
     const controller = new AbortController();
-    this.activeTurns.set(request.request_id, controller);
+    const conversationTurns = this.activeTurns.get(request.conversation_id) ?? new Map();
+    conversationTurns.set(request.request_id, controller);
+    this.activeTurns.set(request.conversation_id, conversationTurns);
     const previous = this.conversationQueues.get(request.conversation_id) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
@@ -94,8 +101,12 @@ export class AtlasRuntimeServer {
       if (this.conversationQueues.get(request.conversation_id) === current) {
         this.conversationQueues.delete(request.conversation_id);
       }
-      if (this.activeTurns.get(request.request_id) === controller) {
-        this.activeTurns.delete(request.request_id);
+      const turns = this.activeTurns.get(request.conversation_id);
+      if (turns?.get(request.request_id) === controller) {
+        turns.delete(request.request_id);
+        if (turns.size === 0) {
+          this.activeTurns.delete(request.conversation_id);
+        }
       }
     };
     void current.then(clearQueue, clearQueue);
@@ -106,7 +117,7 @@ export class AtlasRuntimeServer {
     request: Extract<RuntimeRequest, { type: 'turn.cancel' }>,
     send: (payload: string) => void,
   ): Promise<void> {
-    const controller = this.activeTurns.get(request.request_id);
+    const controller = this.activeTurns.get(request.conversation_id)?.get(request.request_id);
     if (controller === undefined) {
       send(
         serializeRuntimeMessage(
@@ -127,6 +138,11 @@ export class AtlasRuntimeServer {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
     };
+    const sessionData: RuntimeSessionUpdatedData = {
+      model: OPENCODE_GO_MODEL_ID,
+      provider: OPENCODE_GO_PROVIDER,
+    };
+    publish(runtimeEvent(request, 'session.updated', sessionData));
     publish(runtimeEvent(request, 'turn.started'));
 
     let messageId: string | undefined;

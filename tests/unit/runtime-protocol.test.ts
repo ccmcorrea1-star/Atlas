@@ -89,3 +89,13 @@ test('serializes context updates as public events', () => {
   assert.equal(updated.type, 'context.updated');
   assert.deepEqual(JSON.parse(serializeRuntimeMessage(updated)), updated);
 });
+
+test('serializes session metadata as a public event', () => {
+  const updated = runtimeEvent(request, 'session.updated', {
+    model: 'gpt-5.6-luna',
+    provider: 'opencode-go',
+  });
+
+  assert.equal(updated.type, 'session.updated');
+  assert.deepEqual(JSON.parse(serializeRuntimeMessage(updated)), updated);
+});

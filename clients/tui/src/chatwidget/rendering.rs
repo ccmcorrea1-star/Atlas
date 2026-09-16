@@ -11,6 +11,7 @@ use crate::app::App;
 use crate::bottom_pane::BottomPaneView;
 use crate::history_cell::HistoryCell;
 use crate::render::renderable::Renderable;
+use crate::session_header;
 
 pub(crate) fn render(
     area: Rect,
@@ -21,12 +22,19 @@ pub(crate) fn render(
     if area.is_empty() {
         return None;
     }
+    let header_height =
+        session_header::desired_height(area.width).min(area.height.saturating_sub(2));
     let composer_height = bottom_pane
         .desired_height(app, area.width)
-        .min(area.height.saturating_sub(1));
-    let [history_area, composer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)]).areas(area);
+        .min(area.height.saturating_sub(header_height).saturating_sub(1));
+    let [header_area, history_area, composer_area] = Layout::vertical([
+        Constraint::Length(header_height),
+        Constraint::Min(1),
+        Constraint::Length(composer_height),
+    ])
+    .areas(area);
 
+    session_header::render(header_area, buffer, app);
     render_history(buffer, app, history_area);
     bottom_pane.render(app, composer_area, buffer);
     let cursor = bottom_pane.cursor_pos(app, composer_area);
@@ -104,6 +112,9 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         if child_area.is_empty() {
             return;
         }
+        if let Some(style) = self.child.background_style() {
+            buffer.set_style(child_area, style);
+        }
         Paragraph::new(self.child.display_lines(child_area.width)).render(child_area, buffer);
     }
 
@@ -125,6 +136,9 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         );
         if child_area.is_empty() {
             return true;
+        }
+        if let Some(style) = self.child.background_style() {
+            buffer.set_style(child_area, style);
         }
         Paragraph::new(self.child.display_lines(child_area.width))
             .scroll((child_offset, 0))
@@ -150,10 +164,12 @@ mod tests {
     use crate::app::App;
     use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::history_cell::HistoryCell;
+    use crate::history_cell::UserHistoryCell;
     use crate::render::renderable::Renderable;
     use crate::runtime::RuntimeEvent;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use ratatui::text::Line;
     use ratatui::text::Span;
 
@@ -209,7 +225,7 @@ mod tests {
 
         assert!(screen.contains("Running node --version"));
         assert!(screen.contains("Working ("));
-        assert!(screen.contains("Ask Codex to do anything"));
+        assert!(screen.contains("Ask Atlas to do anything"));
     }
 
     #[test]
@@ -243,6 +259,27 @@ mod tests {
     }
 
     #[test]
+    fn renders_user_message_background_across_the_cell_width() {
+        let cell = UserHistoryCell::new("hello");
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buffer = Buffer::empty(area);
+        let renderable = TranscriptAreaRenderable {
+            child: &cell,
+            top: 0,
+            right: 0,
+        };
+
+        renderable.render(area, &mut buffer);
+
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.bg == Color::Rgb(51, 51, 51))
+        );
+    }
+
+    #[test]
     fn keeps_active_status_and_composer_after_resize() {
         let mut app = App::new("render-resize-active".to_owned());
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
@@ -253,7 +290,7 @@ mod tests {
             assert!(rows.iter().any(|row| row.contains("Working (")));
             assert!(
                 rows.iter()
-                    .any(|row| row.contains("Ask Codex to do anything"))
+                    .any(|row| row.contains("Ask Atlas to do anything"))
             );
             assert!(
                 rows.iter()

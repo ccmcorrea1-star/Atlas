@@ -1,5 +1,6 @@
 ---
 source: src/bottom_pane/chat_composer.rs
+assertion_line: 297
 expression: "rows(&draft, 100, 14)"
 ---
                                                                                                     
@@ -15,4 +16,4 @@ expression: "rows(&draft, 100, 14)"
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                   100% context left
+                                                                                  0/256k (100% left)

@@ -60,10 +60,14 @@ struct ExecResult {
 };
 
 // Executa um processo local diretamente, sem shell e sem interpretar os argumentos.
-ExecResult exec(const ExecRequest& request);
+ExecResult exec(
+    const ExecRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback& on_output = {});
 
 // Adapta os argumentos estruturados do runtime para a execucao deste processo.
-atlas::capabilities::ExecutionResult dispatch(const atlas::capabilities::NativeRequest& request);
+atlas::capabilities::ExecutionResult dispatch(
+    const atlas::capabilities::NativeRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback& on_output = {});
 
 // Converte o status para o valor estavel usado por adaptadores externos.
 const char* statusName(ExecStatus status) noexcept;

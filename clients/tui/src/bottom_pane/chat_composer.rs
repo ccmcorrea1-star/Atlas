@@ -10,8 +10,11 @@ use ratatui::widgets::Widget;
 use crate::app::App;
 use crate::bottom_pane::footer;
 use crate::bottom_pane::paste_burst::PasteBurst;
+use crate::bottom_pane::selection_popup::SelectionPopupState;
 use crate::bottom_pane::textarea::TextArea;
 use crate::ui_consts::LIVE_PREFIX_COLS;
+use crate::wrapping::display_width;
+use crate::wrapping::wrap_text;
 
 const PROMPT: &str = "›";
 const COMPOSER_TOP: u16 = 1;
@@ -32,9 +35,10 @@ pub(crate) struct ChatComposer {
     pub(crate) history_search_match: Option<usize>,
     pub(crate) history_entries: Vec<String>,
     pub(crate) history_index: Option<usize>,
+    pub(crate) history_navigation_draft: Option<String>,
     pub(crate) slash_popup_suppressed: bool,
     pub(crate) file_popup_suppressed: bool,
-    pub(crate) completion_selection: usize,
+    pub(crate) completion_popup: SelectionPopupState,
     pub(crate) esc_backtrack_hint: bool,
     pub(crate) paste_burst: PasteBurst,
 }
@@ -50,9 +54,10 @@ impl ChatComposer {
             history_search_match: None,
             history_entries: Vec::new(),
             history_index: None,
+            history_navigation_draft: None,
             slash_popup_suppressed: false,
             file_popup_suppressed: false,
-            completion_selection: 0,
+            completion_popup: SelectionPopupState::default(),
             esc_backtrack_hint: false,
             paste_burst: PasteBurst::default(),
         }
@@ -68,7 +73,7 @@ pub(crate) fn desired_height(app: &App, width: u16) -> u16 {
         .textarea()
         .desired_height(u16::try_from(input_width).unwrap_or(u16::MAX))
         .max(1);
-    let popup_height = completion_popup_height(app);
+    let popup_height = completion_popup_height(app, width);
     (COMPOSER_TOP + input_rows + popup_height + footer::desired_height(app, width) + 1).max(4)
 }
 
@@ -81,9 +86,9 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         return;
     }
 
-    render_status(app, area, buffer);
+    footer::render_status_line(app, Rect::new(area.x, area.y, area.width, 1), buffer);
 
-    let popup_height = completion_popup_height(app);
+    let popup_height = completion_popup_height(app, area.width);
     let input_area = Rect {
         x: area.x + LIVE_PREFIX_COLS,
         y: area.y + COMPOSER_TOP,
@@ -92,6 +97,11 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
             COMPOSER_TOP + popup_height + footer::desired_height(app, area.width) + 1,
         ),
     };
+    let composer_surface = Rect::new(area.x, input_area.y, area.width, input_area.height);
+    buffer.set_style(
+        composer_surface,
+        Style::default().bg(Color::Rgb(51, 51, 51)),
+    );
     let prompt_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -104,7 +114,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
 
     let lines = if app.input().is_empty() {
         vec![Line::from(Span::styled(
-            "Ask Codex to do anything",
+            "Ask Atlas to do anything",
             Style::default().dim(),
         ))]
     } else {
@@ -142,20 +152,35 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
     footer::render(app, footer_area, buffer);
 }
 
-fn completion_popup_height(app: &App) -> u16 {
-    u16::try_from(app.completion_popup_items().len()).unwrap_or(u16::MAX)
+fn completion_popup_height(app: &App, width: u16) -> u16 {
+    let items = app.completion_popup_items();
+    let label_width = items
+        .iter()
+        .map(|(label, _)| display_width(label) + 2)
+        .max()
+        .unwrap_or(2);
+    let description_width = usize::from(width).saturating_sub(label_width + 2).max(1);
+    let rows = items
+        .iter()
+        .map(|(_, description)| wrap_text(description, description_width).len().max(1))
+        .sum::<usize>();
+    u16::try_from(rows).unwrap_or(u16::MAX)
 }
 
 fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
     let selected = app.completion_popup_selected_row();
-    for (row, (label, description)) in app.completion_popup_items().into_iter().enumerate() {
-        let Ok(y) = u16::try_from(row) else {
-            break;
-        };
-        if y >= area.height {
-            break;
-        }
-        let is_selected = selected == Some(row);
+    let items = app.completion_popup_items();
+    let label_width = items
+        .iter()
+        .map(|(label, _)| display_width(label) + 2)
+        .max()
+        .unwrap_or(2);
+    let description_width = usize::from(area.width)
+        .saturating_sub(label_width + 2)
+        .max(1);
+    let mut row = 0usize;
+    for (item_index, (label, description)) in items.into_iter().enumerate() {
+        let is_selected = selected == Some(item_index);
         let marker = if is_selected { "› " } else { "  " };
         let label_style = if is_selected {
             Style::default().fg(Color::Cyan)
@@ -167,19 +192,39 @@ fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::
         } else {
             Style::default()
         };
-        Line::from(vec![
-            Span::styled(format!("{marker}{label}"), label_style),
-            Span::styled(format!("  {description}"), description_style),
-        ])
-        .render(
-            Rect {
-                x: area.x,
-                y: area.y + y,
-                width: area.width,
-                height: 1,
-            },
-            buffer,
-        );
+        for (line_index, description_line) in wrap_text(&description, description_width)
+            .into_iter()
+            .enumerate()
+        {
+            let Ok(y) = u16::try_from(row) else {
+                return;
+            };
+            if y >= area.height {
+                return;
+            }
+            let label_span = if line_index == 0 {
+                Span::styled(
+                    format!("{marker}{label:<width$}", width = label_width - 2),
+                    label_style,
+                )
+            } else {
+                Span::raw(" ".repeat(label_width))
+            };
+            Line::from(vec![
+                label_span,
+                Span::styled(format!("  {description_line}"), description_style),
+            ])
+            .render(
+                Rect {
+                    x: area.x,
+                    y: area.y + y,
+                    width: area.width,
+                    height: 1,
+                },
+                buffer,
+            );
+            row += 1;
+        }
     }
 }
 
@@ -187,7 +232,7 @@ pub(crate) fn cursor_position_for(app: &App, area: Rect) -> Option<(u16, u16)> {
     if app.bottom_pane().shortcuts_open() || area.is_empty() {
         return None;
     }
-    let popup_height = completion_popup_height(app);
+    let popup_height = completion_popup_height(app, area.width);
     let input_area = Rect {
         x: area.x + LIVE_PREFIX_COLS,
         y: area.y + COMPOSER_TOP,
@@ -201,28 +246,6 @@ pub(crate) fn cursor_position_for(app: &App, area: Rect) -> Option<(u16, u16)> {
     }
     app.textarea()
         .cursor_pos_with_state(input_area, app.textarea().state_for_viewport(input_area))
-}
-
-fn render_status(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
-    let (label, style) = match app.status() {
-        crate::app::Status::Ready => return,
-        crate::app::Status::Thinking | crate::app::Status::Executing => (
-            format!("• Working ({}s • esc to interrupt)", app.working_seconds()),
-            Style::default(),
-        ),
-        crate::app::Status::Error(message) => {
-            (format!("! {message}"), Style::default().fg(Color::Red))
-        }
-    };
-    Line::from(Span::styled(label, style.dim())).render(
-        Rect {
-            x: area.x + LIVE_PREFIX_COLS,
-            y: area.y,
-            width: area.width.saturating_sub(LIVE_PREFIX_COLS),
-            height: 1,
-        },
-        buffer,
-    );
 }
 
 #[cfg(test)]
@@ -372,5 +395,19 @@ mod tests {
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
         assert!(rows(&app, 100, 14).contains("• Working ("));
+    }
+
+    #[test]
+    fn paints_the_composer_surface_with_the_chat_background() {
+        let app = App::new("composer-surface".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal
+            .draw(|frame| render(&app, frame.area(), frame.buffer_mut()))
+            .unwrap();
+
+        assert_eq!(
+            terminal.backend().buffer()[(20, 1)].bg,
+            Color::Rgb(51, 51, 51)
+        );
     }
 }

@@ -1,9 +1,10 @@
 ---
 source: src/bottom_pane/chat_composer.rs
+assertion_line: 290
 expression: "rows(&empty, 100, 14)"
 ---
                                                                                                     
-› Ask Codex to do anything                                                                          
+› Ask Atlas to do anything                                                                          
                                                                                                     
                                                                                                     
                                                                                                     
@@ -15,4 +16,4 @@ expression: "rows(&empty, 100, 14)"
                                                                                                     
                                                                                                     
                                                                                                     
-  ? for shortcuts                                                                  100% context left
+  ? for shortcuts                                                                 0/256k (100% left)

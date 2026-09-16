@@ -104,6 +104,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_runtime_event(&mut self, event: RuntimeEvent) {
         match event {
+            RuntimeEvent::SessionUpdated { .. } => {}
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
                 self.turn_active = true;
@@ -176,7 +177,7 @@ impl ChatWidget {
             }
             RuntimeEvent::ExecutionStarted {
                 execution_id,
-                capability: _,
+                capability,
                 program,
                 args,
                 cwd,
@@ -186,6 +187,7 @@ impl ChatWidget {
                 if self.find_active_exec_mut(&execution_id).is_none() {
                     self.active_cells.push(Box::new(ExecCell::new(
                         bounded_metadata(&execution_id),
+                        bounded_metadata(&capability),
                         bounded_metadata(&program),
                         args.iter().map(|arg| bounded_metadata(arg)).collect(),
                         cwd.map(|path| bounded_metadata(&path)),
@@ -210,7 +212,7 @@ impl ChatWidget {
             }
             RuntimeEvent::ExecutionCompleted {
                 execution_id,
-                capability: _,
+                capability,
                 stdout,
                 stderr,
                 exit_code,
@@ -238,6 +240,7 @@ impl ChatWidget {
                 } else {
                     let mut cell = ExecCell::new(
                         bounded_metadata(&execution_id),
+                        bounded_metadata(&capability),
                         String::new(),
                         Vec::new(),
                         None,

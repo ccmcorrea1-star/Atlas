@@ -29,6 +29,10 @@ pub const DEFAULT_RUNTIME_SOCKET_PATH: &str = "/tmp/atlas-runtime.sock";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeEvent {
+    SessionUpdated {
+        model: String,
+        provider: String,
+    },
     TurnStarted,
     ContextUpdated {
         context: ContextUsage,
@@ -408,7 +412,8 @@ fn optional_context(
 fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>, RuntimeError> {
     let known = matches!(
         envelope.message_type.as_str(),
-        "turn.started"
+        "session.updated"
+            | "turn.started"
             | "context.updated"
             | "message.delta"
             | "message.completed"
@@ -425,6 +430,10 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
     }
     let data = event_object(envelope.data)?;
     match envelope.message_type.as_str() {
+        "session.updated" => Ok(Some(RuntimeEvent::SessionUpdated {
+            model: required_string(&data, "model")?,
+            provider: required_string(&data, "provider")?,
+        })),
         "turn.started" => Ok(Some(RuntimeEvent::TurnStarted)),
         "context.updated" => Ok(Some(RuntimeEvent::ContextUpdated {
             context: required_context(&data)?,
@@ -724,5 +733,22 @@ mod tests {
         let event = parse_runtime_event(envelope("future.event", json!({"new_field": "ignored"})))
             .expect("unknown additive events are compatible with v1");
         assert_eq!(event, None);
+    }
+
+    #[test]
+    fn parses_session_metadata_without_dropping_model_or_provider() {
+        let event = parse_runtime_event(envelope(
+            "session.updated",
+            json!({"model": "gpt-5.6-luna", "provider": "opencode-go"}),
+        ))
+        .expect("session.updated should parse")
+        .expect("known event");
+        assert_eq!(
+            event,
+            RuntimeEvent::SessionUpdated {
+                model: "gpt-5.6-luna".to_owned(),
+                provider: "opencode-go".to_owned(),
+            }
+        );
     }
 }

@@ -22,13 +22,16 @@ class Executor {
   explicit Executor(const Registry& registry) : registry_(registry) {}
 
   // Recebe a requisicao completa e devolve sempre o mesmo contrato de resultado.
-  ExecutionResult execute(const ExecutionRequest& request) const;
+  ExecutionResult execute(
+      const ExecutionRequest& request,
+      const ExecutionOutputCallback& on_output = {}) const;
 
   // Atalho para callers que ja possuem id, target e argumentos estruturados.
   ExecutionResult execute(
       std::string_view capability_id,
       std::string target,
-      StructuredArguments arguments = {}) const;
+      StructuredArguments arguments = {},
+      const ExecutionOutputCallback& on_output = {}) const;
 
  private:
   static ExecutionResult failure(std::string target, std::string error);

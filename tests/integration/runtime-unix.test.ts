@@ -443,7 +443,11 @@ async function startHangingModelServer(): Promise<{
   };
 }
 
-function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<WireMessage[]> {
+function sendTurnAndCancel(
+  socketPath: string,
+  conversationId: string,
+  cancelConversationId = conversationId,
+): Promise<{ events: WireMessage[]; cancelEvents: WireMessage[] }> {
   return new Promise((resolveTurn, rejectTurn) => {
     const requestId = 'tui-cancel-request';
     const socket = createConnection(socketPath, () => {
@@ -459,6 +463,7 @@ function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<
       );
     });
     const events: WireMessage[] = [];
+    const cancelEvents: WireMessage[] = [];
     let buffer = '';
     let cancelSent = false;
 
@@ -482,15 +487,33 @@ function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<
                   version: RUNTIME_PROTOCOL_VERSION,
                   type: 'turn.cancel',
                   request_id: requestId,
-                  conversation_id: conversationId,
+                  conversation_id: cancelConversationId,
                 })}\n`,
               );
             });
             cancelSocket.once('error', rejectTurn);
+            if (cancelConversationId !== conversationId) {
+              cancelSocket.setEncoding('utf8');
+              cancelSocket.once('data', (cancelChunk: string) => {
+                cancelEvents.push(JSON.parse(cancelChunk.trim()) as WireMessage);
+                const correctCancelSocket = createConnection(socketPath, () => {
+                  correctCancelSocket.end(
+                    `${JSON.stringify({
+                      protocol: RUNTIME_PROTOCOL,
+                      version: RUNTIME_PROTOCOL_VERSION,
+                      type: 'turn.cancel',
+                      request_id: requestId,
+                      conversation_id: conversationId,
+                    })}\n`,
+                  );
+                });
+                correctCancelSocket.once('error', rejectTurn);
+              });
+            }
           }
           if (event.type === 'error') {
             socket.destroy();
-            resolveTurn(events);
+            resolveTurn({ events, cancelEvents });
             return;
           }
         }
@@ -506,7 +529,7 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
   const runtime = new AtlasRuntimeServer({
     socketPath,
     runOptions: {
-      apiKey: 'atlas...ey',
+      apiKey: '[REDACTED]',
       baseURL: model.baseURL,
       capabilityRuntime,
     },
@@ -514,14 +537,52 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
 
   try {
     await runtime.listen();
-    const events = await sendTurnAndCancel(socketPath, 'cancel-integration-conversation');
+    const { events } = await sendTurnAndCancel(socketPath, 'cancel-integration-conversation');
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'error'],
+      ['session.updated', 'turn.started', 'error'],
     );
     assert.equal(events.at(-1)?.request_id, 'tui-cancel-request');
     assert.equal((events.at(-1)?.data as WireMessage).message, 'turn cancelled by client');
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('does not cancel a turn when conversation identity does not match', async () => {
+  const model = await startHangingModelServer();
+  const socketPath = `/tmp/atlas-runtime-cancel-identity-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: '[REDACTED]',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const result = await sendTurnAndCancel(
+      socketPath,
+      'cancel-identity-conversation',
+      'other-conversation',
+    );
+
+    assert.deepEqual(
+      result.events.map((event) => event.type),
+      ['session.updated', 'turn.started', 'error'],
+    );
+    assert.deepEqual(
+      result.cancelEvents.map((event) => event.type),
+      ['error'],
+    );
+    assert.match(
+      String((result.cancelEvents[0]?.data as WireMessage).message),
+      /No active turn exists/,
+    );
   } finally {
     await runtime.close();
     await model.close();
@@ -591,9 +652,20 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'message.delta', 'message.completed', 'context.updated', 'turn.completed'],
+      [
+        'session.updated',
+        'turn.started',
+        'message.delta',
+        'message.completed',
+        'context.updated',
+        'turn.completed',
+      ],
     );
     assert.equal(events[0]?.request_id, 'tui-integration-request');
+    assert.deepEqual(events[0]?.data, {
+      model: 'gpt-5.6-luna',
+      provider: 'opencode-go',
+    });
     assert.equal(events.at(-1)?.conversation_id, 'runtime-integration-conversation');
     assert.equal((events.at(-1)?.data as WireMessage).content, 'v22.x.x');
     assert.deepEqual((events.at(-1)?.data as WireMessage).context, {
@@ -651,6 +723,7 @@ test('publishes process execution lifecycle events over the public Unix protocol
     assert.deepEqual(
       events.map((event) => event.type),
       [
+        'session.updated',
         'turn.started',
         'execution.started',
         'execution.completed',
@@ -660,8 +733,8 @@ test('publishes process execution lifecycle events over the public Unix protocol
         'turn.completed',
       ],
     );
-    const started = events[1]?.data as WireMessage;
-    const completed = events[2]?.data as WireMessage;
+    const started = events[2]?.data as WireMessage;
+    const completed = events[3]?.data as WireMessage;
     assert.deepEqual(started, {
       execution_id: 'execution-call',
       capability: 'process.exec',
@@ -705,9 +778,9 @@ test('publishes failed process execution status and output over the public proto
       'please fail this process',
     );
 
-    assert.equal(events[1]?.type, 'execution.started');
-    assert.equal(events[2]?.type, 'execution.completed');
-    assert.deepEqual(events[2]?.data, {
+    assert.equal(events[2]?.type, 'execution.started');
+    assert.equal(events[3]?.type, 'execution.completed');
+    assert.deepEqual(events[3]?.data, {
       execution_id: 'execution-call',
       capability: 'process.exec',
       stdout: '',
@@ -744,7 +817,7 @@ test('publishes provider stream failures as a terminal runtime error', async () 
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'error'],
+      ['session.updated', 'turn.started', 'error'],
     );
     assert.equal((events.at(-1)?.data as WireMessage).message, 'simulated provider failure');
   } finally {

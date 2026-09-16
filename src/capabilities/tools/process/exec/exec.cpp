@@ -221,7 +221,12 @@ void prepareChild(const ExecRequest& request, const Pipes& pipes, char* const ar
 }
 
 // Le cada pipe ate EAGAIN para impedir que stdout ou stderr bloqueiem o processo.
-bool drainOutput(int& fd, std::string& output, std::string& capture_error) {
+bool drainOutput(
+    int& fd,
+    std::string& output,
+    std::string& capture_error,
+    std::string_view channel,
+    const atlas::capabilities::ExecutionOutputCallback& on_output) {
   if (fd == -1) {
     return true;
   }
@@ -230,7 +235,11 @@ bool drainOutput(int& fd, std::string& output, std::string& capture_error) {
   while (true) {
     const ssize_t count = read(fd, buffer.data(), buffer.size());
     if (count > 0) {
-      output.append(buffer.data(), static_cast<std::size_t>(count));
+      const std::size_t size = static_cast<std::size_t>(count);
+      output.append(buffer.data(), size);
+      if (on_output) {
+        on_output(channel, std::string_view(buffer.data(), size));
+      }
       continue;
     }
     if (count == 0) {
@@ -333,7 +342,9 @@ int remainingPollTimeout(
 
 }  // namespace
 
-ExecResult exec(const ExecRequest& request) {
+ExecResult exec(
+    const ExecRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback& on_output) {
   const auto started = std::chrono::steady_clock::now();
   ExecResult result;
   result.target = request.target;
@@ -434,8 +445,8 @@ ExecResult exec(const ExecRequest& request) {
 
   // O pai alterna leitura dos pipes, waitpid e verificacao do timeout.
   while (!child_reaped) {
-    drainOutput(pipes.stdout_read, result.stdout, capture_error);
-    drainOutput(pipes.stderr_read, result.stderr, capture_error);
+    drainOutput(pipes.stdout_read, result.stdout, capture_error, "stdout", on_output);
+    drainOutput(pipes.stderr_read, result.stderr, capture_error, "stderr", on_output);
     drainChildError(
         pipes.error_read,
         child_error_bytes,
@@ -490,8 +501,8 @@ ExecResult exec(const ExecRequest& request) {
   }
 
   // Drena dados já escritos sem esperar por descendentes que herdaram os pipes.
-  drainOutput(pipes.stdout_read, result.stdout, capture_error);
-  drainOutput(pipes.stderr_read, result.stderr, capture_error);
+  drainOutput(pipes.stdout_read, result.stdout, capture_error, "stdout", on_output);
+  drainOutput(pipes.stderr_read, result.stderr, capture_error, "stderr", on_output);
   drainChildError(
       pipes.error_read,
       child_error_bytes,
@@ -576,7 +587,8 @@ atlas::capabilities::ExecutionResult requestFailure(
 }  // namespace
 
 atlas::capabilities::ExecutionResult dispatch(
-    const atlas::capabilities::NativeRequest& request) {
+    const atlas::capabilities::NativeRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback& on_output) {
   // O runtime ja validou o JSON; esta camada valida somente o contrato do processo.
   const StructuredValue* programValue = argument(request, "program");
   const auto* program = programValue == nullptr
@@ -625,15 +637,17 @@ atlas::capabilities::ExecutionResult dispatch(
     processRequest.timeout = std::chrono::milliseconds(*timeout);
   }
 
-  return resultFromExec(exec(processRequest));
+  return resultFromExec(exec(processRequest, on_output));
 }
 
 }  // namespace atlas::capabilities::tools::process
 
 namespace atlas::capabilities {
 
-extern "C" ExecutionResult atlas_executable_dispatch(const NativeRequest& request) {
-  return tools::process::dispatch(request);
+extern "C" ExecutionResult atlas_executable_dispatch(
+    const NativeRequest& request,
+    const ExecutionOutputCallback& on_output) {
+  return tools::process::dispatch(request, on_output);
 }
 
 }  // namespace atlas::capabilities

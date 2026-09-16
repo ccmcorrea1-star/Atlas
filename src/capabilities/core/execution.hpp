@@ -12,6 +12,8 @@
 
 namespace atlas::capabilities {
 
+using ExecutionOutputCallback = std::function<void(std::string_view channel, std::string_view delta)>;
+
 // Representa argumentos e saidas sem acoplar o executor a um formato externo.
 struct StructuredValue {
   using Array = std::vector<StructuredValue>;

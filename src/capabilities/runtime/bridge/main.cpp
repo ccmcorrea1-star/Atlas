@@ -55,6 +55,21 @@ std::optional<std::string> optionalString(
   return *string;
 }
 
+bool optionalBoolean(
+    const StructuredValue::Object& object,
+    std::string_view name,
+    bool fallback) {
+  const StructuredValue* value = field(object, name);
+  if (value == nullptr) {
+    return fallback;
+  }
+  const auto* boolean = std::get_if<bool>(&value->value);
+  if (boolean == nullptr) {
+    throw std::runtime_error("field '" + std::string(name) + "' must be a boolean");
+  }
+  return *boolean;
+}
+
 std::filesystem::path capabilitiesDirectory(const char* executable) {
   if (const char* configured = std::getenv("ATLAS_CAPABILITIES_DIR"); configured != nullptr && *configured != '\0') {
     return std::filesystem::path(configured);
@@ -138,8 +153,18 @@ StructuredValue executeValue(
   if (!definition.has_value()) {
     throw std::runtime_error("capability '" + id + "' is not registered");
   }
+  const atlas::capabilities::ExecutionOutputCallback on_output =
+      optionalBoolean(request, "stream", false)
+      ? [](std::string_view channel, std::string_view delta) {
+          std::cout << atlas::capabilities::serializeJson(StructuredValue(StructuredValue::Object{
+              {"event", "execution.output.delta"},
+              {"channel", std::string(channel)},
+              {"delta", std::string(delta)},
+          })) << '\n' << std::flush;
+        }
+      : atlas::capabilities::ExecutionOutputCallback{};
   return atlas::capabilities::runtime::executable::responseValue(
-      Executor(registry).execute(id, target, std::move(arguments)));
+      Executor(registry).execute(id, target, std::move(arguments), on_output));
 }
 
 int failure(std::string message) {
