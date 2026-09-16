@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
@@ -19,6 +21,7 @@ use crate::bottom_pane::textarea::TextArea;
 use crate::chatwidget::ChatWidget;
 use crate::file_search;
 use crate::history_cell::HistoryCell;
+use crate::history_store::HistoryStore;
 use crate::keymap::Action;
 use crate::pager_overlay::TranscriptOverlay;
 use crate::runtime::ContextUsage;
@@ -39,6 +42,7 @@ pub struct App {
     chatwidget: ChatWidget,
     transcript_overlay: TranscriptOverlay,
     bottom_pane: BottomPane,
+    history_store: HistoryStore,
     should_quit: bool,
     history_scroll: usize,
     history_content_height: usize,
@@ -52,11 +56,29 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_conversation_id: String) -> Self {
+    pub fn new(conversation_id: String) -> Self {
+        #[cfg(test)]
+        let _ = conversation_id;
+        #[cfg(test)]
+        let history_store = HistoryStore::disabled();
+        #[cfg(not(test))]
+        let history_store = HistoryStore::for_conversation(&conversation_id);
+        Self::with_history_store(history_store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_history_dir(conversation_id: &str, root: impl Into<PathBuf>) -> Self {
+        Self::with_history_store(HistoryStore::new(root, conversation_id))
+    }
+
+    fn with_history_store(history_store: HistoryStore) -> Self {
+        let mut bottom_pane = BottomPane::new();
+        bottom_pane.composer.history_entries = history_store.load();
         Self {
             chatwidget: ChatWidget::new(),
             transcript_overlay: TranscriptOverlay::default(),
-            bottom_pane: BottomPane::new(),
+            bottom_pane,
+            history_store,
             should_quit: false,
             history_scroll: 0,
             history_content_height: 0,
@@ -433,6 +455,9 @@ impl App {
                 .composer
                 .history_entries
                 .push(message.clone());
+            let _ = self
+                .history_store
+                .save(&self.bottom_pane.composer.history_entries);
         }
         self.bottom_pane.composer.history_index = None;
         self.clear_input();
@@ -818,11 +843,40 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     use super::App;
     use crate::bottom_pane::BottomPaneView;
     use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::runtime::RuntimeEvent;
+
+    #[test]
+    fn restores_history_per_conversation_after_reopening_the_app() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("atlas-app-history-{}-{suffix}", std::process::id()));
+
+        let mut first = App::new_with_history_dir("conversation-a", &root);
+        first.insert_text("first line\nsecond line");
+        assert_eq!(
+            first.submit_input().as_deref(),
+            Some("first line\nsecond line")
+        );
+
+        let restored = App::new_with_history_dir("conversation-a", &root);
+        assert_eq!(
+            restored.bottom_pane.composer.history_entries,
+            vec!["first line\nsecond line".to_owned()]
+        );
+
+        let isolated = App::new_with_history_dir("conversation-b", &root);
+        assert!(isolated.bottom_pane.composer.history_entries.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn streams_into_an_active_cell_before_committing_to_history() {

@@ -8,6 +8,7 @@ mod exec_cell;
 mod external_editor;
 mod file_search;
 mod history_cell;
+mod history_store;
 mod keymap;
 mod markdown;
 mod markdown_render;
