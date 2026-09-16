@@ -37,7 +37,7 @@ pub(crate) struct FooterProps {
 
 impl FooterProps {
     pub(crate) fn from_app(app: &App) -> Self {
-        let mode = if app.shortcuts_open() {
+        let mode = if app.bottom_pane().shortcuts_open() {
             FooterMode::ShortcutOverlay
         } else if app.history_search_open() {
             FooterMode::HistorySearch
@@ -77,7 +77,7 @@ impl FooterProps {
 }
 
 pub(crate) fn desired_height(app: &App, _width: u16) -> u16 {
-    if app.shortcuts_open() {
+    if app.bottom_pane().shortcuts_open() {
         SHORTCUT_HEIGHT
     } else {
         1

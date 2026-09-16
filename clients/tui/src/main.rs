@@ -139,7 +139,7 @@ async fn run(
     let mut active_send: Option<JoinHandle<Result<(), RuntimeError>>> = None;
 
     while !app.should_quit() {
-        bottom_pane.sync(&app);
+        let _ = bottom_pane.sync(&app);
         terminal.draw(|frame| {
             if let Some(position) = chatwidget::rendering::render(
                 frame.area(),

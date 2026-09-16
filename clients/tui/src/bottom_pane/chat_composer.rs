@@ -60,7 +60,7 @@ impl ChatComposer {
 }
 
 pub(crate) fn desired_height(app: &App, width: u16) -> u16 {
-    if app.shortcuts_open() {
+    if app.bottom_pane().shortcuts_open() {
         return SHORTCUT_HEIGHT;
     }
     let input_width = usize::from(width.saturating_sub(LIVE_PREFIX_COLS + 1)).max(1);
@@ -76,7 +76,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
     if area.is_empty() || area.height <= COMPOSER_TOP {
         return;
     }
-    if app.shortcuts_open() {
+    if app.bottom_pane().shortcuts_open() {
         footer::render(app, area, buffer);
         return;
     }
@@ -184,7 +184,7 @@ fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::
 }
 
 pub(crate) fn cursor_position_for(app: &App, area: Rect) -> Option<(u16, u16)> {
-    if app.shortcuts_open() || area.is_empty() {
+    if app.bottom_pane().shortcuts_open() || area.is_empty() {
         return None;
     }
     let popup_height = completion_popup_height(app);

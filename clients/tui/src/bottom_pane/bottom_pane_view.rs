@@ -7,6 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::app::App;
+use crate::bottom_pane::BottomPaneSurface;
 use crate::bottom_pane::chat_composer;
 use crate::bottom_pane::footer;
 use crate::bottom_pane::paste_burst::PasteBurst;
@@ -118,12 +119,18 @@ impl ActiveBottomPaneView {
     }
 
     /// Keep the concrete view aligned with the app-level overlay state.
-    pub(crate) fn sync(&mut self, app: &App) {
-        if app.shortcuts_open() && matches!(self, Self::Composer(_)) {
+    pub(crate) fn sync(&mut self, app: &App) -> Option<ViewCompletion> {
+        let completion = self.completion(app);
+        if app.bottom_pane().surface() == BottomPaneSurface::Shortcuts
+            && matches!(self, Self::Composer(_))
+        {
             *self = Self::Shortcuts(ShortcutsView);
-        } else if !app.shortcuts_open() && matches!(self, Self::Shortcuts(_)) {
+        } else if app.bottom_pane().surface() == BottomPaneSurface::Composer
+            && matches!(self, Self::Shortcuts(_))
+        {
             *self = Self::Composer(ChatComposerView);
         }
+        completion
     }
 }
 
@@ -213,7 +220,7 @@ impl BottomPaneView for ShortcutsView {
     }
 
     fn is_complete(&self, app: &App) -> bool {
-        !app.shortcuts_open()
+        app.bottom_pane().surface() == BottomPaneSurface::Composer
     }
 
     fn completion(&self, app: &App) -> Option<ViewCompletion> {
@@ -345,8 +352,7 @@ mod tests {
         assert_eq!(view.renderable(&app).desired_height(80), 11);
 
         app.close_shortcuts();
-        assert_eq!(view.completion(&app), Some(ViewCompletion::Cancelled));
-        view.sync(&app);
+        assert_eq!(view.sync(&app), Some(ViewCompletion::Cancelled));
         assert!(matches!(view, ActiveBottomPaneView::Composer(_)));
     }
 }
