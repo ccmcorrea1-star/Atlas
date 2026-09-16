@@ -109,7 +109,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
 
     let lines = if app.input().is_empty() {
         vec![Line::from(Span::styled(
-            "Ask Codex to do anything",
+            "Ask Atlas to do anything",
             Style::default().dim(),
         ))]
     } else {

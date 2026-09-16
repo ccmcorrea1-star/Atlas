@@ -209,7 +209,7 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         buffer.set_span(
             area.x + FOOTER_INDENT_COLS as u16,
             area.y + 1,
-            &Span::styled("Ask Codex to do anything", Style::default().dim()),
+            &Span::styled("Ask Atlas to do anything", Style::default().dim()),
             area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
         );
     }

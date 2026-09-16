@@ -3,7 +3,7 @@ source: src/bottom_pane/chat_composer.rs
 expression: "rows(&shortcuts, 100, super::desired_height(&shortcuts, 100))"
 ---
                                                                                                     
-› Ask Codex to do anything                                                                          
+› Ask Atlas to do anything                                                                          
   / for commands                                                                                    
   shift + enter for newline                       tab to submit message                             
   @ for file paths                                                                                  

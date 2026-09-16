@@ -11,6 +11,7 @@ use crate::app::App;
 use crate::bottom_pane::BottomPaneView;
 use crate::history_cell::HistoryCell;
 use crate::render::renderable::Renderable;
+use crate::session_header;
 
 pub(crate) fn render(
     area: Rect,
@@ -21,12 +22,19 @@ pub(crate) fn render(
     if area.is_empty() {
         return None;
     }
+    let header_height =
+        session_header::desired_height(area.width).min(area.height.saturating_sub(2));
     let composer_height = bottom_pane
         .desired_height(app, area.width)
-        .min(area.height.saturating_sub(1));
-    let [history_area, composer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)]).areas(area);
+        .min(area.height.saturating_sub(header_height).saturating_sub(1));
+    let [header_area, history_area, composer_area] = Layout::vertical([
+        Constraint::Length(header_height),
+        Constraint::Min(1),
+        Constraint::Length(composer_height),
+    ])
+    .areas(area);
 
+    session_header::render(header_area, buffer);
     render_history(buffer, app, history_area);
     bottom_pane.render(app, composer_area, buffer);
     let cursor = bottom_pane.cursor_pos(app, composer_area);
@@ -217,7 +225,7 @@ mod tests {
 
         assert!(screen.contains("Running node --version"));
         assert!(screen.contains("Working ("));
-        assert!(screen.contains("Ask Codex to do anything"));
+        assert!(screen.contains("Ask Atlas to do anything"));
     }
 
     #[test]
@@ -282,7 +290,7 @@ mod tests {
             assert!(rows.iter().any(|row| row.contains("Working (")));
             assert!(
                 rows.iter()
-                    .any(|row| row.contains("Ask Codex to do anything"))
+                    .any(|row| row.contains("Ask Atlas to do anything"))
             );
             assert!(
                 rows.iter()

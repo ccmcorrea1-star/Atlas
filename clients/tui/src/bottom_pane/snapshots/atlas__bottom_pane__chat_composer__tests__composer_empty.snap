@@ -3,7 +3,7 @@ source: src/bottom_pane/chat_composer.rs
 expression: "rows(&empty, 100, 14)"
 ---
                                                                                                     
-› Ask Codex to do anything                                                                          
+› Ask Atlas to do anything                                                                          
                                                                                                     
                                                                                                     
                                                                                                     

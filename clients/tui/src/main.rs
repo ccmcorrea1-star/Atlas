@@ -15,6 +15,7 @@ mod markdown_render;
 mod pager_overlay;
 mod render;
 mod runtime;
+mod session_header;
 mod ui_consts;
 mod wrapping;
 
