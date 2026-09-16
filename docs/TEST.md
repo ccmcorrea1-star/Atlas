@@ -24,4 +24,4 @@ Valida o fluxo público de conversa, sessão, contexto e provider.
 npm run test:client
 ```
 
-Para o fluxo completo de validação, consulte [`build.md`](./build.md).
+Para o fluxo completo de validação, consulte [`BUILD.md`](./BUILD.md).

@@ -4,7 +4,7 @@
 
 Atlas é uma inteligência pessoal residente e local-first para compreender, operar e evoluir o ambiente digital do usuário.
 
-Este documento define a visão do produto. A organização do código está em [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Este documento define a visão do produto. A organização do código está em [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Objetivo
 
@@ -102,6 +102,6 @@ Atlas Workstation deve funcionar como um espaço de trabalho observável, não a
 
 ## Referências
 
-Estado atual e execução: [`README.md`](../README.md) · Arquitetura: [`ARCHITECTURE.md`](../ARCHITECTURE.md) · Estilo: [`CODE_STYLE.md`](../CODE_STYLE.md)
+Estado atual e execução: [`README.md`](../README.md) · Arquitetura: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Estilo: [`CODE_STYLE.md`](./CODE_STYLE.md)
 
 Dependências principais: [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) · [Integração com AI SDK](https://openai.github.io/openai-agents-js/extensions/ai-sdk/)

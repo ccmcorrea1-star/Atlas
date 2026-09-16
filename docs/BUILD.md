@@ -86,4 +86,4 @@ Actions:
 7. Smoke test
 8. Build e testes do cliente TUI
 
-Uma mudança só deve ser considerada pronta quando todos esses comandos passarem localmente. Testes adicionais são descritos em [`test.md`](./test.md).
+Uma mudança só deve ser considerada pronta quando todos esses comandos passarem localmente. Testes adicionais são descritos em [`TEST.md`](./TEST.md).

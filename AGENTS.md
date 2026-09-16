@@ -2,8 +2,8 @@
 
 Antes de alterar código, leia:
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- [`CODE_STYLE.md`](./CODE_STYLE.md)
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+- [`docs/CODE_STYLE.md`](./docs/CODE_STYLE.md)
 
 Preserve o mesmo `conversationId` durante a conversa.
 
@@ -20,4 +20,4 @@ npm test
 npm run smoke
 ```
 
-Consulte [`docs/build.md`](./docs/build.md) e [`docs/test.md`](./docs/test.md) para detalhes.
+Consulte [`docs/BUILD.md`](./docs/BUILD.md) e [`docs/TEST.md`](./docs/TEST.md) para detalhes.
