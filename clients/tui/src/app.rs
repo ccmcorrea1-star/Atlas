@@ -450,16 +450,17 @@ impl App {
             return None;
         }
         let message = self.input().to_owned();
-        if self.bottom_pane.composer.history_entries.last() != Some(&message) {
-            self.bottom_pane
-                .composer
-                .history_entries
-                .push(message.clone());
-            let _ = self
-                .history_store
-                .save(&self.bottom_pane.composer.history_entries);
-        }
+        self.bottom_pane
+            .composer
+            .history_entries
+            .push(message.clone());
+        self.bottom_pane.composer.history_entries =
+            HistoryStore::bounded_entries(&self.bottom_pane.composer.history_entries);
+        let _ = self
+            .history_store
+            .save(&self.bottom_pane.composer.history_entries);
         self.bottom_pane.composer.history_index = None;
+        self.bottom_pane.composer.history_navigation_draft = None;
         self.clear_input();
         if self.turn_active() || self.submission_pending {
             self.queued_inputs.push_back(message);
@@ -510,6 +511,10 @@ impl App {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> Option<String> {
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.bottom_pane.composer.history_index = None;
+            self.bottom_pane.composer.history_navigation_draft = None;
+        }
         self.bottom_pane.composer.esc_backtrack_hint = false;
         if key.modifiers == KeyModifiers::NONE
             && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
@@ -675,6 +680,12 @@ impl App {
             }
             return true;
         }
+        if action == Some(Action::ScrollUp) && self.navigate_history(true) {
+            return true;
+        }
+        if action == Some(Action::ScrollDown) && self.navigate_history(false) {
+            return true;
+        }
         if self.shortcuts_open() {
             if action == Some(Action::Cancel) || action == Some(Action::OpenShortcuts) {
                 self.close_shortcuts();
@@ -760,6 +771,66 @@ impl App {
             .composer
             .textarea
             .set_text_clearing_elements(&draft);
+    }
+
+    fn history_cursor_at_boundary(&self, older: bool) -> bool {
+        let text = self.input();
+        let cursor = self.bottom_pane.composer.textarea.cursor().min(text.len());
+        if older {
+            !text[..cursor].contains('\n')
+        } else {
+            !text[cursor..].contains('\n')
+        }
+    }
+
+    fn navigate_history(&mut self, older: bool) -> bool {
+        if self.bottom_pane.composer.history_entries.is_empty()
+            || !self.history_cursor_at_boundary(older)
+        {
+            return false;
+        }
+        if older {
+            if self.bottom_pane.composer.history_index.is_none() {
+                self.bottom_pane.composer.history_navigation_draft = Some(self.input().to_owned());
+            }
+            let next = self.bottom_pane.composer.history_index.map_or(
+                self.bottom_pane.composer.history_entries.len() - 1,
+                |index| index.saturating_sub(1),
+            );
+            self.bottom_pane.composer.history_index = Some(next);
+            let entry = self.bottom_pane.composer.history_entries[next].clone();
+            self.bottom_pane
+                .composer
+                .textarea
+                .set_text_clearing_elements(&entry);
+            true
+        } else {
+            let Some(index) = self.bottom_pane.composer.history_index else {
+                return false;
+            };
+            if index + 1 < self.bottom_pane.composer.history_entries.len() {
+                let next = index + 1;
+                self.bottom_pane.composer.history_index = Some(next);
+                let entry = self.bottom_pane.composer.history_entries[next].clone();
+                self.bottom_pane
+                    .composer
+                    .textarea
+                    .set_text_clearing_elements(&entry);
+            } else {
+                self.bottom_pane.composer.history_index = None;
+                let draft = self
+                    .bottom_pane
+                    .composer
+                    .history_navigation_draft
+                    .take()
+                    .unwrap_or_default();
+                self.bottom_pane
+                    .composer
+                    .textarea
+                    .set_text_clearing_elements(&draft);
+            }
+            true
+        }
     }
 
     fn accept_history_search(&mut self) {
@@ -973,6 +1044,64 @@ mod tests {
         assert!(ChatComposerView.pre_draw_tick(&mut app, Instant::now()));
 
         assert_eq!(app.input(), "ab\n");
+    }
+
+    #[test]
+    fn navigates_prompt_history_and_restores_the_original_draft() {
+        let mut app = App::new("history-navigation".to_owned());
+        app.insert_text("first");
+        assert_eq!(app.submit_input().as_deref(), Some("first"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("second");
+        assert_eq!(app.submit_input().as_deref(), Some("second"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("draft");
+
+        let up = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let down = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(app.handle_global_key(up));
+        assert_eq!(app.input(), "second");
+        assert!(app.handle_global_key(up));
+        assert_eq!(app.input(), "first");
+        assert!(app.handle_global_key(down));
+        assert_eq!(app.input(), "second");
+        assert!(app.handle_global_key(down));
+        assert_eq!(app.input(), "draft");
+    }
+
+    #[test]
+    fn keeps_up_and_down_as_textarea_navigation_inside_multiline_drafts() {
+        let mut app = App::new("history-navigation-multiline".to_owned());
+        app.insert_text("history");
+        assert_eq!(app.submit_input().as_deref(), Some("history"));
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "done".to_owned(),
+            message_id: None,
+            context: None,
+        });
+        app.insert_text("first\nsecond");
+        let cursor_before = app.textarea().cursor();
+        let up = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(!app.handle_global_key(up));
+        assert!(app.handle_key_event(up).is_none());
+        assert!(app.textarea().cursor() < cursor_before);
     }
 
     #[test]

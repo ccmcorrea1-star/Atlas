@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -66,16 +67,35 @@ impl HistoryStore {
         if contents.len() > MAX_HISTORY_BYTES {
             return Vec::new();
         }
-        contents
+        let entries = contents
             .lines()
-            .rev()
-            .take(MAX_HISTORY_ENTRIES)
             .filter_map(|line| serde_json::from_str::<LoadedHistoryRecord>(line).ok())
             .map(|record| record.message)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+            .collect::<Vec<_>>();
+        Self::bounded_entries(&entries)
+    }
+
+    pub(crate) fn bounded_entries(entries: &[String]) -> Vec<String> {
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+        let mut bytes: usize = 0;
+        for entry in entries.iter().rev() {
+            if selected.len() >= MAX_HISTORY_ENTRIES || !seen.insert(entry) {
+                continue;
+            }
+            let line_bytes = serde_json::to_string(&HistoryRecord { message: entry })
+                .map(|record| record.len() + 1)
+                .unwrap_or(usize::MAX);
+            if line_bytes > MAX_HISTORY_BYTES
+                || bytes.saturating_add(line_bytes) > MAX_HISTORY_BYTES
+            {
+                continue;
+            }
+            bytes += line_bytes;
+            selected.push(entry.clone());
+        }
+        selected.reverse();
+        selected
     }
 
     pub(crate) fn save(&self, entries: &[String]) -> std::io::Result<()> {
@@ -92,8 +112,8 @@ impl HistoryStore {
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&temporary_path)?;
-        for entry in entries.iter().rev().take(MAX_HISTORY_ENTRIES).rev() {
-            let record = serde_json::to_string(&HistoryRecord { message: entry })
+        for entry in Self::bounded_entries(entries) {
+            let record = serde_json::to_string(&HistoryRecord { message: &entry })
                 .map_err(std::io::Error::other)?;
             file.write_all(record.as_bytes())?;
             file.write_all(b"\n")?;
@@ -116,6 +136,33 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[test]
+    fn deduplicates_entries_and_enforces_entry_and_byte_limits() {
+        let root =
+            std::env::temp_dir().join(format!("atlas-history-limits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = HistoryStore::new(&root, "limits");
+        let mut entries = vec![
+            "repeat".to_owned(),
+            "middle".to_owned(),
+            "repeat".to_owned(),
+        ];
+        entries.extend((0..1_100).map(|index| format!("entry-{index}")));
+        entries.push("x".repeat(2 * 1024 * 1024));
+        store.save(&entries).expect("bounded history should save");
+
+        let loaded = store.load();
+        assert!(loaded.len() <= 1_000);
+        assert!(!loaded.contains(&"repeat".to_owned()));
+        assert!(loaded.last().is_some_and(|entry| entry == "entry-1099"));
+        assert!(
+            std::fs::metadata(store.path().expect("history path should exist"))
+                .expect("history file should exist")
+                .len()
+                <= 2 * 1024 * 1024
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
     #[test]
     fn stores_each_conversation_in_a_private_bounded_jsonl_file() {
         let root = std::env::temp_dir().join(format!("atlas-history-store-{}", std::process::id()));
