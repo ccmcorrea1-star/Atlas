@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   RUNTIME_PROTOCOL,
   RUNTIME_PROTOCOL_VERSION,
+  parseRuntimeMessage,
   runtimeEvent,
   serializeRuntimeMessage,
   type RuntimeTurnRequest,
@@ -17,6 +18,26 @@ const request: RuntimeTurnRequest = {
   conversation_id: 'conversation-1',
   input: 'execute node --version',
 };
+
+test('parses a turn cancellation with the original request identity', () => {
+  const cancel = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.cancel',
+      request_id: 'request-1',
+      conversation_id: 'conversation-1',
+    }),
+  );
+
+  assert.deepEqual(cancel, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'turn.cancel',
+    request_id: 'request-1',
+    conversation_id: 'conversation-1',
+  });
+});
 
 test('serializes the process execution lifecycle without provider tool names', () => {
   const started = runtimeEvent(request, 'execution.started', {
@@ -57,4 +78,14 @@ test('carries Runtime-provided context usage on the completed turn', () => {
     used_tokens: 6600,
     context_window: 256000,
   });
+});
+
+test('serializes context updates as public events', () => {
+  const updated = runtimeEvent(request, 'context.updated', {
+    used_tokens: 6600,
+    context_window: 256000,
+  });
+
+  assert.equal(updated.type, 'context.updated');
+  assert.deepEqual(JSON.parse(serializeRuntimeMessage(updated)), updated);
 });

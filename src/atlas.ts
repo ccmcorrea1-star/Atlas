@@ -12,6 +12,7 @@ import {
   OpenCodeGoProvider,
   type OpenCodeGoProviderOptions,
   OPENCODE_GO_MODEL,
+  withOpenCodeGoAbortSignal,
   withOpenCodeGoSession,
 } from './opencode-go.js';
 import {
@@ -33,6 +34,8 @@ export const Atlas = new Agent({
 });
 
 export type AtlasRunOptions = OpenCodeGoProviderOptions & {
+  // O signal permite ao Runtime interromper o request de modelo ativo.
+  abortSignal?: AbortSignal;
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
   capabilityRuntime?: CapabilityRuntime;
@@ -70,6 +73,13 @@ export type AtlasRunEvent =
       args: string[];
       cwd?: string;
       target?: string;
+    }
+  | {
+      type: 'execution.output.delta';
+      executionId: string;
+      capability: 'process.exec';
+      channel: 'stdout' | 'stderr';
+      delta: string;
     }
   | {
       type: 'execution.completed';
@@ -515,6 +525,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const {
     conversationId: _conversationId,
     capabilityRuntime: requestedCapabilityRuntime,
+    abortSignal,
     onEvent,
     ...providerOptions
   } = options;
@@ -536,22 +547,24 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
   runtime.sessions.set(sessionId, session);
 
-  return withOpenCodeGoSession(sessionId, async () => {
-    if (!onEvent) {
-      return runtime.runner.run(agent, input, { session });
-    }
+  return withOpenCodeGoAbortSignal(abortSignal, () =>
+    withOpenCodeGoSession(sessionId, async () => {
+      if (!onEvent) {
+        return runtime.runner.run(agent, input, { session });
+      }
 
-    const streamedResult = await runtime.runner.run(agent, input, {
-      session,
-      stream: true,
-    });
-    const fallbackMessageId = randomUUID();
-    for await (const event of streamedResult) {
-      await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByToolName);
-    }
+      const streamedResult = await runtime.runner.run(agent, input, {
+        session,
+        stream: true,
+      });
+      const fallbackMessageId = randomUUID();
+      for await (const event of streamedResult) {
+        await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByToolName);
+      }
 
-    // O iterador pode terminar antes da finalizacao interna do Runner.
-    await streamedResult.completed;
-    return streamedResult;
-  });
+      // O iterador pode terminar antes da finalizacao interna do Runner.
+      await streamedResult.completed;
+      return streamedResult;
+    }),
+  );
 }

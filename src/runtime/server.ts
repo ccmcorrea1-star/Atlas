@@ -4,11 +4,12 @@ import { pathToFileURL } from 'node:url';
 import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
 import { getOpenCodeGoContextWindow } from '../opencode-go.js';
 import {
-  parseRuntimeTurnRequest,
+  parseRuntimeMessage,
   runtimeErrorEvent,
   runtimeEvent,
   serializeRuntimeMessage,
   type RuntimeEvent,
+  type RuntimeRequest,
   type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
 } from './protocol.js';
@@ -35,6 +36,7 @@ export class AtlasRuntimeServer {
   private readonly contextWindow: number | undefined;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
+  private readonly activeTurns = new Map<string, AbortController>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath =
@@ -56,9 +58,9 @@ export class AtlasRuntimeServer {
   }
 
   private handleLine(line: string, send: (payload: string) => void): Promise<void> {
-    let request: RuntimeTurnRequest;
+    let message: RuntimeRequest;
     try {
-      request = parseRuntimeTurnRequest(line);
+      message = parseRuntimeMessage(line);
     } catch (error) {
       send(
         serializeRuntimeMessage(
@@ -68,10 +70,17 @@ export class AtlasRuntimeServer {
       return Promise.resolve();
     }
 
+    if (message.type === 'turn.cancel') {
+      return this.handleCancel(message, send);
+    }
+
+    const request = message;
+    const controller = new AbortController();
+    this.activeTurns.set(request.request_id, controller);
     const previous = this.conversationQueues.get(request.conversation_id) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.handleTurn(request, send))
+      .then(() => this.handleTurn(request, send, controller.signal))
       .catch((error) => {
         // A fila nao pode deixar uma falha inesperada sem um evento terminal.
         send(
@@ -85,14 +94,35 @@ export class AtlasRuntimeServer {
       if (this.conversationQueues.get(request.conversation_id) === current) {
         this.conversationQueues.delete(request.conversation_id);
       }
+      if (this.activeTurns.get(request.request_id) === controller) {
+        this.activeTurns.delete(request.request_id);
+      }
     };
     void current.then(clearQueue, clearQueue);
     return current;
   }
 
+  private handleCancel(
+    request: Extract<RuntimeRequest, { type: 'turn.cancel' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const controller = this.activeTurns.get(request.request_id);
+    if (controller === undefined) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`No active turn exists for request "${request.request_id}".`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+    controller.abort(new Error('turn cancelled by client'));
+    return Promise.resolve();
+  }
+
   private async handleTurn(
     request: RuntimeTurnRequest,
     send: (payload: string) => void,
+    abortSignal: AbortSignal,
   ): Promise<void> {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
@@ -101,8 +131,12 @@ export class AtlasRuntimeServer {
 
     let messageId: string | undefined;
     try {
+      if (abortSignal.aborted) {
+        throw new Error('turn cancelled by client');
+      }
       const result = await runAtlas(request.input, {
         ...this.runOptions,
+        abortSignal,
         conversationId: request.conversation_id,
         onEvent: (event) => {
           messageId = eventMessageId(event) ?? messageId;
@@ -113,18 +147,21 @@ export class AtlasRuntimeServer {
         typeof result.finalOutput === 'string'
           ? result.finalOutput
           : JSON.stringify(result.finalOutput);
+      const context =
+        this.contextWindow === undefined
+          ? undefined
+          : {
+              used_tokens: result.runContext.usage.inputTokens,
+              context_window: this.contextWindow,
+            };
+      if (context !== undefined) {
+        publish(runtimeEvent(request, 'context.updated', context));
+      }
       const completedData: RuntimeTurnCompletedData = {
         ...(messageId === undefined ? {} : { message_id: messageId }),
         content: content ?? '',
         // A UI recebe o uso agregado sem precisar conhecer o Agent SDK.
-        ...(this.contextWindow === undefined
-          ? {}
-          : {
-              context: {
-                used_tokens: result.runContext.usage.inputTokens,
-                context_window: this.contextWindow,
-              },
-            }),
+        ...(context === undefined ? {} : { context }),
       };
       publish(runtimeEvent(request, 'turn.completed', completedData));
     } catch (error) {
@@ -168,6 +205,13 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
         args: event.args,
         ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
         ...(event.target === undefined ? {} : { target: event.target }),
+      });
+    case 'execution.output.delta':
+      return runtimeEvent(request, 'execution.output.delta', {
+        execution_id: event.executionId,
+        capability: event.capability,
+        channel: event.channel,
+        delta: event.delta,
       });
     case 'execution.completed':
       return runtimeEvent(request, 'execution.completed', {

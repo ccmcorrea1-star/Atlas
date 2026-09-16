@@ -10,13 +10,25 @@ export type RuntimeTurnRequest = {
   input: string;
 };
 
+export type RuntimeTurnCancel = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'turn.cancel';
+  request_id: string;
+  conversation_id: string;
+};
+
+export type RuntimeRequest = RuntimeTurnRequest | RuntimeTurnCancel;
+
 export type RuntimeEventType =
   | 'turn.started'
+  | 'context.updated'
   | 'message.delta'
   | 'message.completed'
   | 'tool.started'
   | 'tool.completed'
   | 'execution.started'
+  | 'execution.output.delta'
   | 'execution.completed'
   | 'turn.completed'
   | 'error';
@@ -83,7 +95,7 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
-export function parseRuntimeTurnRequest(payload: string): RuntimeTurnRequest {
+export function parseRuntimeMessage(payload: string): RuntimeRequest {
   let value: unknown;
   try {
     value = JSON.parse(payload) as unknown;
@@ -102,18 +114,37 @@ export function parseRuntimeTurnRequest(payload: string): RuntimeTurnRequest {
       `Unsupported runtime protocol version "${String(request.version)}".`,
     );
   }
-  if (request.type !== 'turn.request') {
-    throw new RuntimeProtocolError(`Unsupported runtime message type "${String(request.type)}".`);
-  }
 
-  return {
-    protocol: RUNTIME_PROTOCOL,
-    version: RUNTIME_PROTOCOL_VERSION,
-    type: 'turn.request',
-    request_id: requiredString(request.request_id, 'request_id'),
-    conversation_id: requiredString(request.conversation_id, 'conversation_id'),
-    input: requiredString(request.input, 'input'),
-  };
+  const request_id = requiredString(request.request_id, 'request_id');
+  const conversation_id = requiredString(request.conversation_id, 'conversation_id');
+  if (request.type === 'turn.request') {
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.request',
+      request_id,
+      conversation_id,
+      input: requiredString(request.input, 'input'),
+    };
+  }
+  if (request.type === 'turn.cancel') {
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.cancel',
+      request_id,
+      conversation_id,
+    };
+  }
+  throw new RuntimeProtocolError(`Unsupported runtime message type "${String(request.type)}".`);
+}
+
+export function parseRuntimeTurnRequest(payload: string): RuntimeTurnRequest {
+  const request = parseRuntimeMessage(payload);
+  if (request.type !== 'turn.request') {
+    throw new RuntimeProtocolError(`Expected turn.request, received "${request.type}".`);
+  }
+  return request;
 }
 
 export function runtimeEvent(

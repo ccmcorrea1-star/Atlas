@@ -18,6 +18,7 @@ export const ATLAS_USER_AGENT = 'Atlas/1.0.0';
 
 // Evita estado mutavel compartilhado entre requests concorrentes.
 const activeOpenCodeGoSession = new AsyncLocalStorage<string>();
+const activeOpenCodeGoAbortSignal = new AsyncLocalStorage<AbortSignal>();
 
 // Cada modelo declara qual formato de endpoint o adapter deve usar.
 export type OpenCodeGoEndpoint = 'responses' | 'chat/completions' | 'messages';
@@ -52,6 +53,13 @@ export function withOpenCodeGoSession<T>(
 ): Promise<T> {
   // O contexto local garante que requests concorrentes usem o ID correto.
   return activeOpenCodeGoSession.run(typeof session === 'string' ? session : session.id, callback);
+}
+
+export function withOpenCodeGoAbortSignal<T>(
+  signal: AbortSignal | undefined,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return signal === undefined ? callback() : activeOpenCodeGoAbortSignal.run(signal, callback);
 }
 
 // Opcoes publicas controlam credenciais, endpoint, headers, sessao e modelos adicionais.
@@ -101,7 +109,15 @@ function createAtlasFetch(userAgent: string, defaultSessionId: string): typeof g
     // O header e resolvido por request para acompanhar a conversa ativa.
     headers.set('x-opencode-session', activeOpenCodeGoSession.getStore() ?? defaultSessionId);
 
-    return globalThis.fetch(input, { ...init, headers });
+    const activeSignal = activeOpenCodeGoAbortSignal.getStore();
+    const signal =
+      activeSignal === undefined
+        ? init?.signal
+        : init?.signal === undefined
+          ? activeSignal
+          : AbortSignal.any([init.signal ?? activeSignal, activeSignal]);
+
+    return globalThis.fetch(input, { ...init, headers, signal });
   };
 }
 

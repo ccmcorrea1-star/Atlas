@@ -414,6 +414,120 @@ async function startFailingStreamingModelServer(): Promise<{
   };
 }
 
+async function startHangingModelServer(): Promise<{
+  baseURL: string;
+  close: () => Promise<void>;
+}> {
+  const server = createServer((request, response) => {
+    request.on('aborted', () => response.destroy());
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Hanging model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    close: () =>
+      new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => (error ? rejectClose(error) : resolveClose()));
+      }),
+  };
+}
+
+function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<WireMessage[]> {
+  return new Promise((resolveTurn, rejectTurn) => {
+    const requestId = 'tui-cancel-request';
+    const socket = createConnection(socketPath, () => {
+      socket.write(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'turn.request',
+          request_id: requestId,
+          conversation_id: conversationId,
+          input: 'wait forever',
+        })}\n`,
+      );
+    });
+    const events: WireMessage[] = [];
+    let buffer = '';
+    let cancelSent = false;
+
+    socket.once('error', rejectTurn);
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          const event = JSON.parse(line) as WireMessage;
+          events.push(event);
+          if (event.type === 'turn.started' && !cancelSent) {
+            cancelSent = true;
+            const cancelSocket = createConnection(socketPath, () => {
+              cancelSocket.end(
+                `${JSON.stringify({
+                  protocol: RUNTIME_PROTOCOL,
+                  version: RUNTIME_PROTOCOL_VERSION,
+                  type: 'turn.cancel',
+                  request_id: requestId,
+                  conversation_id: conversationId,
+                })}\n`,
+              );
+            });
+            cancelSocket.once('error', rejectTurn);
+          }
+          if (event.type === 'error') {
+            socket.destroy();
+            resolveTurn(events);
+            return;
+          }
+        }
+        newlineIndex = buffer.indexOf('\n');
+      }
+    });
+  });
+}
+
+test('cancels an active Unix runtime turn and emits a terminal error', async () => {
+  const model = await startHangingModelServer();
+  const socketPath = `/tmp/atlas-runtime-cancel-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurnAndCancel(socketPath, 'cancel-integration-conversation');
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['turn.started', 'error'],
+    );
+    assert.equal(events.at(-1)?.request_id, 'tui-cancel-request');
+    assert.equal((events.at(-1)?.data as WireMessage).message, 'turn cancelled by client');
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
 function sendTurn(
   socketPath: string,
   conversationId: string,
@@ -477,7 +591,7 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['turn.started', 'message.delta', 'message.completed', 'turn.completed'],
+      ['turn.started', 'message.delta', 'message.completed', 'context.updated', 'turn.completed'],
     );
     assert.equal(events[0]?.request_id, 'tui-integration-request');
     assert.equal(events.at(-1)?.conversation_id, 'runtime-integration-conversation');
@@ -542,6 +656,7 @@ test('publishes process execution lifecycle events over the public Unix protocol
         'execution.completed',
         'message.delta',
         'message.completed',
+        'context.updated',
         'turn.completed',
       ],
     );
