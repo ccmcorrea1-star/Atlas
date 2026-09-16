@@ -443,7 +443,11 @@ async function startHangingModelServer(): Promise<{
   };
 }
 
-function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<WireMessage[]> {
+function sendTurnAndCancel(
+  socketPath: string,
+  conversationId: string,
+  cancelConversationId = conversationId,
+): Promise<{ events: WireMessage[]; cancelEvents: WireMessage[] }> {
   return new Promise((resolveTurn, rejectTurn) => {
     const requestId = 'tui-cancel-request';
     const socket = createConnection(socketPath, () => {
@@ -459,6 +463,7 @@ function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<
       );
     });
     const events: WireMessage[] = [];
+    const cancelEvents: WireMessage[] = [];
     let buffer = '';
     let cancelSent = false;
 
@@ -482,15 +487,33 @@ function sendTurnAndCancel(socketPath: string, conversationId: string): Promise<
                   version: RUNTIME_PROTOCOL_VERSION,
                   type: 'turn.cancel',
                   request_id: requestId,
-                  conversation_id: conversationId,
+                  conversation_id: cancelConversationId,
                 })}\n`,
               );
             });
             cancelSocket.once('error', rejectTurn);
+            if (cancelConversationId !== conversationId) {
+              cancelSocket.setEncoding('utf8');
+              cancelSocket.once('data', (cancelChunk: string) => {
+                cancelEvents.push(JSON.parse(cancelChunk.trim()) as WireMessage);
+                const correctCancelSocket = createConnection(socketPath, () => {
+                  correctCancelSocket.end(
+                    `${JSON.stringify({
+                      protocol: RUNTIME_PROTOCOL,
+                      version: RUNTIME_PROTOCOL_VERSION,
+                      type: 'turn.cancel',
+                      request_id: requestId,
+                      conversation_id: conversationId,
+                    })}\n`,
+                  );
+                });
+                correctCancelSocket.once('error', rejectTurn);
+              });
+            }
           }
           if (event.type === 'error') {
             socket.destroy();
-            resolveTurn(events);
+            resolveTurn({ events, cancelEvents });
             return;
           }
         }
@@ -506,7 +529,7 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
   const runtime = new AtlasRuntimeServer({
     socketPath,
     runOptions: {
-      apiKey: 'atlas...ey',
+      apiKey: '[REDACTED]',
       baseURL: model.baseURL,
       capabilityRuntime,
     },
@@ -514,7 +537,7 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
 
   try {
     await runtime.listen();
-    const events = await sendTurnAndCancel(socketPath, 'cancel-integration-conversation');
+    const { events } = await sendTurnAndCancel(socketPath, 'cancel-integration-conversation');
 
     assert.deepEqual(
       events.map((event) => event.type),
@@ -522,6 +545,41 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
     );
     assert.equal(events.at(-1)?.request_id, 'tui-cancel-request');
     assert.equal((events.at(-1)?.data as WireMessage).message, 'turn cancelled by client');
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('does not cancel a turn when conversation identity does not match', async () => {
+  const model = await startHangingModelServer();
+  const socketPath = `/tmp/atlas-runtime-cancel-identity-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: '[REDACTED]',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const result = await sendTurnAndCancel(
+      socketPath,
+      'cancel-identity-conversation',
+      'other-conversation',
+    );
+
+    assert.deepEqual(
+      result.events.map((event) => event.type),
+      ['turn.started', 'error'],
+    );
+    assert.deepEqual(result.cancelEvents.map((event) => event.type), ['error']);
+    assert.match(
+      String((result.cancelEvents[0]?.data as WireMessage).message),
+      /No active turn exists/,
+    );
   } finally {
     await runtime.close();
     await model.close();
