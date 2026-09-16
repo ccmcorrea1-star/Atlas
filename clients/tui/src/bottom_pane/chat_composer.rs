@@ -97,6 +97,11 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
             COMPOSER_TOP + popup_height + footer::desired_height(app, area.width) + 1,
         ),
     };
+    let composer_surface = Rect::new(area.x, input_area.y, area.width, input_area.height);
+    buffer.set_style(
+        composer_surface,
+        Style::default().bg(Color::Rgb(51, 51, 51)),
+    );
     let prompt_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -390,5 +395,19 @@ mod tests {
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
         assert!(rows(&app, 100, 14).contains("• Working ("));
+    }
+
+    #[test]
+    fn paints_the_composer_surface_with_the_chat_background() {
+        let app = App::new("composer-surface".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal
+            .draw(|frame| render(&app, frame.area(), frame.buffer_mut()))
+            .unwrap();
+
+        assert_eq!(
+            terminal.backend().buffer()[(20, 1)].bg,
+            Color::Rgb(51, 51, 51)
+        );
     }
 }

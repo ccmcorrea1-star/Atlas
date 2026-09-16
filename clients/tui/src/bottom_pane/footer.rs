@@ -6,6 +6,8 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use std::env;
+
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
@@ -85,6 +87,15 @@ pub(crate) fn desired_height(app: &App, _width: u16) -> u16 {
     }
 }
 
+fn session_info(app: &App) -> String {
+    let model = app.session_model().unwrap_or("unavailable");
+    let provider = app.session_provider().unwrap_or("unavailable");
+    let directory = env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "unavailable".to_owned());
+    format!("model: {model}  provider: {provider}  directory: {directory}")
+}
+
 pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     if area.is_empty() {
         return;
@@ -111,15 +122,29 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
         }
     }
 
+    let info = session_info(app);
+    let left_width = FOOTER_INDENT_COLS + UnicodeWidthStr::width(left.as_str());
+    let info_width = UnicodeWidthStr::width(info.as_str());
+    let show_info = left_width + info_width + context_width + 4 <= usize::from(area.width);
     let left_span = Span::styled(
         format!("{}{}", " ".repeat(FOOTER_INDENT_COLS), left),
         Style::default().dim(),
     );
     let mut line = Line::from(left_span);
-    if show_context && let Some(context) = props.context {
-        let used = FOOTER_INDENT_COLS + UnicodeWidthStr::width(left.as_str());
+    let mut line_width = left_width;
+    if show_info {
         let padding = usize::from(area.width)
-            .saturating_sub(used + context.width())
+            .saturating_sub(
+                left_width + info_width + if show_context { context_width + 2 } else { 0 },
+            )
+            .max(2);
+        line.push_span(Span::raw(" ".repeat(padding)));
+        line.push_span(Span::styled(info, Style::default().dim()));
+        line_width += padding + info_width;
+    }
+    if show_context && let Some(context) = props.context {
+        let padding = usize::from(area.width)
+            .saturating_sub(line_width + context.width())
             .max(1);
         line.push_span(Span::raw(" ".repeat(padding)));
         line.push_span(Span::styled(context, Style::default().dim()));
@@ -332,5 +357,18 @@ mod tests {
             super::format_context(1_234, 1_000_000),
             "1.23k/1m (99% left)"
         );
+    }
+
+    #[test]
+    fn renders_session_info_with_model_provider_and_directory() {
+        let mut app = App::new("footer-session-info".to_owned());
+        app.handle_runtime_event(RuntimeEvent::SessionUpdated {
+            model: "gpt-5.6-luna".to_owned(),
+            provider: "opencode-go".to_owned(),
+        });
+        let output = super::session_info(&app);
+        assert!(output.contains("model: gpt-5.6-luna"));
+        assert!(output.contains("provider: opencode-go"));
+        assert!(output.contains("directory:"));
     }
 }

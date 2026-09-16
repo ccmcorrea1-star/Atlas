@@ -1,6 +1,6 @@
 ---
 source: src/bottom_pane/chat_composer.rs
-assertion_line: 292
+assertion_line: 297
 expression: "rows(&draft, 100, 14)"
 ---
                                                                                                     
