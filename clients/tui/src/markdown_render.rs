@@ -1,7 +1,7 @@
-//! Markdown renderer ported from the Codex TUI event pipeline.
+//! Renderer de Markdown adaptado do pipeline de eventos da TUI do Codex.
 //!
-//! The event renderer lives in `markdown_render`, matching the Codex split
-//! between source normalization and ratatui presentation.
+//! O renderer de eventos fica em `markdown_render`, mantendo a separacao do
+//! Codex entre normalizacao da fonte e apresentacao no ratatui.
 
 use std::borrow::Cow;
 

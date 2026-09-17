@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ccmcorrea1-star/Atlas/protocol/runtime/v1/schema.json",
+  "title": "Atlas Runtime Protocol v1",
+  "description": "Mensagens JSON Lines trocadas entre o Atlas Runtime e seus clientes.",
+  "oneOf": [
+    { "$ref": "#/$defs/turnRequest" },
+    { "$ref": "#/$defs/turnCancel" },
+    { "$ref": "#/$defs/sessionUpdated" },
+    { "$ref": "#/$defs/turnStarted" },
+    { "$ref": "#/$defs/contextUpdated" },
+    { "$ref": "#/$defs/messageDelta" },
+    { "$ref": "#/$defs/messageCompleted" },
+    { "$ref": "#/$defs/toolStarted" },
+    { "$ref": "#/$defs/toolCompleted" },
+    { "$ref": "#/$defs/executionStarted" },
+    { "$ref": "#/$defs/executionOutputDelta" },
+    { "$ref": "#/$defs/executionCompleted" },
+    { "$ref": "#/$defs/turnCompleted" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "protocolHeader": {
+      "type": "object",
+      "properties": {
+        "protocol": { "const": "atlas-runtime" },
+        "version": { "const": 1 }
+      },
+      "required": ["protocol", "version"],
+      "additionalProperties": true
+    },
+    "requestIdentity": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "conversation_id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["request_id", "conversation_id"]
+    },
+    "eventIdentity": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "conversation_id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["request_id", "conversation_id"]
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "used_tokens": { "type": "integer", "minimum": 0 },
+        "context_window": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["used_tokens", "context_window"],
+      "additionalProperties": true
+    },
+    "event": {
+      "allOf": [{ "$ref": "#/$defs/protocolHeader" }, { "$ref": "#/$defs/eventIdentity" }],
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "data": { "type": "object" }
+      },
+      "required": ["type", "data"],
+      "additionalProperties": true
+    },
+    "turnRequest": {
+      "allOf": [{ "$ref": "#/$defs/protocolHeader" }, { "$ref": "#/$defs/requestIdentity" }],
+      "type": "object",
+      "properties": {
+        "type": { "const": "turn.request" },
+        "input": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "input"],
+      "additionalProperties": true
+    },
+    "turnCancel": {
+      "allOf": [{ "$ref": "#/$defs/protocolHeader" }, { "$ref": "#/$defs/requestIdentity" }],
+      "type": "object",
+      "properties": {
+        "type": { "const": "turn.cancel" }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    },
+    "sessionUpdated": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "session.updated" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "model": { "type": "string", "minLength": 1 },
+                "provider": { "type": "string", "minLength": 1 }
+              },
+              "required": ["model", "provider"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "turnStarted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "turn.started" },
+            "data": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "contextUpdated": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "context.updated" },
+            "data": { "$ref": "#/$defs/context" }
+          }
+        }
+      ]
+    },
+    "messageDelta": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "message.delta" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "message_id": { "type": "string", "minLength": 1 },
+                "delta": { "type": "string" }
+              },
+              "required": ["message_id", "delta"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "messageCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "message.completed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "message_id": { "type": "string", "minLength": 1 },
+                "content": { "type": "string" }
+              },
+              "required": ["message_id", "content"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "toolStarted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "tool.started" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "tool_id": { "type": "string", "minLength": 1 },
+                "name": { "type": "string", "minLength": 1 }
+              },
+              "required": ["tool_id", "name"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "toolCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "tool.completed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "tool_id": { "type": "string", "minLength": 1 },
+                "name": { "type": "string", "minLength": 1 },
+                "output": { "type": "string" }
+              },
+              "required": ["tool_id", "name"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "executionStarted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "execution.started" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "execution_id": { "type": "string", "minLength": 1 },
+                "capability": { "const": "process.exec" },
+                "program": { "type": "string", "minLength": 1 },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "cwd": { "type": "string" },
+                "target": { "type": "string" }
+              },
+              "required": ["execution_id", "capability", "program", "args"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "executionOutputDelta": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "execution.output.delta" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "execution_id": { "type": "string", "minLength": 1 },
+                "capability": { "const": "process.exec" },
+                "channel": { "enum": ["stdout", "stderr"] },
+                "delta": { "type": "string" }
+              },
+              "required": ["execution_id", "capability", "channel", "delta"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "executionCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "execution.completed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "execution_id": { "type": "string", "minLength": 1 },
+                "capability": { "const": "process.exec" },
+                "stdout": { "type": "string" },
+                "stderr": { "type": "string" },
+                "exit_code": { "type": "integer" },
+                "duration_ms": { "type": "integer", "minimum": 0 },
+                "status": { "type": "string", "minLength": 1 }
+              },
+              "required": [
+                "execution_id",
+                "capability",
+                "stdout",
+                "stderr",
+                "exit_code",
+                "duration_ms",
+                "status"
+              ],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "turnCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "turn.completed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "content": { "type": "string" },
+                "message_id": { "type": "string", "minLength": 1 },
+                "context": { "$ref": "#/$defs/context" }
+              },
+              "required": ["content"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "error" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "string", "minLength": 1 },
+                "message": { "type": "string", "minLength": 1 }
+              },
+              "required": ["code", "message"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -12,6 +12,10 @@ use clap::Subcommand;
 use crate::runtime::DEFAULT_RUNTIME_SOCKET_PATH;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const RUNTIME_PROCESS_MARKER: &str = "ATLAS_RUNTIME_PROCESS=1";
+const RUNTIME_PROGRAM_ENV: &str = "ATLAS_RUNTIME_PROGRAM";
+const RUNTIME_ARGS_ENV: &str = "ATLAS_RUNTIME_ARGS";
+const RUNTIME_CWD_ENV: &str = "ATLAS_RUNTIME_CWD";
 
 #[derive(Debug, Subcommand)]
 pub enum ServerCommand {
@@ -23,24 +27,44 @@ pub enum ServerCommand {
     Restart,
 }
 
-pub fn execute(command: ServerCommand) -> Result<(), Box<dyn Error>> {
+pub fn execute(
+    command: ServerCommand,
+    socket_override: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     match command {
-        ServerCommand::Run => run_runtime(),
-        ServerCommand::Stop => stop_runtime_command(),
+        ServerCommand::Run => run_runtime(socket_override),
+        ServerCommand::Stop => stop_runtime_command(socket_override),
         ServerCommand::Restart => {
-            stop_existing_runtime(&RuntimePaths::from_environment())?;
-            run_runtime()
+            stop_existing_runtime(&RuntimePaths::from_environment(socket_override))?;
+            run_runtime(socket_override)
         }
     }
 }
 
-fn run_runtime() -> Result<(), Box<dyn Error>> {
-    let status = Command::new("npm")
-        .args(["run", "runtime"])
+fn run_runtime(socket_override: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let program = std::env::var(RUNTIME_PROGRAM_ENV).unwrap_or_else(|_| "npm".to_owned());
+    let args = std::env::var(RUNTIME_ARGS_ENV)
+        .map(|value| {
+            value
+                .split_whitespace()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| vec!["run".to_owned(), "runtime".to_owned()]);
+    let mut command = Command::new(program);
+    command
+        .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+        .stderr(Stdio::inherit());
+    if let Some(cwd) = std::env::var_os(RUNTIME_CWD_ENV).filter(|path| !path.is_empty()) {
+        command.current_dir(cwd);
+    }
+    if let Some(socket_path) = socket_override {
+        command.env("ATLAS_RUNTIME_SOCKET", socket_path);
+    }
+    command.env("ATLAS_RUNTIME_PROCESS", "1");
+    let status = command.status()?;
 
     if status.success() || status.code().is_none() {
         return Ok(());
@@ -49,8 +73,8 @@ fn run_runtime() -> Result<(), Box<dyn Error>> {
     Err(io::Error::other(format!("Atlas Runtime exited with status {status}")).into())
 }
 
-fn stop_runtime_command() -> Result<(), Box<dyn Error>> {
-    let paths = RuntimePaths::from_environment();
+fn stop_runtime_command(socket_override: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let paths = RuntimePaths::from_environment(socket_override);
     let stopped = stop_existing_runtime(&paths)?;
     if stopped {
         println!("Atlas Runtime stopped.");
@@ -66,7 +90,7 @@ fn stop_existing_runtime(paths: &RuntimePaths) -> Result<bool, Box<dyn Error>> {
         if process_is_alive(pid) {
             if !runtime_process_matches(pid) {
                 return Err(io::Error::other(format!(
-                    "Refusing to stop PID {pid}: it is not an Atlas Runtime process."
+                    "Recusando desligar o PID {pid}: ele nao foi iniciado pelo Atlas."
                 ))
                 .into());
             }
@@ -118,15 +142,19 @@ fn process_is_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-fn runtime_process_matches(pid: u32) -> bool {
-    let command_line_path = format!("/proc/{pid}/cmdline");
-    fs::read(command_line_path)
-        .map(|command_line| String::from_utf8_lossy(&command_line).contains("runtime/server"))
-        .unwrap_or(false)
-}
-
 fn socket_is_active(socket_path: &Path) -> bool {
     UnixStream::connect(socket_path).is_ok()
+}
+
+fn runtime_process_matches(pid: u32) -> bool {
+    let environment_path = format!("/proc/{pid}/environ");
+    fs::read(environment_path)
+        .map(|environment| {
+            environment
+                .split(|byte| *byte == 0)
+                .any(|variable| variable == RUNTIME_PROCESS_MARKER.as_bytes())
+        })
+        .unwrap_or(false)
 }
 
 fn read_pid(pid_path: &Path) -> io::Result<Option<u32>> {
@@ -155,9 +183,10 @@ struct RuntimePaths {
 }
 
 impl RuntimePaths {
-    fn from_environment() -> Self {
-        let socket_path = std::env::var_os("ATLAS_RUNTIME_SOCKET")
+    fn from_environment(socket_override: Option<&str>) -> Self {
+        let socket_path = socket_override
             .map(PathBuf::from)
+            .or_else(|| std::env::var_os("ATLAS_RUNTIME_SOCKET").map(PathBuf::from))
             .or_else(|| {
                 std::env::var_os("XDG_RUNTIME_DIR")
                     .filter(|path| !path.is_empty())
@@ -171,5 +200,24 @@ impl RuntimePaths {
             socket_path,
             pid_path: PathBuf::from(pid_path),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimePaths;
+
+    #[test]
+    fn cli_socket_override_takes_precedence_over_environment() {
+        let paths = RuntimePaths::from_environment(Some("/tmp/atlas-explicit.sock"));
+
+        assert_eq!(
+            paths.socket_path,
+            std::path::PathBuf::from("/tmp/atlas-explicit.sock")
+        );
+        assert_eq!(
+            paths.pid_path,
+            std::path::PathBuf::from("/tmp/atlas-explicit.sock.pid")
+        );
     }
 }

@@ -1,4 +1,4 @@
-// This is derived from `ratatui::Terminal`, which is licensed under the following terms:
+// Este arquivo deriva de `ratatui::Terminal`; a licenca segue abaixo.
 //
 // The MIT License (MIT)
 // Copyright (c) 2016-2022 Florian Dehau

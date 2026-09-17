@@ -400,7 +400,7 @@ impl App {
         self.bottom_pane.composer.paste_burst.is_in_progress()
     }
 
-    /// Paste belongs to the active Codex view, never to a hidden composer.
+    /// O paste pertence a view ativa, nunca a um composer oculto.
     pub fn handle_paste(&mut self, text: &str) {
         if self.shortcuts_open()
             || self.transcript_overlay.is_open()

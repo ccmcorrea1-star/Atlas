@@ -1,4 +1,4 @@
-//! Inspect the completed frame without adding test helpers to the terminal implementation.
+//! Inspeciona o frame concluido sem adicionar helpers de teste ao terminal.
 
 use std::io;
 use std::io::Write;

@@ -1,7 +1,7 @@
-//! External editor bridge for the Codex-style composer.
+//! Ponte com editor externo para o composer no estilo Codex.
 //!
-//! The editor is deliberately outside the runtime adapter: it edits only the
-//! local draft and returns text to the TUI. Provider/session state is untouched.
+//! O editor fica fora do adaptador do Runtime: edita apenas o rascunho local e
+//! devolve texto para a TUI. O estado do provider e da sessao permanece intacto.
 
 use std::env;
 use std::fs;

@@ -59,6 +59,10 @@ Depois de compilar o cliente TUI, inicie o Runtime com:
 atlas server run
 ```
 
+O comando usa `npm run runtime` por padrão. Para usar outro launcher, defina
+`ATLAS_RUNTIME_PROGRAM` e, opcionalmente, `ATLAS_RUNTIME_ARGS` e
+`ATLAS_RUNTIME_CWD` para o diretório de trabalho do Runtime.
+
 Para reiniciar uma instância existente:
 
 ```bash

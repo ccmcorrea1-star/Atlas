@@ -1,8 +1,8 @@
-//! Atlas' protocol-facing equivalent of the Codex `ChatWidget`.
+//! Equivalente do `ChatWidget` do Codex voltado ao protocolo do Atlas.
 //!
-//! This module owns transcript cells and turn lifecycle. It does not know how
-//! events arrive; the Atlas Runtime adapter converts JSON into `RuntimeEvent`
-//! before calling this controller.
+//! Este modulo mantem as cells do transcript e o ciclo de vida do turno. Ele nao
+//! sabe como os eventos chegam; o adaptador do Runtime converte JSON em
+//! `RuntimeEvent` antes de chamar este controller.
 
 pub(crate) mod rendering;
 

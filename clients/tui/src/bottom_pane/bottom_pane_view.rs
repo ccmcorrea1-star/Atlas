@@ -19,62 +19,61 @@ pub(crate) enum ViewCompletion {
     Cancelled,
 }
 
-/// A renderable and interactive view hosted by the canonical bottom pane.
+/// View renderizavel e interativa hospedada no painel inferior canonico.
 ///
-/// Atlas keeps the composer state in `BottomPane` while the runtime and
-/// transcript controller remains in `App`. The explicit `App` parameter is
-/// therefore the narrow coordination seam; modal views can later own their
-/// state and use the same lifecycle without introducing a second input path.
+/// O Atlas mantem o estado do composer em `BottomPane`, enquanto o Runtime e o
+/// controller do transcript ficam em `App`. O parametro explicito `App` e a
+/// fronteira estreita de coordenacao sem criar um segundo caminho de entrada.
 pub(crate) trait BottomPaneView {
-    /// Render the active view for the current app state.
+    /// Renderiza a view ativa para o estado atual da aplicacao.
     fn render(&self, app: &App, area: Rect, buffer: &mut Buffer);
 
-    /// Return the height required by this view.
+    /// Retorna a altura exigida por esta view.
     fn desired_height(&self, app: &App, width: u16) -> u16;
 
-    /// Return the cursor position relative to the terminal area.
+    /// Retorna a posicao do cursor relativa a area do terminal.
     fn cursor_pos(&self, app: &App, area: Rect) -> Option<(u16, u16)>;
 
-    /// Handle an event after global overlays had a chance to consume it.
+    /// Trata um evento depois que os overlays globais puderam consumi-lo.
     fn handle_key_event(&self, app: &mut App, key: KeyEvent) -> Option<String>;
 
-    /// Handle a terminal paste event. Returns whether the view consumed it.
+    /// Trata um paste do terminal e informa se a view o consumiu.
     fn handle_paste(&self, app: &mut App, text: &str) -> bool;
 
-    /// Handle mouse input routed to the bottom pane and its popups.
+    /// Trata entrada do mouse direcionada ao painel inferior e seus popups.
     fn handle_mouse_event(&self, app: &mut App, mouse: MouseEvent) -> bool;
 
-    /// Return whether this view has completed and should be replaced.
+    /// Informa se esta view terminou e deve ser substituida.
     #[allow(dead_code)]
     fn is_complete(&self, _app: &App) -> bool {
         false
     }
 
-    /// Return the completion reason when this view has finished.
+    /// Retorna o motivo de conclusao quando esta view termina.
     #[allow(dead_code)]
     fn completion(&self, _app: &App) -> Option<ViewCompletion> {
         None
     }
 
-    /// Flush time-based input owned by this view before rendering.
+    /// Descarrega entrada baseada em tempo antes da renderizacao.
     fn pre_draw_tick(&self, _app: &mut App, _now: Instant) -> bool {
         false
     }
 
-    /// Report transient paste state so the event loop can schedule redraws.
+    /// Informa o estado transitorio de paste para agendar redesenhos.
     #[allow(dead_code)]
     fn is_in_paste_burst(&self, _app: &App) -> bool {
         false
     }
 
-    /// Return the next redraw delay requested by this view.
+    /// Retorna o atraso solicitado por esta view para o proximo redesenho.
     #[allow(dead_code)]
     fn next_frame_delay(&self, _app: &App) -> Option<Duration> {
         None
     }
 }
 
-/// The default bottom-pane view for the Atlas chat session.
+/// View padrao do painel inferior da sessao de conversa do Atlas.
 pub(crate) struct ChatComposerView;
 
 impl BottomPaneView for ChatComposerView {
@@ -120,7 +119,7 @@ impl BottomPaneView for ChatComposerView {
     }
 }
 
-/// The view currently occupying the interactive bottom pane.
+/// View que ocupa atualmente o painel inferior interativo.
 pub(crate) enum ActiveBottomPaneView {
     Composer(ChatComposerView),
     Shortcuts(ShortcutsView),
@@ -131,7 +130,7 @@ impl ActiveBottomPaneView {
         Self::Composer(ChatComposerView)
     }
 
-    /// Keep the concrete view aligned with the app-level overlay state.
+    /// Mantem a view concreta alinhada ao estado do overlay em `App`.
     pub(crate) fn sync(&mut self, app: &App) -> Option<ViewCompletion> {
         let completion = self.completion(app);
         if app.bottom_pane().surface() == BottomPaneSurface::Shortcuts
@@ -226,7 +225,7 @@ impl BottomPaneView for ActiveBottomPaneView {
     }
 }
 
-/// Modal view for the shortcuts surface.
+/// View modal da superficie de atalhos.
 pub(crate) struct ShortcutsView;
 
 impl BottomPaneView for ShortcutsView {

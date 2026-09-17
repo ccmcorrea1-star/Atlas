@@ -1,8 +1,7 @@
-//! Footer rendering adapted from the Codex TUI bottom-pane footer.
+//! Renderizacao do footer adaptada do painel inferior da TUI do Codex.
 //!
-//! The footer is deliberately a pure view of composer state. It applies the
-//! same width-based fallback order as Codex instead of letting the context
-//! indicator overwrite the left-side hint on narrow terminals.
+//! O footer e uma view pura do estado do composer. Ele aplica a mesma ordem de
+//! fallback por largura do Codex sem deixar o contexto cobrir a dica em terminais estreitos.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

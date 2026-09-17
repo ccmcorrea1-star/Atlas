@@ -17,6 +17,11 @@ Cada módulo deve ter uma responsabilidade clara.
 
 Clientes não devem conter regras do Runtime.
 
+O gerenciamento local do processo do Runtime é uma fronteira operacional separada
+do cliente de conversa. Ele pode iniciar, acompanhar e encerrar um comando de
+Runtime configurado, mas não deve interpretar eventos, estado de sessão ou regras
+de domínio.
+
 Integrações externas devem ficar isoladas de regras internas.
 
 Código compartilhado entre linguagens deve depender de contratos definidos em [`protocol/`](../protocol/).

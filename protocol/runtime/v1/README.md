@@ -17,6 +17,8 @@ Toda mensagem contém:
 }
 ```
 
+O schema normativo está em [`schema.json`](./schema.json).
+
 ## Requisição
 
 O cliente envia um `turn.request`:

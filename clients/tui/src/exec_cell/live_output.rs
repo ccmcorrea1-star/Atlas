@@ -9,7 +9,7 @@ const LIVE_COMMAND_OUTPUT_LINE_HEAD_BYTES: usize = LIVE_COMMAND_OUTPUT_MAX_LINE_
 const LIVE_COMMAND_OUTPUT_LINE_TAIL_BYTES: usize =
     LIVE_COMMAND_OUTPUT_MAX_LINE_BYTES - LIVE_COMMAND_OUTPUT_LINE_HEAD_BYTES;
 
-/// Bounded command output matching the Codex live preview and transcript rules.
+/// Saida limitada conforme as regras de preview e transcript do Codex.
 #[derive(Debug, Default)]
 pub(crate) struct LiveCommandOutput {
     full_output: String,

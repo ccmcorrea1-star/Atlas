@@ -1,8 +1,7 @@
-//! Editable composer buffer adapted from the Codex TUI `TextArea`.
+//! Buffer editavel do composer adaptado do `TextArea` da TUI do Codex.
 //!
-//! The runtime stays provider-agnostic; this type owns only draft text, cursor
-//! movement, visual wrapping, and the single-entry kill buffer used by the
-//! Codex composer shortcuts.
+//! O Runtime permanece agnostico ao provider; este tipo cuida apenas do texto,
+//! movimento do cursor, quebra visual e buffer de descarte dos atalhos.
 
 use std::ops::Range;
 
@@ -55,7 +54,7 @@ fn split_word_pieces(run: &str) -> Vec<(usize, &str)> {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TextAreaState {
-    /// Index of the first wrapped row visible in the textarea viewport.
+    /// Indice da primeira linha quebrada visivel no viewport do textarea.
     pub(crate) scroll: u16,
 }
 

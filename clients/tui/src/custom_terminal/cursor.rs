@@ -1,9 +1,8 @@
-//! Repair the glyph beneath cursor-style commands on older JediTerm terminals.
+//! Repara o glyph sob comandos de estilo do cursor em terminais JediTerm antigos.
 //!
-//! This helper issues cursor-style commands only at an owned, non-skipped glyph leader
-//! with positive width that fits within its row, then redraws it with the same style and
-//! hyperlink. Unchanged styles do not repaint that anchor. Without a safe anchor, it omits the
-//! command. The caller must restore the requested cursor position afterward.
+//! Este helper emite comandos de estilo apenas em um glyph proprio, nao ignorado,
+//! com largura positiva e dentro da linha. Depois, redesenha o glyph com o mesmo
+//! estilo e hyperlink. Sem uma ancora segura, o comando e omitido.
 
 use std::io;
 use std::io::Write;
@@ -24,7 +23,7 @@ where
 {
     pub(crate) fn invalidate_cursor_state(&mut self) {
         self.last_cursor_style = None;
-        // An external program or screen switch can show a cursor that we believed was hidden.
+        // Um programa externo ou troca de tela pode exibir um cursor que julgavamos oculto.
         self.hidden_cursor = false;
     }
 
@@ -35,8 +34,8 @@ where
         if self.last_cursor_style == Some(cursor_style) {
             return Ok(());
         }
-        // JediTerm before 3.56 prints DECSCUSR's space intermediate at the cursor.
-        // Apply a changed style over an owned glyph, then repair it even on unchanged frames.
+        // O JediTerm anterior a 3.56 imprime o intermediario de espaco do DECSCUSR no cursor.
+        // Aplica um estilo alterado sobre um glyph proprio e o repara mesmo em frames inalterados.
         // https://github.com/JetBrains/jediterm/commit/0c4524f2978bddae65a46c35f264bf89e2ed58fd
         let buffer = &self.buffers[self.current];
         let anchor = (0..buffer.area.height).find_map(|row| {
@@ -54,7 +53,7 @@ where
             }
             None
         });
-        // Empty and externally owned viewports have no cell we can safely repair.
+        // Viewports vazios ou controlados externamente nao possuem cell segura para reparo.
         if let Some((anchor, cell)) = anchor {
             if !self.hidden_cursor {
                 self.hide_cursor()?;

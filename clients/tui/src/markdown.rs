@@ -1,4 +1,4 @@
-//! Markdown source helpers used by the Codex-compatible renderer.
+//! Helpers de Markdown usados pelo renderer compativel com o Codex.
 
 use ratatui::text::Line;
 

@@ -1,7 +1,7 @@
-//! Pager-style transcript overlay adapted from the Codex TUI.
+//! Overlay de transcript no estilo pager, adaptado da TUI do Codex.
 //!
-//! Unlike the main viewport, the transcript is rendered in a full-screen pager
-//! with the same header, separator, scroll percentage, and key hints as Codex.
+//! Diferente do viewport principal, o transcript e renderizado em pager de tela
+//! cheia com cabecalho, separador, percentual e dicas de teclas do Codex.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

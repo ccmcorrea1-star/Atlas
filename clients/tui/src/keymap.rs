@@ -1,9 +1,7 @@
-//! Key action resolution for the Codex-style TUI.
+//! Resolucao de acoes de teclas para a TUI no estilo Codex.
 //!
-//! Input handlers consume actions rather than scattering terminal key details
-//! through view state. The default bindings intentionally mirror the Codex
-//! CLI's primary bindings; a future RuntimeKeymap can replace this resolver
-//! without changing the views.
+//! Os handlers consomem acoes em vez de espalhar detalhes do terminal pelo
+//! estado das views. Os atalhos padrao acompanham os atalhos principais do Codex.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

@@ -6,7 +6,7 @@ use super::plain_lines;
 use crate::wrapping::display_width;
 use crate::wrapping::wrap_text;
 
-/// Generic runtime tool activity rendered with the Codex activity gutter.
+/// Atividade generica de tool do Runtime renderizada com a margem do Codex.
 #[derive(Debug)]
 pub(crate) struct ToolCell {
     tool_id: String,

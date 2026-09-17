@@ -1,4 +1,4 @@
-//! Bounded local file search used by the composer `@` picker.
+//! Busca local limitada usada pelo seletor `@` do composer.
 
 use std::path::{Path, PathBuf};
 

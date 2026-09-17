@@ -56,18 +56,18 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Conversation identifier reused for every turn in this process.
+    /// Identificador da conversa reutilizado em todos os turnos deste processo.
     #[arg(long, default_value = "default")]
     conversation_id: String,
 
-    /// Override the Atlas Runtime Unix socket path.
+    /// Substitui o caminho do Unix Socket do Atlas Runtime.
     #[arg(long, env = "ATLAS_RUNTIME_SOCKET")]
     socket: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Manage the Atlas Runtime server.
+    /// Gerencia o servidor do Atlas Runtime.
     Server {
         #[command(subcommand)]
         command: server::ServerCommand,
@@ -130,7 +130,7 @@ impl Drop for TerminalGuard {
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     if let Some(Command::Server { command }) = cli.command {
-        return server::execute(command);
+        return server::execute(command, cli.socket.as_deref());
     }
 
     let (runtime, runtime_events) = match cli.socket {

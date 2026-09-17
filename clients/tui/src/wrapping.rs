@@ -1,7 +1,7 @@
-//! Width-aware wrapping adapted from the Codex TUI.
+//! Quebra sensivel a largura adaptada da TUI do Codex.
 //!
-//! URL tokens are deliberately not split at punctuation. This keeps terminal
-//! links readable while ordinary prose still uses word boundaries.
+//! Tokens de URL nao sao divididos em pontuacoes para manter links legiveis;
+//! prosa comum continua usando limites de palavras.
 
 use std::borrow::Cow;
 use std::ops::Range;

@@ -46,6 +46,11 @@ público em [`protocol/runtime/v1`](../protocol/runtime/v1/) sobre um Unix Socke
 no diretório `XDG_RUNTIME_DIR` do usuário; sem essa variável, usa
 `/tmp/atlas-runtime.sock`. O caminho pode ser alterado com `ATLAS_RUNTIME_SOCKET`.
 
+Os subcomandos `atlas server` são apenas uma fronteira operacional para o processo
+local. Por padrão, executam `npm run runtime`; um launcher externo pode ser usado
+com `ATLAS_RUNTIME_PROGRAM` e `ATLAS_RUNTIME_ARGS`. `ATLAS_RUNTIME_CWD` define o
+diretório de trabalho quando o comando é executado fora da raiz do projeto.
+
 ## Verificação
 
 ```bash

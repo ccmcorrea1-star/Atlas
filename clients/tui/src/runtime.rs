@@ -1,7 +1,7 @@
-//! Thin Atlas Runtime Protocol v1 client.
+//! Cliente enxuto do Atlas Runtime Protocol v1.
 //!
-//! This module is the only place where the TUI knows about IPC or JSON. The
-//! cells receive already validated public events and never see provider data.
+//! Este modulo e o unico ponto da TUI que conhece IPC ou JSON. As cells recebem
+//! eventos publicos ja validados e nunca veem dados do provider.
 
 use std::fmt;
 use std::future::Future;
@@ -571,11 +571,11 @@ fn required_context(data: &serde_json::Map<String, Value>) -> Result<ContextUsag
 }
 
 #[derive(Clone)]
-/// Backend boundary for the Codex TUI presentation model.
+/// Fronteira de backend do modelo de apresentacao da TUI.
 ///
-/// The UI never consumes JSON or provider-specific state. This adapter turns
-/// Runtime Protocol v1 frames into the event vocabulary consumed by
-/// `ChatWidget`, history cells, and execution cells.
+/// A UI nunca consome JSON ou estado especifico de provider. Este adaptador
+/// transforma frames do Runtime Protocol v1 no vocabulario usado por
+/// `ChatWidget`, history cells e execution cells.
 pub struct AtlasRuntimeClient {
     conversation_id: Arc<str>,
     transport: Arc<dyn RuntimeTransport>,
@@ -749,6 +749,22 @@ mod tests {
                 model: "gpt-5.6-luna".to_owned(),
                 provider: "opencode-go".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn keeps_the_public_protocol_schema_versioned() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../protocol/runtime/v1/schema.json"))
+                .expect("public Runtime Protocol schema should be valid JSON");
+
+        assert_eq!(
+            schema["$defs"]["protocolHeader"]["properties"]["protocol"]["const"],
+            PROTOCOL
+        );
+        assert_eq!(
+            schema["$defs"]["protocolHeader"]["properties"]["version"]["const"],
+            VERSION
         );
     }
 }

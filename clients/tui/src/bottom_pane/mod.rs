@@ -11,10 +11,10 @@ pub(crate) use bottom_pane_view::ActiveBottomPaneView;
 pub(crate) use bottom_pane_view::BottomPaneView;
 pub(crate) use chat_composer::ChatComposer;
 
-/// Owns the composer state for the lower interactive pane.
+/// Mantem o estado do composer no painel interativo inferior.
 ///
-/// Runtime/transcript coordination remains in `App`; this container is the
-/// structural owner of draft editing and its local interaction state.
+/// A coordenacao do Runtime e do transcript permanece em `App`; este container
+/// e o dono estrutural da edicao do rascunho e da interacao local.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BottomPaneSurface {
     Composer,

@@ -1,7 +1,7 @@
-//! Small command registry used by the composer popup.
+//! Registro pequeno de comandos usado pelo popup do composer.
 //!
-//! Only commands implemented by the Atlas TUI belong here. Provider/session
-//! commands stay in the runtime boundary instead of appearing as dead UI.
+//! Apenas comandos implementados pela TUI do Atlas ficam aqui. Comandos do
+//! provider e da sessao permanecem na fronteira do Runtime.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SlashCommand {

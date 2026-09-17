@@ -16,10 +16,10 @@ use crate::render::RectExt as _;
 pub trait Renderable {
     fn render(&self, area: Rect, buf: &mut Buffer);
     fn desired_height(&self, width: u16) -> u16;
-    /// Renders visible rows after `scroll_offset` when direct scrolling is supported.
+    /// Renderiza linhas visiveis apos `scroll_offset` quando ha suporte a scroll direto.
     ///
-    /// Implementations returning `false` must leave `buf` unchanged so callers can use their
-    /// existing full-height rendering fallback. Supporting wrappers must forward this method.
+    /// Implementacoes que retornam `false` devem manter `buf` inalterado para que os chamadores
+    /// usem o fallback existente de altura completa. Wrappers devem encaminhar este metodo.
     fn render_scrolled(&self, _area: Rect, _buf: &mut Buffer, _scroll_offset: u16) -> bool {
         false
     }
@@ -210,10 +210,10 @@ impl Renderable for ColumnRenderable<'_> {
             .sum()
     }
 
-    /// Returns the cursor position of the first child that has a cursor position, offset by the
-    /// child's position in the column.
+    /// Retorna a posicao do cursor do primeiro filho que possui cursor, deslocada pela posicao
+    /// do filho na coluna.
     ///
-    /// It is generally assumed that either zero or one child will have a cursor position.
+    /// Em geral, assume-se que zero ou um filho tera uma posicao de cursor.
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         let mut y = area.y;
         for child in &self.children {
@@ -273,10 +273,10 @@ pub struct FlexRenderable<'a> {
     children: Vec<FlexChild<'a>>,
 }
 
-/// Lays out children in a column, with the ability to specify a flex factor for each child.
+/// Organiza filhos em uma coluna com um fator flexivel opcional para cada filho.
 ///
-/// Children with flex factor > 0 will be allocated the remaining space after the non-flex children,
-/// proportional to the flex factor.
+/// Filhos com fator flexivel maior que zero recebem o espaco restante apos os filhos fixos,
+/// proporcionalmente ao fator flexivel.
 impl<'a> FlexRenderable<'a> {
     pub fn new() -> Self {
         Self { children: vec![] }
@@ -290,16 +290,16 @@ impl<'a> FlexRenderable<'a> {
         });
     }
 
-    /// Loosely inspired by Flutter's Flex widget.
+    /// Inspirado livremente no widget Flex do Flutter.
     ///
-    /// Ref https://github.com/flutter/flutter/blob/3fd81edbf1e015221e143c92b2664f4371bdc04a/packages/flutter/lib/src/rendering/flex.dart#L1205-L1209
+    /// Referencia: https://github.com/flutter/flutter/blob/3fd81edbf1e015221e143c92b2664f4371bdc04a/packages/flutter/lib/src/rendering/flex.dart#L1205-L1209
     fn allocate(&self, area: Rect) -> Vec<Rect> {
         let mut allocated_rects = Vec::with_capacity(self.children.len());
         let mut child_sizes = vec![0; self.children.len()];
         let mut allocated_size = 0;
         let mut flex_children = Vec::new();
 
-        // 1. Allocate space to non-flex children.
+        // 1. Aloca espaco para os filhos fixos.
         let max_size = area.height;
         for (i, child) in self.children.iter().enumerate() {
             let desired_height = if let Some((width, height)) = child.cached_height.get()
@@ -319,8 +319,8 @@ impl<'a> FlexRenderable<'a> {
             }
         }
         let free_space = max_size.saturating_sub(allocated_size);
-        // 2. Satisfy flex children that need less than their proportional share so their unused
-        // space can be redistributed instead of leaving blank rows.
+        // 2. Atende filhos flexiveis que precisam de menos que sua parte proporcional para
+        // redistribuir o espaco restante em vez de deixar linhas vazias.
         let mut remaining_space = free_space;
         while !flex_children.is_empty() {
             let total_flex = flex_children.iter().map(|(_, flex, _)| *flex).sum::<u16>();
@@ -341,7 +341,7 @@ impl<'a> FlexRenderable<'a> {
                 break;
             }
         }
-        // 3. Divide the remaining space proportionally. The final child absorbs rounding slack.
+        // 3. Divide o espaco restante proporcionalmente. O ultimo filho absorve o arredondamento.
         let total_flex = flex_children.iter().map(|(_, flex, _)| *flex).sum::<u16>();
         let mut allocated_flex_space = 0;
         let last_flex_child_idx = flex_children.last().map(|(i, _, _)| *i);
@@ -494,7 +494,7 @@ impl<'a> Renderable for InsetRenderable<'a> {
             + self.insets.bottom
     }
 
-    /// Preserve clipped inset padding while forwarding only visible child rows.
+    /// Preserva o padding recortado do inset e encaminha apenas as linhas visiveis do filho.
     fn render_scrolled(&self, area: Rect, buf: &mut Buffer, scroll_offset: u16) -> bool {
         let top_padding = self.insets.top.saturating_sub(scroll_offset);
         let child_width = area
@@ -505,7 +505,7 @@ impl<'a> Renderable for InsetRenderable<'a> {
         }
 
         let child_offset = scroll_offset.saturating_sub(self.insets.top);
-        // The fallback applies bottom padding to its clipped scratch buffer, even mid-scroll.
+        // O fallback aplica padding inferior ao buffer temporario recortado, mesmo durante o scroll.
         let child_height = self
             .child
             .desired_height(child_width)
