@@ -1,0 +1,18 @@
+---
+source: src/bottom_pane/chat_composer.rs
+expression: "rows(&app, 100, 14)"
+---
+                                                                                                    
+› git status                                                                                        
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  reverse-i-search: git

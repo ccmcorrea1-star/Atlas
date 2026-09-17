@@ -356,6 +356,20 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_reverse_history_search_after_paste() {
+        let mut app = App::new("history-search-snapshot".to_owned());
+        app.insert_text("git status");
+        assert_eq!(app.submit_input().as_deref(), Some("git status"));
+        app.insert_text("draft");
+        assert!(app.handle_global_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        app.handle_paste("git");
+        insta::assert_snapshot!("composer_history_search_pasted_query", rows(&app, 100, 14));
+    }
+
+    #[test]
     fn keeps_prompt_inside_the_composer_area() {
         let app = App::new("snapshot".to_owned());
         let mut terminal = Terminal::new(TestBackend::new(10, 4)).unwrap();
