@@ -711,6 +711,10 @@ impl App {
             }
             return true;
         }
+        if self.transcript_overlay.is_open() {
+            let _ = self.transcript_overlay.handle_action(action);
+            return true;
+        }
         if self.bottom_pane.composer.esc_backtrack_hint {
             if action == Some(Action::Cancel) {
                 self.edit_previous_message();
@@ -787,11 +791,6 @@ impl App {
             }
             return true;
         }
-        if self.transcript_overlay.is_open() {
-            let _ = self.transcript_overlay.handle_action(action);
-            return true;
-        }
-
         if action == Some(Action::OpenHistorySearch)
             && !self.bottom_pane.composer.history_entries.is_empty()
         {
@@ -838,6 +837,20 @@ impl App {
     }
 
     pub fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if self.transcript_overlay.is_open() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.transcript_overlay
+                        .handle_action(Some(Action::ScrollUp));
+                }
+                MouseEventKind::ScrollDown => {
+                    self.transcript_overlay
+                        .handle_action(Some(Action::ScrollDown));
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.file_popup_active() || self.slash_popup_active() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => self.move_completion_selection(false),

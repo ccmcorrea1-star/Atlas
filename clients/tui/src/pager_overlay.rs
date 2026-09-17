@@ -131,6 +131,14 @@ impl TranscriptOverlay {
                 self.scroll_down(self.page_height());
                 None
             }
+            Some(Action::HalfPageUp) => {
+                self.scroll_up((self.page_height() / 2).max(1));
+                None
+            }
+            Some(Action::HalfPageDown) => {
+                self.scroll_down((self.page_height() / 2).max(1));
+                None
+            }
             Some(Action::JumpTop) => {
                 self.scroll_to_top();
                 None
@@ -492,6 +500,19 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(rows.iter().any(|row| row.contains("line-0")));
         assert!(!rows.iter().any(|row| row.contains("new tail")));
+    }
+
+    #[test]
+    fn half_page_actions_use_the_rendered_viewport_height() {
+        let overlay = TranscriptOverlay::default();
+        overlay.last_content_height.set(10);
+        overlay.last_max_scroll.set(100);
+        overlay.scroll_offset.set(50);
+
+        overlay.handle_action(Some(Action::HalfPageUp));
+        assert_eq!(overlay.scroll_offset.get(), 45);
+        overlay.handle_action(Some(Action::HalfPageDown));
+        assert_eq!(overlay.scroll_offset.get(), 50);
     }
 
     #[test]
