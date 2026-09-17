@@ -23,7 +23,6 @@ use crate::wrapping::display_width;
 use crate::wrapping::position_at_display_column;
 use crate::wrapping::wrap_text;
 
-const MAX_INPUT_BYTES: usize = 64 * 1024;
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 fn is_word_separator(ch: char) -> bool {
@@ -97,15 +96,10 @@ impl TextArea {
 
     pub(crate) fn insert_str(&mut self, text: &str) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        let available = MAX_INPUT_BYTES.saturating_sub(self.text.len());
-        let mut end = normalized.len().min(available);
-        while end > 0 && !normalized.is_char_boundary(end) {
-            end -= 1;
-        }
-        if end == 0 {
+        if normalized.is_empty() {
             return;
         }
-        self.replace_range(self.cursor_pos..self.cursor_pos, &normalized[..end]);
+        self.replace_range(self.cursor_pos..self.cursor_pos, &normalized);
     }
 
     pub(crate) fn replace_range(&mut self, range: Range<usize>, replacement: &str) {
@@ -114,14 +108,8 @@ impl TextArea {
         if start > end {
             return;
         }
-        let available = MAX_INPUT_BYTES.saturating_sub(self.text.len().saturating_sub(end - start));
-        let mut replacement_end = replacement.len().min(available);
-        while replacement_end > 0 && !replacement.is_char_boundary(replacement_end) {
-            replacement_end -= 1;
-        }
-        self.text
-            .replace_range(start..end, &replacement[..replacement_end]);
-        self.cursor_pos = start + replacement_end;
+        self.text.replace_range(start..end, replacement);
+        self.cursor_pos = start + replacement.len();
         self.preferred_col = None;
     }
 

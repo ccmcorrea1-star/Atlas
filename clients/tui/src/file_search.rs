@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 const MAX_RESULTS: usize = 24;
 const MAX_DEPTH: usize = 3;
 const MAX_VISITED: usize = 2_000;
+const IGNORED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules", "dist", ".native-cmake"];
 
 pub(crate) fn search(root: &Path, query: &str) -> Vec<PathBuf> {
     let normalized = query.to_lowercase();
@@ -46,6 +47,9 @@ fn visit(
             continue;
         };
         if file_type.is_dir() {
+            if IGNORED_DIRECTORIES.contains(&name) {
+                continue;
+            }
             visit(root, &path, query, depth + 1, visited, results);
         } else if file_type.is_file() {
             let relative = path.strip_prefix(root).unwrap_or(&path);

@@ -1608,7 +1608,7 @@ mod tests {
         let mut app = App::new("input-limit".to_owned());
         app.handle_paste(&"x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1));
         assert!(app.submit_input().is_none());
-        assert_eq!(app.input().chars().count(), 65_536);
+        assert_eq!(app.input().chars().count(), MAX_USER_INPUT_TEXT_CHARS + 1);
     }
 
     #[test]

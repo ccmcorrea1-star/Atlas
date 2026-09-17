@@ -188,6 +188,7 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     return new Promise((resolveRequest, rejectRequest) => {
       const child = spawn(this.executablePath, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
       });
       let output = '';
       let errorOutput = '';
@@ -283,7 +284,15 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       });
 
       const abort = () => {
-        child.kill('SIGTERM');
+        if (process.platform !== 'win32' && child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGTERM');
+          } catch {
+            child.kill('SIGTERM');
+          }
+        } else {
+          child.kill('SIGTERM');
+        }
         rejectOnce(new Error('Capability execution aborted.'));
       };
       if (options.signal !== undefined) {

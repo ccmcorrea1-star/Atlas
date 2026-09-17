@@ -255,6 +255,9 @@ async fn run(
         }
     }
 
+    if active_send.is_some() || app.turn_active() {
+        let _ = runtime.cancel_turn().await;
+    }
     if let Some(handle) = active_send {
         handle.abort();
     }
