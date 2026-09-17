@@ -18,7 +18,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
-#[path = "markdown_render/math/render.rs"]
+#[path = "markdown_render/math.rs"]
 mod math;
 
 const ESC: char = '\x1b';
@@ -91,22 +91,23 @@ pub(crate) fn unwrap_markdown_fences<'a>(input: &'a str) -> Cow<'a, str> {
     let mut output = String::with_capacity(input.len());
     let mut lines = input.split_inclusive('\n').peekable();
     while let Some(line) = lines.next() {
-        let trimmed = line.trim_end_matches(['\r', '\n']).trim();
-        let Some((marker, info)) = fence_start(trimmed) else {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let Some((marker, marker_len, info)) = fence_start(trimmed) else {
             output.push_str(line);
             continue;
         };
         let mut body = String::new();
         let mut closing = None;
         for candidate in lines.by_ref() {
-            let candidate_trimmed = candidate.trim_end_matches(['\r', '\n']).trim();
-            if fence_end(candidate_trimmed, marker) {
+            let candidate_trimmed = candidate.trim_end_matches(['\r', '\n']);
+            if fence_end(candidate_trimmed, marker, marker_len) {
                 closing = Some(candidate);
                 break;
             }
             body.push_str(candidate);
         }
-        let is_table = matches!(info, "md" | "markdown") && contains_table(&body);
+        let is_table = (info.eq_ignore_ascii_case("md") || info.eq_ignore_ascii_case("markdown"))
+            && contains_table(&body);
         if is_table {
             output.push_str(&body);
         } else {
@@ -123,7 +124,12 @@ pub(crate) fn unwrap_markdown_fences<'a>(input: &'a str) -> Cow<'a, str> {
     Cow::Owned(output)
 }
 
-fn fence_start(line: &str) -> Option<(char, &str)> {
+fn fence_start(line: &str) -> Option<(char, usize, &str)> {
+    let leading = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading > 3 {
+        return None;
+    }
+    let line = &line[leading..];
     let marker = if line.starts_with("```") {
         '`'
     } else if line.starts_with("~~~") {
@@ -131,32 +137,27 @@ fn fence_start(line: &str) -> Option<(char, &str)> {
     } else {
         return None;
     };
-    let info = line[3..].trim();
-    Some((marker, info))
+    let marker_len = line
+        .bytes()
+        .take_while(|byte| *byte == marker as u8)
+        .count();
+    Some((marker, marker_len, line[marker_len..].trim()))
 }
 
-fn fence_end(line: &str, marker: char) -> bool {
-    line.chars().all(|character| character == marker) && line.chars().count() >= 3
+fn fence_end(line: &str, marker: char, marker_len: usize) -> bool {
+    let line = line.trim();
+    line.chars().all(|character| character == marker) && line.chars().count() >= marker_len
 }
 
 fn contains_table(body: &str) -> bool {
-    let mut previous = None;
-    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if previous.is_some_and(|header: &str| {
-            header.contains('|')
-                && line.contains('|')
-                && line
-                    .split('|')
-                    .filter(|cell| !cell.trim().is_empty())
-                    .all(|cell| {
-                        cell.trim().chars().all(|character| {
-                            character == '-' || character == ':' || character == ' '
-                        })
-                    })
-        }) {
+    let mut previous_header = false;
+    for line in body.lines() {
+        let line = crate::table_detect::strip_blockquote_prefix(line.trim());
+        let is_header = crate::table_detect::is_table_header_line(line);
+        if previous_header && crate::table_detect::is_table_delimiter_line(line) {
             return true;
         }
-        previous = Some(line);
+        previous_header = !line.is_empty() && is_header;
     }
     false
 }
@@ -319,9 +320,9 @@ mod writer {
         let mut options = Options::empty();
         options.insert(Options::ENABLE_STRIKETHROUGH);
         options.insert(Options::ENABLE_TABLES);
-        options.insert(Options::ENABLE_MATH);
-        let protected = input.replace(ESC, ANSI_MARKER);
-        let mut writer = Writer::new(Parser::new_ext(&protected, options), width);
+        let math = math::MathMarkdown::new(input, options, width);
+        let events = math.events(Parser::new_ext(&math.markdown, options).into_offset_iter());
+        let mut writer = Writer::new(events, width);
         writer.run();
         Text::from(writer.lines)
     }
@@ -334,8 +335,11 @@ mod writer {
         in_header: bool,
     }
 
-    struct Writer<'a> {
-        events: pulldown_cmark::Parser<'a>,
+    struct Writer<'a, I>
+    where
+        I: Iterator<Item = Event<'a>>,
+    {
+        events: I,
         lines: Vec<Line<'static>>,
         current: Vec<Span<'static>>,
         styles: Vec<Style>,
@@ -351,8 +355,11 @@ mod writer {
         table: Option<TableState>,
     }
 
-    impl<'a> Writer<'a> {
-        fn new(events: pulldown_cmark::Parser<'a>, width: Option<usize>) -> Self {
+    impl<'a, I> Writer<'a, I>
+    where
+        I: Iterator<Item = Event<'a>>,
+    {
+        fn new(events: I, width: Option<usize>) -> Self {
             Self {
                 events,
                 lines: Vec::new(),
@@ -390,7 +397,22 @@ mod writer {
                 .code_buffer
                 .strip_suffix('\n')
                 .unwrap_or(&self.code_buffer);
-            let highlighted = self.code_lang.as_deref().map_or_else(
+            let highlighted = self.render_code_block(code, self.code_lang.as_deref());
+            let prefix = format!(
+                "{}{}",
+                "> ".repeat(self.quote_depth),
+                "  ".repeat(self.list_stack.len())
+            );
+            for mut line in highlighted {
+                let mut spans = vec![Span::styled(prefix.clone(), Style::default())];
+                spans.append(&mut line.spans);
+                self.lines.push(Line::from(spans).style(line.style));
+            }
+            self.in_code_block = false;
+        }
+
+        fn render_code_block(&self, code: &str, language: Option<&str>) -> Vec<Line<'static>> {
+            language.map_or_else(
                 || crate::render::highlight::highlight_code_to_lines(code, "text"),
                 |language| {
                     if language.eq_ignore_ascii_case("mermaid")
@@ -403,18 +425,7 @@ mod writer {
                     }
                     crate::render::highlight::highlight_code_to_lines(code, language)
                 },
-            );
-            let prefix = format!(
-                "{}{}",
-                "> ".repeat(self.quote_depth),
-                "  ".repeat(self.list_stack.len())
-            );
-            for mut line in highlighted {
-                let mut spans = vec![Span::styled(prefix.clone(), Style::default())];
-                spans.append(&mut line.spans);
-                self.lines.push(Line::from(spans).style(line.style));
-            }
-            self.in_code_block = false;
+            )
         }
 
         fn handle(&mut self, event: Event<'a>) {
@@ -431,14 +442,14 @@ mod writer {
                 }
                 Event::Html(html) | Event::InlineHtml(html) => self.push_text(&html),
                 Event::InlineMath(math) => {
-                    let rendered =
-                        super::math::render(&math, false).unwrap_or_else(|| math.to_string());
+                    let rendered = super::math::render_formula(&math, false)
+                        .unwrap_or_else(|| math.to_string());
                     self.push_styled_text(&rendered, Style::default().cyan());
                 }
                 Event::DisplayMath(math) => {
                     self.flush_line();
-                    let rendered =
-                        super::math::render(&math, true).unwrap_or_else(|| math.to_string());
+                    let rendered = super::math::render_formula(&math, true)
+                        .unwrap_or_else(|| math.to_string());
                     for line in rendered.lines() {
                         self.push_line(Line::from(line.to_owned()));
                     }
@@ -510,7 +521,8 @@ mod writer {
                 Tag::Strong => self.styles.push(self.current_style().bold()),
                 Tag::Strikethrough => self.styles.push(self.current_style().crossed_out()),
                 Tag::Link { dest_url, .. } => {
-                    self.link_destinations.push(Some(dest_url.to_string()));
+                    self.link_destinations
+                        .push(safe_link_destination(&dest_url));
                     self.styles.push(
                         self.current_style()
                             .fg(Color::Cyan)
@@ -571,12 +583,7 @@ mod writer {
                 TagEnd::CodeBlock => {
                     let code = std::mem::take(&mut self.code_buffer);
                     let code = code.strip_suffix('\n').unwrap_or(&code);
-                    let highlighted = self.code_lang.as_deref().map_or_else(
-                        || crate::render::highlight::highlight_code_to_lines(code, "text"),
-                        |language| {
-                            crate::render::highlight::highlight_code_to_lines(code, language)
-                        },
-                    );
+                    let highlighted = self.render_code_block(code, self.code_lang.as_deref());
                     let prefix = format!(
                         "{}{}",
                         "> ".repeat(self.quote_depth),
@@ -660,6 +667,10 @@ mod writer {
         }
 
         fn push_styled_text(&mut self, text: &str, style: Style) {
+            if let Some(table) = &mut self.table {
+                table.current_cell.push_str(text);
+                return;
+            }
             for (index, part) in text.split('\n').enumerate() {
                 if index > 0 {
                     self.flush_line();
@@ -718,6 +729,15 @@ mod writer {
         }
 
         fn push_wrapped(&mut self, line: Line<'static>) {
+            if line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("\x1b]8;;"))
+            {
+                // Os marcadores OSC-8 devem permanecer pareados entre as linhas.
+                self.lines.push(line);
+                return;
+            }
             let Some(width) = self.width.filter(|width| *width > 0) else {
                 self.lines.push(line);
                 return;
@@ -901,6 +921,12 @@ mod writer {
             _ => Style::default().italic(),
         }
     }
+
+    fn safe_link_destination(destination: &str) -> Option<String> {
+        let destination = sanitize_terminal_text(destination);
+        (!destination.is_empty() && !destination.chars().any(char::is_control))
+            .then_some(destination)
+    }
 }
 
 pub(crate) fn render_markdown_text(input: &str) -> Text<'static> {
@@ -1046,6 +1072,23 @@ mod tests {
     }
 
     #[test]
+    fn rich_inline_content_stays_inside_table_cells() {
+        let rendered = super::render_markdown_text(
+            "| Name | Value |\n| --- | --- |\n| **Atlas** | `x^2` and $x^2$ |",
+        );
+        let text = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("Atlas"));
+        assert!(text.contains("x^2"));
+        assert!(text.contains("x²"));
+    }
+
+    #[test]
     fn narrow_tables_wrap_cells_within_the_requested_width() {
         let rendered = super::render_markdown_text_with_width(
             "| Name | Value |\n| --- | --- |\n| A very long cell | Another very long cell |",
@@ -1119,6 +1162,58 @@ mod tests {
     }
 
     #[test]
+    fn math_scanner_supports_tex_delimiters_accents_and_named_delimiters() {
+        let rendered = super::render_markdown_text(
+            r"Inline \(\hat{x} + \varrho\) and display:
+
+\[
+\left\langle x \right\rangle
+\]",
+        );
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(text.iter().any(|line| line.contains("x\u{0302} + ϱ")));
+        assert!(text.iter().any(|line| line.contains("⟨ x ⟩")));
+    }
+
+    #[test]
+    fn code_and_link_contexts_keep_math_literal() {
+        let rendered = super::render_markdown_text(r"`\(x^2\)` [\(x^2\)](https://example.test)");
+        let text = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains(r"\(x^2\)"));
+    }
+
+    #[test]
+    fn markdown_table_fence_unwrap_uses_canonical_table_rules() {
+        assert_eq!(
+            super::unwrap_markdown_fences(
+                "```MD\n| Name | Value |\n| --- | --- |\n| Atlas | 42 |\n```"
+            )
+            .as_ref(),
+            "| Name | Value |\n| --- | --- |\n| Atlas | 42 |\n"
+        );
+        assert_eq!(
+            super::unwrap_markdown_fences("```md\n| Name | Value |\n| -- | -- |\n```").as_ref(),
+            "```md\n| Name | Value |\n| -- | -- |\n```"
+        );
+    }
+
+    #[test]
     fn mermaid_fences_use_the_codex_terminal_renderer_and_fallback_on_error() {
         let rendered =
             super::render_markdown_text("```mermaid\nflowchart LR; A[Start] --> B[Done]\n```");
@@ -1127,6 +1222,12 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| { line.spans.iter().any(|span| span.content.contains("Start")) })
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| { line.spans.iter().any(|span| span.content.contains('┌')) })
         );
 
         let fallback = super::render_markdown_text("```mermaid\nnot-supported syntax\n```");

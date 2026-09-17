@@ -17,11 +17,56 @@ use unicode_width::UnicodeWidthStr;
 
 /// Returns the display width Ratatui uses for terminal text without its `u16` limit.
 pub(crate) fn display_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let end = if bytes[index] == b'\x1b' {
+            ansi_sequence_end(text, index)
+        } else {
+            index + text[index..].chars().next().map_or(1, char::len_utf8)
+        };
+        if bytes[index] == b'\x1b' {
+            width += visible_segment_width(&text[start..index]);
+            index = end;
+            start = end;
+        } else {
+            index = end;
+        }
+    }
+    width + visible_segment_width(&text[start..])
+}
+
+fn visible_segment_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
         + text
             .chars()
             .filter(|ch| matches!(ch, '\u{FF9E}' | '\u{FF9F}'))
             .count()
+}
+
+fn ansi_sequence_end(text: &str, start: usize) -> usize {
+    let bytes = text.as_bytes();
+    let Some(&control) = bytes.get(start + 1) else {
+        return bytes.len();
+    };
+    if control == b'[' {
+        return (start + 2..bytes.len())
+            .find(|index| (b'@'..=b'~').contains(&bytes[*index]))
+            .map_or(bytes.len(), |index| index + 1);
+    }
+    if control == b']' {
+        for index in start + 2..bytes.len() {
+            if bytes[index] == 0x07 {
+                return index + 1;
+            }
+            if bytes[index] == b'\x1b' && bytes.get(index + 1) == Some(&b'\\') {
+                return index + 2;
+            }
+        }
+    }
+    (start + 2).min(bytes.len())
 }
 
 /// Returns a scalar's terminal width, treating halfwidth sound marks as visible cells.
@@ -108,5 +153,14 @@ mod tests {
             usable_content_width_u16(/*total_width*/ 5, /*reserved_cols*/ 4),
             Some(1)
         );
+    }
+
+    #[test]
+    fn display_width_ignores_terminal_control_sequences() {
+        assert_eq!(
+            display_width("\x1b]8;;https://example.test\x07Atlas\x1b]8;;\x07"),
+            5
+        );
+        assert_eq!(display_width("\x1b[31mred\x1b[0m"), 3);
     }
 }

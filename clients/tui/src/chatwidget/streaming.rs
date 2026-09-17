@@ -64,7 +64,10 @@ fn stable_prefix_len(source: &str) -> usize {
     if metadata.has_reference_link_definition {
         return 0;
     }
-    let stable_len = metadata.last_top_level_block_start.unwrap_or(0);
+    let stable_len = metadata
+        .last_top_level_block_start
+        .unwrap_or(0)
+        .min(metadata.pending_math_start.unwrap_or(usize::MAX));
     table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
 }
 
@@ -73,11 +76,14 @@ fn table_holdback_start(source: &str) -> Option<usize> {
     let mut previous: Option<(usize, crate::table_detect::FenceKind, bool)> = None;
     let mut pending_header = None;
     let mut confirmed_table = None;
+    let mut markdown_fence_start = None;
     let mut offset = 0;
 
     for segment in source.split_inclusive('\n') {
         let line = segment.trim_end_matches(['\n', '\r']);
         let fence_kind = fences.kind();
+        let opens_markdown_fence =
+            fence_kind == crate::table_detect::FenceKind::Outside && is_markdown_fence_start(line);
         let candidate = (fence_kind != crate::table_detect::FenceKind::Other)
             .then(|| crate::table_detect::strip_blockquote_prefix(line).trim())
             .filter(|line| crate::table_detect::parse_table_segments(line).is_some());
@@ -93,7 +99,12 @@ fn table_holdback_start(source: &str) -> Option<usize> {
             && previous_header
             && is_delimiter
         {
-            confirmed_table.get_or_insert(start);
+            let table_start = if previous_kind == crate::table_detect::FenceKind::Markdown {
+                markdown_fence_start.unwrap_or(start)
+            } else {
+                start
+            };
+            confirmed_table.get_or_insert(table_start);
             pending_header = None;
         }
         if confirmed_table.is_none() && !line.trim().is_empty() {
@@ -102,10 +113,29 @@ fn table_holdback_start(source: &str) -> Option<usize> {
 
         previous = Some((offset, fence_kind, is_header));
         fences.advance(line);
+        if opens_markdown_fence {
+            markdown_fence_start = Some(offset);
+        } else if fence_kind == crate::table_detect::FenceKind::Markdown
+            && fences.kind() == crate::table_detect::FenceKind::Outside
+        {
+            markdown_fence_start = None;
+        }
         offset += segment.len();
     }
 
     confirmed_table.or(pending_header)
+}
+
+fn is_markdown_fence_start(line: &str) -> bool {
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 {
+        return false;
+    }
+    let line = crate::table_detect::strip_blockquote_prefix(&line[leading_spaces..]);
+    let Some((_, marker_len)) = crate::table_detect::parse_fence_marker(line) else {
+        return false;
+    };
+    crate::table_detect::is_markdown_fence_info(line, marker_len)
 }
 
 impl ChatWidget {
@@ -346,11 +376,29 @@ mod tests {
     }
 
     #[test]
+    fn markdown_fence_tables_keep_the_whole_fence_in_the_mutable_tail() {
+        let mut state = MarkdownStreamState::default();
+        state.push("before\n```md\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\nafter\n");
+
+        assert_eq!(state.stable_source(), "before\n");
+        assert!(state.tail_source().starts_with("```md\n| a | b |"));
+    }
+
+    #[test]
     fn pipe_text_without_separator_does_not_hold_back_the_tail() {
         let mut state = MarkdownStreamState::default();
         state.push("before\nUse `a | b` when needed.\n");
 
         assert_eq!(state.stable_source(), "");
         assert_eq!(state.tail_source(), state.source());
+    }
+
+    #[test]
+    fn incomplete_display_math_stays_in_the_mutable_tail() {
+        let mut state = MarkdownStreamState::default();
+        state.push("intro\n\n$$\nx^2\n");
+
+        assert_eq!(state.stable_source(), "intro\n\n");
+        assert_eq!(state.tail_source(), "$$\nx^2\n");
     }
 }

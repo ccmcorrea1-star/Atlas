@@ -22,6 +22,8 @@ pub(crate) struct StreamingMarkdownMetadata {
     pub(crate) first_top_level_block_is_html: bool,
     /// Início do último bloco Mermaid, mantido mutável até o fechamento.
     pub(crate) mermaid_start: Option<usize>,
+    /// Início de uma equação display ainda sem delimitador de fechamento.
+    pub(crate) pending_math_start: Option<usize>,
 }
 
 pub(crate) fn scan(input: &str) -> StreamingMarkdownMetadata {
@@ -46,7 +48,35 @@ pub(crate) fn scan(input: &str) -> StreamingMarkdownMetadata {
         has_reference_link_definition,
         first_top_level_block_is_html: tracker.first_is_html,
         mermaid_start: tracker.mermaid_start,
+        pending_math_start: pending_display_math_start(input),
     }
+}
+
+fn pending_display_math_start(input: &str) -> Option<usize> {
+    let mut fences = crate::table_detect::FenceTracker::new();
+    let mut offset = 0;
+    let mut display_open: Option<(&str, usize)> = None;
+
+    for segment in input.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\n', '\r']);
+        if fences.kind() == crate::table_detect::FenceKind::Outside {
+            let trimmed = line.trim();
+            if let Some((open, _start)) = display_open {
+                let close = if open == "$$" { "$$" } else { r"\]" };
+                if trimmed == close {
+                    display_open = None;
+                }
+            } else if trimmed == "$$" {
+                display_open = Some(("$$", offset));
+            } else if trimmed == r"\[" {
+                display_open = Some((r"\[", offset));
+            }
+        }
+        fences.advance(line);
+        offset += segment.len();
+    }
+
+    display_open.map(|(_, start)| start)
 }
 
 #[derive(Debug, Default)]
@@ -99,11 +129,20 @@ mod tests {
         let metadata = scan("[ref]: https://example.test\n\n```mermaid\ngraph TD\n```\n");
         assert!(metadata.has_reference_link_definition);
         assert_eq!(metadata.mermaid_start, Some(29));
+        assert_eq!(metadata.pending_math_start, None);
     }
 
     #[test]
     fn does_not_split_nested_list_blocks_into_top_level_blocks() {
         let metadata = scan("- first\n  - nested\n");
         assert_eq!(metadata.last_top_level_block_start, None);
+    }
+
+    #[test]
+    fn tracks_unclosed_display_math_without_entering_fences() {
+        assert_eq!(scan("intro\n\n$$\nx^2\n").pending_math_start, Some(7));
+        assert_eq!(scan("```\n$$\nx^2\n").pending_math_start, None);
+        assert_eq!(scan("\\[\nx^2\n").pending_math_start, Some(0));
+        assert_eq!(scan("$$\nx^2\n$$\n").pending_math_start, None);
     }
 }
