@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ccmcorrea1-star/Atlas/protocol/config.schema.json",
+  "title": "Atlas global configuration",
+  "description": "Configuração global do Atlas em ~/.config/atlas/config.json ou no caminho indicado por ATLAS_CONFIG. Credenciais não fazem parte deste arquivo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "provider", "model"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Versão do formato de configuração."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider usado pelo Runtime. Nesta fase, apenas \"opencode-go\"."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Modelo padrão das conversas do Runtime."
+    }
+  }
+}
