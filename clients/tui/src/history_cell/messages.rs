@@ -6,6 +6,7 @@ use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use super::HistoryCell;
+use super::markdown_render_cache::MarkdownRenderCache;
 use super::plain_lines;
 use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
@@ -136,6 +137,7 @@ impl HistoryCell for AgentMessageCell {
 pub(crate) struct AgentMarkdownCell {
     pub(crate) message_id: Option<String>,
     pub(crate) markdown_source: String,
+    rendered_lines: MarkdownRenderCache,
 }
 
 impl AgentMarkdownCell {
@@ -146,13 +148,16 @@ impl AgentMarkdownCell {
         Self {
             message_id,
             markdown_source: markdown_source.into(),
+            rendered_lines: MarkdownRenderCache::default(),
         }
     }
 }
 
 impl HistoryCell for AgentMarkdownCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        render_agent_lines(&self.markdown_source, width, true)
+        self.rendered_lines.render(width, || {
+            render_agent_lines(&self.markdown_source, width, true)
+        })
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {

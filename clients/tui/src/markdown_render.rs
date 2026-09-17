@@ -513,17 +513,17 @@ mod writer {
                 TagEnd::CodeBlock => {
                     let code = std::mem::take(&mut self.code_buffer);
                     let code = code.strip_suffix('\n').unwrap_or(&code);
-                    let style = if self.code_lang.as_deref().is_some_and(is_known_language) {
-                        Style::default().cyan()
-                    } else {
-                        Style::default()
-                    };
-                    let prefix = "  ".repeat(self.list_stack.len().saturating_sub(0));
-                    for line in code.split('\n') {
-                        self.lines.push(Line::from(vec![
-                            Span::styled(prefix.clone(), Style::default()),
-                            Span::styled(line.to_owned(), style),
-                        ]));
+                    let highlighted = self.code_lang.as_deref().map_or_else(
+                        || crate::render::highlight::highlight_code_to_lines(code, "text"),
+                        |language| {
+                            crate::render::highlight::highlight_code_to_lines(code, language)
+                        },
+                    );
+                    let prefix = "  ".repeat(self.list_stack.len());
+                    for mut line in highlighted {
+                        let mut spans = vec![Span::styled(prefix.clone(), Style::default())];
+                        spans.append(&mut line.spans);
+                        self.lines.push(Line::from(spans).style(line.style));
                     }
                     self.in_code_block = false;
                     self.code_lang = None;
@@ -778,23 +778,6 @@ mod writer {
             pulldown_cmark::HeadingLevel::H3 => Style::default().bold().italic(),
             _ => Style::default().italic(),
         }
-    }
-
-    fn is_known_language(language: &str) -> bool {
-        matches!(
-            language,
-            "rust"
-                | "rs"
-                | "typescript"
-                | "ts"
-                | "javascript"
-                | "js"
-                | "json"
-                | "python"
-                | "py"
-                | "sh"
-                | "bash"
-        )
     }
 }
 

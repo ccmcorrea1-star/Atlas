@@ -1,5 +1,6 @@
 mod base;
 mod exec;
+mod markdown_render_cache;
 mod messages;
 
 use std::any::Any;

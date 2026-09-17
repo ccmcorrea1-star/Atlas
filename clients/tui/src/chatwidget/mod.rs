@@ -4,7 +4,10 @@
 //! sabe como os eventos chegam; o adaptador do Runtime converte JSON em
 //! `RuntimeEvent` antes de chamar este controller.
 
+mod command_lifecycle;
+mod exec_state;
 pub(crate) mod rendering;
+mod streaming;
 
 use std::time::Instant;
 
@@ -103,210 +106,26 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_runtime_event(&mut self, event: RuntimeEvent) {
-        match event {
-            RuntimeEvent::SessionUpdated { .. } => {}
-            RuntimeEvent::TurnStarted => {
-                self.status = Status::Thinking;
-                self.turn_active = true;
-                self.turn_started_at = Some(Instant::now());
+        match &event {
+            RuntimeEvent::MessageDelta { .. } | RuntimeEvent::MessageCompleted { .. } => {
+                self.handle_streaming_event(event);
             }
-            RuntimeEvent::ContextUpdated { context } => {
-                self.context_usage = Some(context);
+            RuntimeEvent::ExecutionStarted { .. }
+            | RuntimeEvent::ExecutionOutputDelta { .. }
+            | RuntimeEvent::ExecutionCompleted { .. } => {
+                self.handle_execution_event(event);
             }
-            RuntimeEvent::MessageDelta { message_id, delta } => {
-                self.status = Status::Thinking;
-                if let Some(message) = self.find_active_agent_mut(&message_id) {
-                    let available = message.markdown_source.len();
-                    message.append(&truncate_delta(&delta, available));
-                } else {
-                    let is_first_line = self.active_cells.is_empty();
-                    self.active_cells.push(Box::new(AgentMessageCell::new(
-                        message_id,
-                        bounded_text(&delta),
-                        is_first_line,
-                    )));
-                }
-                self.bump_active_revision();
-                self.history_changed();
-            }
-            RuntimeEvent::MessageCompleted {
-                message_id,
-                content,
-            } => {
-                self.status = Status::Thinking;
-                if let Some(message) = self.find_active_agent_mut(&message_id) {
-                    message.markdown_source = bounded_text(&content);
-                    message.completed = true;
-                    self.commit_active_agent(&message_id);
-                } else if let Some(message) = self.find_agent_mut(&message_id) {
-                    message.markdown_source = bounded_text(&content);
-                    message.completed = true;
-                } else {
-                    self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
-                        Some(message_id),
-                        bounded_text(&content),
-                    )));
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::ToolStarted { tool_id, tool_name } => {
-                self.status = Status::Executing;
-                self.active_cells.push(Box::new(ToolCell::new(
-                    tool_id,
-                    bounded_metadata(&tool_name),
-                )));
-                self.bump_active_revision();
-            }
-            RuntimeEvent::ToolCompleted {
-                tool_id,
-                tool_name: _,
-                output,
-            } => {
-                self.status = Status::Thinking;
-                if let Some(cell) = self.find_active_tool_mut(&tool_id) {
-                    cell.complete(output.map(|text| bounded_output(&text)));
-                    self.commit_active_tool(&tool_id);
-                } else if let Some(cell) = self.find_tool_mut(&tool_id) {
-                    cell.complete(output.map(|text| bounded_output(&text)));
-                } else {
-                    let mut cell = ToolCell::new(tool_id, "tool".to_owned());
-                    cell.complete(output.map(|text| bounded_output(&text)));
-                    self.cells.push(Box::new(cell));
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::ExecutionStarted {
-                execution_id,
-                capability: _,
-                program,
-                args,
-                cwd: _,
-                target: _,
-            } => {
-                self.status = Status::Executing;
-                if self.find_active_exec_mut(&execution_id).is_none() {
-                    self.active_cells.push(Box::new(ExecCell::new(
-                        bounded_metadata(&execution_id),
-                        bounded_metadata(&program),
-                        args.iter().map(|arg| bounded_metadata(arg)).collect(),
-                    )));
-                }
-                self.bump_active_revision();
-                self.history_changed();
-            }
-            RuntimeEvent::ExecutionOutputDelta {
-                execution_id,
-                capability: _,
-                channel: _,
-                delta,
-            } => {
-                self.status = Status::Executing;
-                if let Some(cell) = self.find_active_exec_mut(&execution_id) {
-                    cell.append_output(&delta);
-                    self.bump_active_revision();
-                    self.history_changed();
-                }
-            }
-            RuntimeEvent::ExecutionCompleted {
-                execution_id,
-                capability: _,
-                stdout,
-                stderr,
-                exit_code,
-                duration_ms,
-                status,
-            } => {
-                self.status = Status::Thinking;
-                if let Some(cell) = self.find_active_exec_mut(&execution_id) {
-                    cell.complete(
-                        bounded_output(&stdout),
-                        bounded_output(&stderr),
-                        exit_code,
-                        duration_ms,
-                        bounded_metadata(&status),
-                    );
-                    self.commit_active_exec(&execution_id);
-                } else if let Some(cell) = self.find_exec_mut(&execution_id) {
-                    cell.complete(
-                        bounded_output(&stdout),
-                        bounded_output(&stderr),
-                        exit_code,
-                        duration_ms,
-                        bounded_metadata(&status),
-                    );
-                } else {
-                    let mut cell =
-                        ExecCell::new(bounded_metadata(&execution_id), String::new(), Vec::new());
-                    cell.complete(
-                        bounded_output(&stdout),
-                        bounded_output(&stderr),
-                        exit_code,
-                        duration_ms,
-                        bounded_metadata(&status),
-                    );
-                    self.cells.push(Box::new(cell));
-                }
-                self.history_changed();
-            }
-            RuntimeEvent::TurnCompleted {
-                content,
-                message_id,
-                context,
-            } => {
-                if let Some(context) = context {
-                    self.context_usage = Some(context);
-                }
-                if !content.is_empty() {
-                    let id = message_id.or_else(|| {
-                        self.active_cells.iter().rev().find_map(|cell| {
-                            cell.as_any()
-                                .downcast_ref::<AgentMessageCell>()
-                                .map(|message| message.message_id.clone())
-                        })
-                    });
-                    let id = id.unwrap_or_else(|| "turn-completed".to_owned());
-                    if let Some(message) = self.find_active_agent_mut(&id) {
-                        message.markdown_source = bounded_text(&content);
-                        message.completed = true;
-                        self.commit_active_agent(&id);
-                    } else if let Some(message) = self.find_markdown_mut(&id) {
-                        message.markdown_source = bounded_text(&content);
-                    } else if self.find_agent(&id).is_none() {
-                        self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
-                            Some(id),
-                            bounded_text(&content),
-                        )));
-                    }
-                }
-                self.commit_all_active_cells();
-                self.status = Status::Ready;
-                self.turn_active = false;
-                self.turn_started_at = None;
-                self.history_changed();
-            }
-            RuntimeEvent::Error { message } => {
-                for cell in &mut self.cells {
-                    if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
-                        exec.abort();
-                    }
-                }
-                for cell in &mut self.active_cells {
-                    if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
-                        exec.abort();
-                    }
-                }
-                self.cells.append(&mut self.active_cells);
-                self.bump_active_revision();
-                self.cells
-                    .push(Box::new(ErrorCell::new(bounded_metadata(&message))));
-                self.status = Status::Error(bounded_metadata(&message));
-                self.turn_active = false;
-                self.turn_started_at = None;
-                self.history_changed();
+            RuntimeEvent::SessionUpdated { .. }
+            | RuntimeEvent::TurnStarted
+            | RuntimeEvent::ContextUpdated { .. }
+            | RuntimeEvent::ToolStarted { .. }
+            | RuntimeEvent::ToolCompleted { .. }
+            | RuntimeEvent::TurnCompleted { .. }
+            | RuntimeEvent::Error { .. } => {
+                self.handle_command_lifecycle_event(event);
             }
         }
     }
-
     fn find_agent(&self, id: &str) -> Option<&AgentMessageCell> {
         self.cells.iter().rev().find_map(|cell| {
             cell.as_any()
