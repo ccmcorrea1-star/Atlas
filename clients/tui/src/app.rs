@@ -567,11 +567,20 @@ impl App {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         if !modified && let KeyCode::Char(character) = key.code {
+            let now = Instant::now();
+            if let Some(stale) = self
+                .bottom_pane
+                .composer
+                .paste_burst
+                .flush_stale_pending_char(now)
+            {
+                self.insert_character(stale);
+            }
             match self
                 .bottom_pane
                 .composer
                 .paste_burst
-                .on_plain_char(character, Instant::now())
+                .on_plain_char(character, now)
             {
                 CharDecision::RetainFirstChar => return None,
                 CharDecision::BeginBufferFromPending
@@ -950,10 +959,13 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
-    use super::App;
+    use super::*;
     use crate::bottom_pane::BottomPaneView;
     use crate::bottom_pane::bottom_pane_view::ChatComposerView;
     use crate::runtime::RuntimeEvent;
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
 
     #[test]
     fn restores_history_per_conversation_after_reopening_the_app() {
@@ -1458,5 +1470,15 @@ mod tests {
         app.scroll_down(3);
         app.on_resize();
         assert_eq!(app.history_scroll(), 0);
+    }
+
+    #[test]
+    fn slow_ascii_input_does_not_drop_stale_pending_characters() {
+        let mut app = App::new("slow-input".to_owned());
+        for character in ['a', 'b', 'c'] {
+            app.handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(app.input(), "ab");
     }
 }

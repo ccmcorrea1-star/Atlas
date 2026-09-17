@@ -188,6 +188,17 @@ impl PasteBurst {
         }
     }
 
+    pub fn flush_stale_pending_char(&mut self, now: Instant) -> Option<char> {
+        let stale = self
+            .pending_first_char
+            .is_some_and(|(_, at)| now.duration_since(at) > PASTE_BURST_CHAR_INTERVAL);
+        if stale {
+            self.pending_first_char.take().map(|(ch, _)| ch)
+        } else {
+            None
+        }
+    }
+
     /// Acumula newline ou tab na rajada em vez de acionar um atalho.
     /// O primeiro caractere retido entra no buffer antes do caractere de controle.
     ///
