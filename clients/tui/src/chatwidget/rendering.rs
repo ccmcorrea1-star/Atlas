@@ -98,6 +98,7 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
             rendered.render(cell_area, buffer);
         }
     }
+    app.record_history_viewport_height(area.height);
     app.record_history_content_height(total_height);
 }
 

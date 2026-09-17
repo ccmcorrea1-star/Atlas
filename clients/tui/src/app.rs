@@ -46,6 +46,8 @@ pub struct App {
     should_quit: bool,
     history_scroll: usize,
     history_content_height: usize,
+    history_viewport_height: usize,
+    resize_anchor_top: Option<usize>,
     manual_scroll: bool,
 
     quit_confirmation: bool,
@@ -84,6 +86,8 @@ impl App {
             should_quit: false,
             history_scroll: 0,
             history_content_height: 0,
+            history_viewport_height: 0,
+            resize_anchor_top: None,
             manual_scroll: false,
 
             quit_confirmation: false,
@@ -354,7 +358,10 @@ impl App {
     }
 
     pub(crate) fn record_history_content_height(&mut self, height: usize) {
-        if self.manual_scroll && height > self.history_content_height {
+        if let Some(anchor_top) = self.resize_anchor_top.take() {
+            let max_scroll = height.saturating_sub(self.history_viewport_height);
+            self.history_scroll = max_scroll.saturating_sub(anchor_top);
+        } else if self.manual_scroll && height > self.history_content_height {
             self.history_scroll = self
                 .history_scroll
                 .saturating_add(height - self.history_content_height);
@@ -362,10 +369,20 @@ impl App {
         self.history_content_height = height;
     }
 
+    pub(crate) fn record_history_viewport_height(&mut self, height: u16) {
+        self.history_viewport_height = usize::from(height);
+    }
+
     pub(crate) fn on_resize(&mut self) {
         self.transcript_overlay.on_resize();
-        if !self.manual_scroll {
+        if self.manual_scroll {
+            let max_scroll = self
+                .history_content_height
+                .saturating_sub(self.history_viewport_height);
+            self.resize_anchor_top = Some(max_scroll.saturating_sub(self.history_scroll));
+        } else {
             self.history_scroll = 0;
+            self.resize_anchor_top = None;
         }
     }
 
@@ -1470,6 +1487,19 @@ mod tests {
         app.scroll_down(3);
         app.on_resize();
         assert_eq!(app.history_scroll(), 0);
+    }
+
+    #[test]
+    fn resize_reanchors_manual_scroll_to_the_same_transcript_row() {
+        let mut app = App::new("resize-anchor".to_owned());
+        app.record_history_viewport_height(10);
+        app.record_history_content_height(100);
+        app.scroll_up(20);
+        app.on_resize();
+        app.record_history_viewport_height(5);
+        app.record_history_content_height(100);
+
+        assert_eq!(app.history_scroll(), 25);
     }
 
     #[test]
