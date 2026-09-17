@@ -2,12 +2,15 @@ use std::borrow::Cow;
 
 use super::live_output::LiveCommandOutput;
 
+const MAX_STREAM_CHUNKS_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Default)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
     aggregated_output: String,
     live_output: Option<LiveCommandOutput>,
     stream_chunks: Vec<OutputChunk>,
+    stream_chunks_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +26,7 @@ impl CommandOutput {
             aggregated_output,
             live_output: None,
             stream_chunks: Vec::new(),
+            stream_chunks_bytes: 0,
         }
     }
 
@@ -61,14 +65,31 @@ impl CommandOutput {
         if chunk.is_empty() {
             return;
         }
+        let text = bounded_stream_chunk(chunk);
+        self.stream_chunks_bytes = self.stream_chunks_bytes.saturating_add(text.len());
         self.stream_chunks.push(OutputChunk {
             channel: channel.to_owned(),
-            text: chunk.to_owned(),
+            text,
         });
+        while self.stream_chunks_bytes > MAX_STREAM_CHUNKS_BYTES {
+            let removed = self.stream_chunks.remove(0);
+            self.stream_chunks_bytes = self.stream_chunks_bytes.saturating_sub(removed.text.len());
+        }
         self.live_output
             .get_or_insert_with(LiveCommandOutput::default)
             .push_str(chunk);
     }
+}
+
+fn bounded_stream_chunk(chunk: &str) -> String {
+    if chunk.len() <= MAX_STREAM_CHUNKS_BYTES {
+        return chunk.to_owned();
+    }
+    let mut start = chunk.len() - MAX_STREAM_CHUNKS_BYTES;
+    while !chunk.is_char_boundary(start) {
+        start += 1;
+    }
+    chunk[start..].to_owned()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +207,19 @@ fn interleave_output(stdout: String, stderr: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_chunk_history_is_bounded_without_changing_small_chunks() {
+        let mut output = CommandOutput::default();
+        output.append_output("stdout", &"x".repeat(MAX_STREAM_CHUNKS_BYTES));
+        output.append_output("stderr", "tail");
+
+        assert!(output.stream_chunks_bytes <= MAX_STREAM_CHUNKS_BYTES);
+        assert_eq!(
+            output.stream_chunks.last().map(|chunk| chunk.text.as_str()),
+            Some("tail")
+        );
+    }
 
     #[test]
     fn streamed_output_preserves_channel_and_arrival_order() {
