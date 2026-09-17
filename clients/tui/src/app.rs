@@ -507,6 +507,10 @@ impl App {
         }
     }
 
+    pub(crate) fn set_stream_width(&mut self, width: u16) {
+        self.chatwidget.set_stream_width(width);
+    }
+
     fn complete_slash_command(&mut self) {
         let command_name = self
             .all_completion_popup_items()

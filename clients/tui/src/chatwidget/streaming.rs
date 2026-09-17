@@ -47,7 +47,7 @@ impl MarkdownStreamState {
     }
 
     #[allow(dead_code)]
-    fn set_width(&mut self, width: u16) -> bool {
+    pub(super) fn set_width(&mut self, width: u16) -> bool {
         let changed = self.width != Some(width);
         self.width = Some(width);
         changed

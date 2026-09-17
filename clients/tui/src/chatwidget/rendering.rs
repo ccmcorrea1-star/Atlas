@@ -35,6 +35,7 @@ pub(crate) fn render(
     .areas(area);
 
     session_header::render(header_area, buffer, app);
+    app.set_stream_width(history_area.width);
     render_history(buffer, app, history_area);
     if app.transcript_open() {
         app.transcript_overlay().render(app, area, buffer);

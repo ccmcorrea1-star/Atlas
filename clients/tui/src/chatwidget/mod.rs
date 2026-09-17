@@ -93,6 +93,16 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn set_stream_width(&mut self, width: u16) {
+        let changed = self
+            .stream_states
+            .values_mut()
+            .any(|stream| stream.set_width(width));
+        if changed {
+            self.active_revision = self.active_revision.wrapping_add(1);
+        }
+    }
+
     pub(crate) fn add_user_message(&mut self, message: String) {
         self.cells
             .push(Box::new(crate::history_cell::UserHistoryCell::new(message)));
