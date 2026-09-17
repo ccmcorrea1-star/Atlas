@@ -216,4 +216,26 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(rendered, ["warning", "result"]);
     }
+
+    #[test]
+    fn aggregate_only_output_documents_stdout_then_stderr_fallback() {
+        let mut cell = ExecCell::new("exec".to_owned(), "bash".to_owned(), Vec::new());
+        cell.complete(
+            "stdout\n".to_owned(),
+            "stderr\n".to_owned(),
+            0,
+            1,
+            "success".to_owned(),
+        );
+
+        let output = cell.output().expect("aggregate output");
+        assert!(output.stream_chunks.is_empty());
+        assert_eq!(
+            output
+                .lines()
+                .map(|line| line.into_owned())
+                .collect::<Vec<_>>(),
+            ["stdout", "stderr"]
+        );
+    }
 }
