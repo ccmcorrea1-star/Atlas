@@ -46,6 +46,7 @@ impl TranscriptOverlay {
 
     pub(crate) fn open(&self) {
         self.open.set(true);
+        self.scroll_offset.set(usize::MAX);
     }
 
     pub(crate) fn close(&self) {
@@ -288,6 +289,7 @@ mod tests {
 
         overlay.open();
         assert!(overlay.is_open());
+        assert_eq!(overlay.scroll_offset.get(), usize::MAX);
         assert_eq!(overlay.handle_action(Some(Action::PageDown)), None);
         assert_eq!(
             overlay.handle_action(Some(Action::CloseOverlay)),
