@@ -973,6 +973,28 @@ mod tests {
     }
 
     #[test]
+    fn tables_render_header_separator_and_rows() {
+        let rendered = super::render_markdown_text_with_width(
+            "| Name | Value |\n| --- | --- |\n| Atlas | 42 |",
+            Some(30),
+        );
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(text.iter().any(|line| line.contains("Name")));
+        assert!(text.iter().any(|line| line.contains("Atlas")));
+        assert!(text.iter().any(|line| line.contains('━')));
+        insta::assert_snapshot!("tables_render_header_separator_and_rows", text.join("\n"));
+    }
+
+    #[test]
     fn links_preserve_the_destination_as_terminal_hyperlink_metadata() {
         let rendered = super::render_markdown_text("[Atlas](https://example.com/atlas)");
         let text = rendered.lines[0]

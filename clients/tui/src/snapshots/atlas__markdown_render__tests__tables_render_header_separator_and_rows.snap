@@ -1,0 +1,7 @@
+---
+source: src/markdown_render.rs
+expression: "text.join(\"\\n\")"
+---
+ Name    Value
+━━━━  ━━━━━
+ Atlas    42
