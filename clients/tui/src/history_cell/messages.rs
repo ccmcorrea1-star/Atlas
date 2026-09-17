@@ -11,6 +11,7 @@ use super::markdown_render_cache::MarkdownRenderCache;
 use super::plain_lines;
 use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
+use crate::render::highlight_streaming::StreamingCodeHighlighter;
 use crate::wrapping::wrap_line;
 
 #[derive(Debug)]
@@ -81,11 +82,21 @@ impl HistoryCell for UserHistoryCell {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct StreamingRenderCache {
     width: u16,
     revision: u64,
+    source: String,
     lines: Vec<Line<'static>>,
+    open_code: Option<OpenCodeCache>,
+    incremental_appends: usize,
+}
+
+#[derive(Debug)]
+struct OpenCodeCache {
+    language: String,
+    body_len: usize,
+    highlighter: StreamingCodeHighlighter,
 }
 
 #[derive(Debug)]
@@ -176,17 +187,9 @@ impl AgentMessageCell {
         let tail = source[stable_len..].to_owned();
         if self.stream_stable_source.as_deref() != Some(stable.as_str()) {
             self.stable_revision = self.stable_revision.wrapping_add(1);
-            self.stable_render_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
         }
         if self.stream_tail_source != tail {
             self.tail_revision = self.tail_revision.wrapping_add(1);
-            self.tail_render_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
         }
         self.markdown_source.clear();
         self.markdown_source.push_str(source);
@@ -311,24 +314,77 @@ fn render_stream_part(
     first: bool,
     revision: u64,
 ) -> Vec<Line<'static>> {
-    if let Some(lines) = cache
+    let mut cache_guard = cache
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|cached| cached.width == width && cached.revision == revision)
-        .map(|cached| cached.lines.clone())
-    {
-        return lines;
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(cached) = cache_guard.as_mut() {
+        if cached.width == width && cached.revision == revision {
+            return cached.lines.clone();
+        }
+        if cached.width == width
+            && source.starts_with(&cached.source)
+            && let Some((language, body)) = open_code_parts(source)
+            && let Some(open_code) = cached.open_code.as_mut()
+            && open_code.language == language
+            && body.len() >= open_code.body_len
+        {
+            let appended = &body[open_code.body_len..];
+            if appended.is_empty() {
+                cached.source = source.to_owned();
+                cached.revision = revision;
+                return cached.lines.clone();
+            }
+            let placeholder = StreamingCodeHighlighter::new("", &language)
+                .expect("known streaming language should initialize");
+            let highlighter = std::mem::replace(&mut open_code.highlighter, placeholder);
+            if let Some((highlighter, appended_lines)) = highlighter.append(appended) {
+                let wrap_width = usize::from(width).saturating_sub(2).max(1);
+                for line in appended_lines {
+                    for part in wrap_line(line, wrap_width) {
+                        cached
+                            .lines
+                            .push(prefixed_line(part, "  ", Style::default().dim()));
+                    }
+                }
+                open_code.body_len = body.len();
+                open_code.highlighter = highlighter;
+                cached.incremental_appends = cached.incremental_appends.saturating_add(1);
+                cached.source = source.to_owned();
+                cached.revision = revision;
+                return cached.lines.clone();
+            }
+        }
     }
+
     let lines = render_agent_lines(source, width, first);
-    *cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(StreamingRenderCache {
+    let open_code = open_code_parts(source).and_then(|(language, body)| {
+        StreamingCodeHighlighter::new(body, language.as_str()).map(|highlighter| OpenCodeCache {
+            language,
+            body_len: body.len(),
+            highlighter,
+        })
+    });
+    *cache_guard = Some(StreamingRenderCache {
         width,
         revision,
+        source: source.to_owned(),
         lines: lines.clone(),
+        open_code,
+        incremental_appends: 0,
     });
     lines
+}
+
+fn open_code_parts(source: &str) -> Option<(String, &str)> {
+    let (opening, body) = source.split_once('\n')?;
+    let language = opening.strip_prefix("```")?.trim();
+    if language.is_empty()
+        || opening.contains("````")
+        || body.lines().any(|line| line.trim().starts_with("```"))
+    {
+        return None;
+    }
+    Some((language.to_owned(), body))
 }
 
 fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static>> {
@@ -395,6 +451,26 @@ mod tests {
                 .filter(|line| line.starts_with("• "))
                 .count()
                 <= 1
+        );
+    }
+
+    #[test]
+    fn open_code_stream_appends_to_the_existing_highlighter_cache() {
+        let mut cell = AgentMessageCell::new("code".to_owned(), "", true);
+        cell.set_stream_parts("```rust\nlet answer = 42;\n", 0);
+        let _ = cell.display_lines(80);
+        cell.set_stream_parts("```rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0);
+        let rendered = cell.display_lines(80);
+
+        let cache = cell.tail_render_cache.lock().unwrap();
+        assert_eq!(
+            cache.as_ref().map(|cache| cache.incremental_appends),
+            Some(1)
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text(line).contains("println!"))
         );
     }
 }

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod highlight;
+pub(crate) mod highlight_streaming;
 pub(crate) mod line_utils;
 pub mod renderable;
 

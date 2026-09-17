@@ -18,19 +18,23 @@ const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 const MAX_HIGHLIGHT_LINES: usize = 10_000;
 pub(crate) const MAX_HIGHLIGHT_LINE_BYTES: usize = 4 * 1024;
 
-fn syntax_set() -> &'static SyntaxSet {
+pub(crate) fn syntax_set() -> &'static SyntaxSet {
     use std::sync::OnceLock;
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
-fn theme() -> Theme {
-    two_face::theme::extra()
-        .get(EmbeddedThemeName::CatppuccinMocha)
-        .clone()
+pub(crate) fn theme() -> &'static Theme {
+    use std::sync::OnceLock;
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        two_face::theme::extra()
+            .get(EmbeddedThemeName::CatppuccinMocha)
+            .clone()
+    })
 }
 
-fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
+pub(crate) fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     let normalized = lang.to_ascii_lowercase();
     let alias = match normalized.as_str() {
         "csharp" | "c-sharp" => "c#",
@@ -79,6 +83,18 @@ fn convert_style(style: syntect::highlighting::Style) -> Style {
     result
 }
 
+pub(crate) fn highlighted_line_spans(
+    ranges: Vec<(syntect::highlighting::Style, &str)>,
+) -> Vec<Span<'static>> {
+    ranges
+        .into_iter()
+        .filter_map(|(style, text)| {
+            let text = text.trim_end_matches(['\r', '\n']);
+            (!text.is_empty()).then(|| Span::styled(text.to_owned(), convert_style(style)))
+        })
+        .collect()
+}
+
 fn highlight_spans(code: &str, lang: &str) -> Option<Vec<Vec<Span<'static>>>> {
     if code.is_empty()
         || code.len() > MAX_HIGHLIGHT_BYTES
@@ -91,17 +107,11 @@ fn highlight_spans(code: &str, lang: &str) -> Option<Vec<Vec<Span<'static>>>> {
     }
     let syntax = find_syntax(lang)?;
     let theme = theme();
-    let mut highlighter = HighlightLines::new(syntax, &theme);
+    let mut highlighter = HighlightLines::new(syntax, theme);
     let mut lines = Vec::new();
     for source in LinesWithEndings::from(code) {
         let ranges = highlighter.highlight_line(source, syntax_set()).ok()?;
-        let spans = ranges
-            .into_iter()
-            .filter_map(|(style, text)| {
-                let text = text.trim_end_matches(['\r', '\n']);
-                (!text.is_empty()).then(|| Span::styled(text.to_owned(), convert_style(style)))
-            })
-            .collect::<Vec<_>>();
+        let spans = highlighted_line_spans(ranges);
         lines.push(if spans.is_empty() {
             vec![Span::raw(String::new())]
         } else {
