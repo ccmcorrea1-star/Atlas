@@ -263,60 +263,6 @@ impl HistoryCell for AgentMarkdownCell {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct StreamingAgentTailCell {
-    pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) is_first_line: bool,
-}
-
-#[allow(dead_code)]
-impl StreamingAgentTailCell {
-    pub(crate) fn new(lines: Vec<Line<'static>>, is_first_line: bool) -> Self {
-        Self {
-            lines,
-            is_first_line,
-        }
-    }
-}
-
-impl HistoryCell for StreamingAgentTailCell {
-    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        self.lines
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(index, line)| {
-                prefixed_line(
-                    line,
-                    if index == 0 && self.is_first_line {
-                        "• "
-                    } else {
-                        "  "
-                    },
-                    Style::default().dim(),
-                )
-            })
-            .collect()
-    }
-
-    fn raw_lines(&self) -> Vec<Line<'static>> {
-        plain_lines(self.lines.clone())
-    }
-
-    fn is_stream_continuation(&self) -> bool {
-        !self.is_first_line
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
 fn render_stream_part(
     cache: &Mutex<Option<StreamingRenderCache>>,
     source: &str,
