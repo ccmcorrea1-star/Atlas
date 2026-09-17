@@ -68,11 +68,8 @@ pub(crate) enum ExecState {
 #[derive(Debug)]
 pub(crate) struct ExecCell {
     execution_id: String,
-    capability: String,
     program: String,
     args: Vec<String>,
-    cwd: Option<String>,
-    target: Option<String>,
     status: Option<String>,
     output: Option<CommandOutput>,
     exit_code: Option<i32>,
@@ -81,21 +78,11 @@ pub(crate) struct ExecCell {
 }
 
 impl ExecCell {
-    pub(crate) fn new(
-        execution_id: String,
-        capability: String,
-        program: String,
-        args: Vec<String>,
-        cwd: Option<String>,
-        target: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(execution_id: String, program: String, args: Vec<String>) -> Self {
         Self {
             execution_id,
-            capability,
             program,
             args,
-            cwd,
-            target,
             status: None,
             output: None,
             exit_code: None,
@@ -153,18 +140,6 @@ impl ExecCell {
 
     pub(crate) fn command(&self) -> String {
         crate::markdown::format_process_command(&self.program, &self.args)
-    }
-
-    pub(crate) fn capability(&self) -> &str {
-        &self.capability
-    }
-
-    pub(crate) fn cwd(&self) -> Option<&str> {
-        self.cwd.as_deref()
-    }
-
-    pub(crate) fn target(&self) -> Option<&str> {
-        self.target.as_deref()
     }
 
     pub(crate) fn succeeded(&self) -> bool {

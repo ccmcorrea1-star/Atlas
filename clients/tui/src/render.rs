@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub(crate) mod highlight;
+pub(crate) mod line_utils;
 pub mod renderable;
 
 use ratatui::layout::Rect;

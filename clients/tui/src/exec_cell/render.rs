@@ -9,6 +9,7 @@ use super::model::ExecCell;
 use super::model::ExecState;
 use crate::history_cell::HistoryCell;
 use crate::markdown::render_ansi_line;
+use crate::render::highlight::highlight_bash_to_lines;
 use crate::ui_consts::TRANSCRIPT_HINT;
 use crate::wrapping::wrap_line;
 
@@ -56,14 +57,17 @@ impl ExecCell {
     fn transcript_lines_inner(&self, width: u16) -> Vec<Line<'static>> {
         let width = width.max(1);
         let command = self.command();
-        let command = crate::markdown::render_ansi_line(&command, Style::default());
-        let mut lines = prefixed_wrapped_lines_with_styles(
-            command,
-            "$ ",
-            "    ",
-            width,
-            Style::default().magenta(),
-        );
+        let command = highlight_bash_to_lines(&command);
+        let mut lines = Vec::new();
+        for line in command {
+            lines.extend(prefixed_wrapped_lines_with_styles(
+                line,
+                "$ ",
+                "    ",
+                width,
+                Style::default().magenta(),
+            ));
+        }
 
         if let Some(output) = self.output() {
             for raw in output.transcript_lines() {
@@ -127,28 +131,6 @@ impl ExecCell {
         if omitted > 0 {
             lines.push(prefixed_line(
                 Line::from(format!("… +{omitted} lines")),
-                "  │ ",
-                Style::default().dim(),
-            ));
-        }
-
-        if !self.capability().is_empty() {
-            lines.push(prefixed_line(
-                Line::from(format!("capability: {}", self.capability())),
-                "  │ ",
-                Style::default().dim(),
-            ));
-        }
-        if let Some(cwd) = self.cwd() {
-            lines.push(prefixed_line(
-                Line::from(format!("cwd: {cwd}")),
-                "  │ ",
-                Style::default().dim(),
-            ));
-        }
-        if let Some(target) = self.target() {
-            lines.push(prefixed_line(
-                Line::from(format!("target: {target}")),
                 "  │ ",
                 Style::default().dim(),
             ));
@@ -296,11 +278,8 @@ mod tests {
     fn transcript_uses_codex_expanded_command_and_result() {
         let mut cell = ExecCell::new(
             "execution".to_owned(),
-            "process.exec".to_owned(),
             "bash".to_owned(),
             vec!["-lc".to_owned(), "echo hello".to_owned()],
-            Some("/tmp".to_owned()),
-            Some("local".to_owned()),
         );
         cell.complete(
             "hello\nworld".to_owned(),
@@ -311,26 +290,15 @@ mod tests {
         );
         assert!(cell.succeeded());
 
-        let mut failed = ExecCell::new(
-            "failure".to_owned(),
-            "process.exec".to_owned(),
-            "bash".to_owned(),
-            Vec::new(),
-            None,
-            None,
-        );
+        let mut failed = ExecCell::new("failure".to_owned(), "bash".to_owned(), Vec::new());
         failed.complete(String::new(), String::new(), 0, 1, "error".to_owned());
         assert!(!failed.succeeded());
 
         let display = cell.display_lines(80);
         let display = display.iter().map(line_text).collect::<Vec<_>>();
-        assert!(
-            display
-                .iter()
-                .any(|line| line.contains("capability: process.exec"))
-        );
-        assert!(display.iter().any(|line| line.contains("cwd: /tmp")));
-        assert!(display.iter().any(|line| line.contains("target: local")));
+        assert!(!display.iter().any(|line| line.contains("capability:")));
+        assert!(!display.iter().any(|line| line.contains("cwd:")));
+        assert!(!display.iter().any(|line| line.contains("target:")));
 
         let lines = cell.transcript_lines(80);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();

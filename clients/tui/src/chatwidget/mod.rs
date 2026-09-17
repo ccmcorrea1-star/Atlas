@@ -177,21 +177,18 @@ impl ChatWidget {
             }
             RuntimeEvent::ExecutionStarted {
                 execution_id,
-                capability,
+                capability: _,
                 program,
                 args,
-                cwd,
-                target,
+                cwd: _,
+                target: _,
             } => {
                 self.status = Status::Executing;
                 if self.find_active_exec_mut(&execution_id).is_none() {
                     self.active_cells.push(Box::new(ExecCell::new(
                         bounded_metadata(&execution_id),
-                        bounded_metadata(&capability),
                         bounded_metadata(&program),
                         args.iter().map(|arg| bounded_metadata(arg)).collect(),
-                        cwd.map(|path| bounded_metadata(&path)),
-                        target.map(|value| bounded_metadata(&value)),
                     )));
                 }
                 self.bump_active_revision();
@@ -212,7 +209,7 @@ impl ChatWidget {
             }
             RuntimeEvent::ExecutionCompleted {
                 execution_id,
-                capability,
+                capability: _,
                 stdout,
                 stderr,
                 exit_code,
@@ -238,14 +235,8 @@ impl ChatWidget {
                         bounded_metadata(&status),
                     );
                 } else {
-                    let mut cell = ExecCell::new(
-                        bounded_metadata(&execution_id),
-                        bounded_metadata(&capability),
-                        String::new(),
-                        Vec::new(),
-                        None,
-                        None,
-                    );
+                    let mut cell =
+                        ExecCell::new(bounded_metadata(&execution_id), String::new(), Vec::new());
                     cell.complete(
                         bounded_output(&stdout),
                         bounded_output(&stderr),
