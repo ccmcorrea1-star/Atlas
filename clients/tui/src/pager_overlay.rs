@@ -15,6 +15,7 @@ use std::cell::RefCell;
 
 use crate::app::App;
 use crate::keymap::Action;
+use crate::render::renderable::Renderable;
 use crate::wrapping::wrap_line;
 
 #[derive(Debug, Default)]
@@ -43,6 +44,44 @@ struct CommittedTranscriptCache {
     revision: u64,
     cell_heights: Vec<usize>,
     lines: Vec<Line<'static>>,
+    renderables: Vec<LinesRenderable>,
+}
+
+#[derive(Debug, Clone)]
+struct LinesRenderable {
+    lines: Vec<Line<'static>>,
+}
+
+impl Renderable for LinesRenderable {
+    fn render(&self, area: Rect, buffer: &mut Buffer) {
+        self.render_scrolled(area, buffer, 0);
+    }
+
+    fn desired_height(&self, _width: u16) -> u16 {
+        self.lines.len().try_into().unwrap_or(u16::MAX)
+    }
+
+    fn render_scrolled(&self, area: Rect, buffer: &mut Buffer, scroll_offset: u16) -> bool {
+        for (row, line) in self
+            .lines
+            .iter()
+            .skip(usize::from(scroll_offset))
+            .take(usize::from(area.height))
+            .enumerate()
+        {
+            line.clone().render(
+                Rect::new(
+                    area.x,
+                    area.y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    area.width,
+                    1,
+                ),
+                buffer,
+            );
+        }
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,7 +201,7 @@ impl TranscriptOverlay {
         let width = content.width.max(1);
         let cell_count = app.cells().len();
         let revision = app.history_revision();
-        let cached_lines = self
+        let cached = self
             .committed_cache
             .borrow()
             .as_ref()
@@ -171,17 +210,24 @@ impl TranscriptOverlay {
             })
             .map(|cache| {
                 debug_assert_eq!(cache.cell_heights.iter().sum::<usize>(), cache.lines.len());
-                cache.lines.clone()
+                (cache.lines.clone(), cache.renderables.clone())
             });
-        let mut lines = cached_lines.unwrap_or_else(|| {
+        let (mut lines, mut renderables) = cached.unwrap_or_else(|| {
             let mut lines = Vec::new();
+            let mut renderables = Vec::new();
             let mut cell_heights = Vec::with_capacity(cell_count);
             for cell in app.cells() {
                 let start = lines.len();
                 if !lines.is_empty() && !cell.is_stream_continuation() {
+                    let blank = LinesRenderable {
+                        lines: vec![Line::default()],
+                    };
                     lines.push(Line::default());
+                    renderables.push(blank);
                 }
-                lines.extend(wrap_lines(cell.transcript_lines(width), width));
+                let wrapped = wrap_lines(cell.transcript_lines(width), width);
+                lines.extend(wrapped.clone());
+                renderables.push(LinesRenderable { lines: wrapped });
                 cell_heights.push(lines.len().saturating_sub(start));
             }
             *self.committed_cache.borrow_mut() = Some(CommittedTranscriptCache {
@@ -190,8 +236,9 @@ impl TranscriptOverlay {
                 revision,
                 cell_heights,
                 lines: lines.clone(),
+                renderables: renderables.clone(),
             });
-            lines
+            (lines, renderables)
         });
         let active_lines = self.live_tail(app, width);
         if !active_lines.is_empty()
@@ -202,26 +249,24 @@ impl TranscriptOverlay {
                 .is_none_or(|cell| !cell.is_stream_continuation())
         {
             lines.push(Line::default());
+            renderables.push(LinesRenderable {
+                lines: vec![Line::default()],
+            });
         }
-        lines.extend(wrap_lines(active_lines, content.width.max(1)));
+        let wrapped_active = wrap_lines(active_lines, content.width.max(1));
+        lines.extend(wrapped_active.clone());
+        if !wrapped_active.is_empty() {
+            renderables.push(LinesRenderable {
+                lines: wrapped_active,
+            });
+        }
 
         let total_height = lines.len();
         self.last_content_height.set(usize::from(content.height));
         let max_scroll = total_height.saturating_sub(usize::from(content.height));
         self.last_max_scroll.set(max_scroll);
         let scroll = self.scroll_offset.get().min(max_scroll);
-        for (row, line) in lines
-            .iter()
-            .skip(scroll)
-            .take(usize::from(content.height))
-            .enumerate()
-        {
-            let y = content
-                .y
-                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-            line.clone()
-                .render(Rect::new(content.x, y, content.width, 1), buffer);
-        }
+        render_visible_renderables(&renderables, content, scroll, buffer);
 
         let drawn_rows = total_height
             .saturating_sub(scroll)
@@ -311,6 +356,39 @@ impl TranscriptOverlay {
             lines: lines.clone(),
         });
         lines
+    }
+}
+
+fn render_visible_renderables(
+    renderables: &[LinesRenderable],
+    area: Rect,
+    scroll: usize,
+    buffer: &mut Buffer,
+) {
+    let mut offset = 0usize;
+    let viewport_end = scroll.saturating_add(usize::from(area.height));
+    for renderable in renderables {
+        let height = usize::from(renderable.desired_height(area.width));
+        let renderable_end = offset.saturating_add(height);
+        let visible_start = offset.max(scroll);
+        let visible_end = renderable_end.min(viewport_end);
+        if visible_start < visible_end {
+            let y = area.y.saturating_add(
+                u16::try_from(visible_start.saturating_sub(scroll)).unwrap_or(u16::MAX),
+            );
+            let visible_area = Rect::new(
+                area.x,
+                y,
+                area.width,
+                u16::try_from(visible_end - visible_start).unwrap_or(u16::MAX),
+            );
+            let local_scroll = u16::try_from(visible_start - offset).unwrap_or(u16::MAX);
+            renderable.render_scrolled(visible_area, buffer, local_scroll);
+        }
+        offset = renderable_end;
+        if offset >= viewport_end {
+            break;
+        }
     }
 }
 
