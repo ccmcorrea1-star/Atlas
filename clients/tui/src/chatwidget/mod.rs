@@ -84,11 +84,26 @@ impl ChatWidget {
     }
 
     pub(crate) fn tick(&mut self) {
-        let committed = self
+        let committed_parts = self
             .stream_states
-            .values_mut()
-            .any(MarkdownStreamState::commit_tick);
-        if committed || !self.active_cells.is_empty() {
+            .iter_mut()
+            .filter_map(|(message_id, stream)| {
+                stream.commit_tick().then(|| {
+                    (
+                        message_id.clone(),
+                        stream.source().to_owned(),
+                        stream.stable_len,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for (message_id, source, stable_len) in committed_parts {
+            if let Some(message) = self.find_active_agent_mut(&message_id) {
+                let display_source = bounded_text(&source);
+                message.set_stream_parts(&display_source, stable_len);
+            }
+        }
+        if !self.stream_states.is_empty() || !self.active_cells.is_empty() {
             self.active_revision = self.active_revision.wrapping_add(1);
         }
     }

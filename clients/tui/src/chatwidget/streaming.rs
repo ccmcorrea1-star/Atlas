@@ -10,7 +10,7 @@ use super::*;
 #[derive(Debug, Default)]
 pub(super) struct MarkdownStreamState {
     source: String,
-    stable_len: usize,
+    pub(super) stable_len: usize,
     committed_len: usize,
     width: Option<u16>,
     revision: u64,
@@ -23,7 +23,7 @@ impl MarkdownStreamState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    fn source(&self) -> &str {
+    pub(super) fn source(&self) -> &str {
         &self.source
     }
 
@@ -99,20 +99,20 @@ impl ChatWidget {
         match event {
             RuntimeEvent::MessageDelta { message_id, delta } => {
                 self.status = Status::Thinking;
-                let source = {
+                let (source, stable_len) = {
                     let stream = self.stream_states.entry(message_id.clone()).or_default();
                     stream.push(&delta);
-                    stream.source().to_owned()
+                    (stream.source().to_owned(), stream.stable_len)
                 };
+                let display_source = bounded_text(&source);
                 if let Some(message) = self.find_active_agent_mut(&message_id) {
-                    message.markdown_source = bounded_text(&source);
+                    message.set_stream_parts(&display_source, stable_len);
                 } else {
                     let is_first_line = self.active_cells.is_empty();
-                    self.active_cells.push(Box::new(AgentMessageCell::new(
-                        message_id,
-                        bounded_text(&source),
-                        is_first_line,
-                    )));
+                    let mut cell =
+                        AgentMessageCell::new(message_id, display_source.clone(), is_first_line);
+                    cell.set_stream_parts(&display_source, stable_len);
+                    self.active_cells.push(Box::new(cell));
                 }
                 self.bump_active_revision();
                 self.history_changed();
@@ -125,6 +125,7 @@ impl ChatWidget {
                 self.stream_states.remove(&message_id);
                 if let Some(message) = self.find_active_agent_mut(&message_id) {
                     message.markdown_source = bounded_text(&content);
+                    message.clear_stream_parts();
                     message.completed = true;
                     self.commit_active_agent(&message_id);
                 } else if let Some(message) = self.find_agent_mut(&message_id) {

@@ -84,6 +84,8 @@ impl HistoryCell for UserHistoryCell {
 pub(crate) struct AgentMessageCell {
     pub(crate) message_id: String,
     pub(crate) markdown_source: String,
+    stream_stable_source: Option<String>,
+    stream_tail_source: String,
     pub(crate) completed: bool,
     pub(crate) is_first_line: bool,
 }
@@ -97,6 +99,8 @@ impl AgentMessageCell {
         Self {
             message_id,
             markdown_source: markdown_source.into(),
+            stream_stable_source: None,
+            stream_tail_source: String::new(),
             completed: false,
             is_first_line,
         }
@@ -105,7 +109,15 @@ impl AgentMessageCell {
 
 impl HistoryCell for AgentMessageCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        render_agent_lines(&self.markdown_source, width, self.is_first_line)
+        if let Some(stable) = &self.stream_stable_source {
+            let mut lines = render_agent_lines(stable, width, self.is_first_line);
+            if !self.stream_tail_source.is_empty() {
+                lines.extend(render_agent_lines(&self.stream_tail_source, width, false));
+            }
+            lines
+        } else {
+            render_agent_lines(&self.markdown_source, width, self.is_first_line)
+        }
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -126,6 +138,21 @@ impl HistoryCell for AgentMessageCell {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+impl AgentMessageCell {
+    pub(crate) fn set_stream_parts(&mut self, source: &str, stable_len: usize) {
+        let stable_len = stable_len.min(source.len());
+        self.markdown_source.clear();
+        self.markdown_source.push_str(source);
+        self.stream_stable_source = Some(source[..stable_len].to_owned());
+        self.stream_tail_source = source[stable_len..].to_owned();
+    }
+
+    pub(crate) fn clear_stream_parts(&mut self) {
+        self.stream_stable_source = None;
+        self.stream_tail_source.clear();
     }
 }
 
@@ -253,4 +280,34 @@ fn prefixed_line(mut line: Line<'static>, prefix: &str, style: Style) -> Line<'s
     let mut spans = vec![Span::styled(prefix.to_owned(), style)];
     spans.append(&mut line.spans);
     Line::from(spans).style(line.style)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn streaming_renderer_consumes_stable_region_and_mutable_tail() {
+        let mut cell = AgentMessageCell::new("message".to_owned(), "", true);
+        cell.set_stream_parts("intro\n**tail**", "intro\n".len());
+
+        let lines = cell.display_lines(80);
+        let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("intro")));
+        assert!(rendered.iter().any(|line| line.contains("tail")));
+        assert!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with("• "))
+                .count()
+                <= 1
+        );
+    }
 }
