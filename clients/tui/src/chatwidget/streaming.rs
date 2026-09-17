@@ -60,20 +60,47 @@ impl MarkdownStreamState {
 }
 
 fn stable_prefix_len(source: &str) -> usize {
-    let Some(last_newline) = source.rfind('\n') else {
-        return 0;
-    };
-    let prefix = &source[..=last_newline];
-    let fence_count = prefix.match_indices("```").count();
-    let fence_stable_len = if fence_count.is_multiple_of(2) {
-        prefix.len()
-    } else {
-        let fence_start = prefix.rfind("```").unwrap_or(0);
-        source[..fence_start]
-            .rfind('\n')
-            .map_or(0, |index| index + 1)
-    };
-    table_holdback_start(&source[..fence_stable_len]).unwrap_or(fence_stable_len)
+    let mut stable_len = 0;
+    let mut offset = 0;
+    let mut fence = None;
+
+    for segment in source.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\n', '\r']);
+        let trimmed = line.trim_start();
+        if let Some((marker, marker_len)) = fence {
+            if is_closing_fence(trimmed, marker, marker_len) {
+                fence = None;
+                stable_len = offset + segment.len();
+            }
+        } else if let Some(next_fence) = opening_fence(trimmed) {
+            fence = Some(next_fence);
+        } else {
+            stable_len = offset + segment.len();
+        }
+        offset += segment.len();
+    }
+
+    table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
+}
+
+fn opening_fence(line: &str) -> Option<(char, usize)> {
+    let marker = line.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+    let marker_len = line
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    (marker_len >= 3).then_some((marker, marker_len))
+}
+
+fn is_closing_fence(line: &str, marker: char, marker_len: usize) -> bool {
+    let count = line
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    count >= marker_len && line.chars().skip(count).all(char::is_whitespace)
 }
 
 fn table_holdback_start(source: &str) -> Option<usize> {
@@ -243,6 +270,25 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("answer"))
         }));
+    }
+
+    #[test]
+    fn inline_backticks_do_not_open_a_streaming_fence() {
+        let mut state = MarkdownStreamState::default();
+        state.push("before\nUse ```inline``` without a block.\n");
+
+        assert_eq!(state.stable_source(), state.source());
+        assert_eq!(state.tail_source(), "");
+    }
+
+    #[test]
+    fn tilde_fences_hold_back_until_the_matching_fence_closes() {
+        let mut state = MarkdownStreamState::default();
+        state.push("before\n~~~text\ninside\n");
+        assert_eq!(state.stable_source(), "before\n");
+
+        state.push("~~~\nafter\n");
+        assert_eq!(state.stable_source(), state.source());
     }
 
     #[test]
