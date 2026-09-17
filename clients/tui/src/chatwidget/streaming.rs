@@ -81,17 +81,33 @@ fn table_holdback_start(source: &str) -> Option<usize> {
     if source[..cursor].ends_with('\n') {
         cursor = cursor.saturating_sub(1);
     }
-    let mut first_table_line = None;
+    let mut block_start = cursor;
+    let mut block_has_separator = false;
     while cursor > 0 {
         let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
         let line = source[line_start..cursor].trim();
         if !line.contains('|') {
             break;
         }
-        first_table_line = Some(line_start);
+        block_start = line_start;
+        block_has_separator |= is_table_separator(line);
         cursor = line_start.saturating_sub(1);
     }
-    first_table_line
+    block_has_separator.then_some(block_start)
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim_matches('|').trim();
+    !trimmed.is_empty()
+        && trimmed.split('|').all(|cell| {
+            let cell = cell.trim();
+            cell.len() >= 3
+                && cell.starts_with('-')
+                && cell.ends_with('-')
+                && cell
+                    .chars()
+                    .all(|character| matches!(character, '-' | ':' | ' '))
+        })
 }
 
 impl ChatWidget {
@@ -184,5 +200,14 @@ mod tests {
 
         assert_eq!(state.stable_source(), "before\n");
         assert!(state.tail_source().starts_with("| a | b |"));
+    }
+
+    #[test]
+    fn pipe_text_without_separator_does_not_hold_back_the_tail() {
+        let mut state = MarkdownStreamState::default();
+        state.push("before\nUse `a | b` when needed.\n");
+
+        assert_eq!(state.stable_source(), state.source());
+        assert_eq!(state.tail_source(), "");
     }
 }
