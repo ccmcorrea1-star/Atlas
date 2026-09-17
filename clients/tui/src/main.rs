@@ -297,5 +297,13 @@ mod tests {
                 command: server::ServerCommand::Restart
             })
         ));
+
+        let status = Cli::try_parse_from(["atlas", "server", "status"]).unwrap();
+        assert!(matches!(
+            status.command,
+            Some(Command::Server {
+                command: server::ServerCommand::Status
+            })
+        ));
     }
 }

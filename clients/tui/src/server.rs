@@ -25,6 +25,8 @@ pub enum ServerCommand {
     Stop,
     /// Desliga o Atlas Runtime e inicia uma nova instância.
     Restart,
+    /// Reporta o estado do Atlas Runtime sem alterá-lo.
+    Status,
 }
 
 pub fn execute(
@@ -37,6 +39,10 @@ pub fn execute(
         ServerCommand::Restart => {
             stop_existing_runtime(&RuntimePaths::from_environment(socket_override))?;
             run_runtime(socket_override)
+        }
+        // O status apenas consulta o socket e o arquivo de PID.
+        ServerCommand::Status => {
+            print_runtime_status(&RuntimePaths::from_environment(socket_override))
         }
     }
 }
@@ -82,6 +88,61 @@ fn stop_runtime_command(socket_override: Option<&str>) -> Result<(), Box<dyn Err
         println!("Atlas Runtime is not running.");
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeState {
+    Active { pid: u32 },
+    Stopped,
+    Inconsistent { reason: String },
+}
+
+// Classificacao pura para o status; a consulta nao altera o Runtime.
+fn classify_runtime_state(
+    pid: Option<u32>,
+    pid_alive: impl Fn(u32) -> bool,
+    socket_active: bool,
+) -> RuntimeState {
+    match pid {
+        Some(pid) if !pid_alive(pid) => RuntimeState::Inconsistent {
+            reason: format!("stale PID file for process {pid}"),
+        },
+        Some(pid) if !socket_active => RuntimeState::Inconsistent {
+            reason: format!("process {pid} is alive but the socket is not accepting connections"),
+        },
+        Some(pid) => RuntimeState::Active { pid },
+        None if socket_active => RuntimeState::Inconsistent {
+            reason: "the socket is accepting connections but has no PID file".to_owned(),
+        },
+        None => RuntimeState::Stopped,
+    }
+}
+
+fn print_runtime_status(paths: &RuntimePaths) -> Result<(), Box<dyn Error>> {
+    // Um PID invalido precisa ser reportado, nao ignorado.
+    let pid = read_pid(&paths.pid_path)?;
+    let socket_active = socket_is_active(&paths.socket_path);
+    match classify_runtime_state(pid, process_is_alive, socket_active) {
+        RuntimeState::Active { pid } => {
+            println!(
+                "Atlas Runtime is active at {} (pid {pid}).",
+                paths.socket_path.display()
+            );
+            Ok(())
+        }
+        RuntimeState::Stopped => {
+            println!(
+                "Atlas Runtime is not running at {}.",
+                paths.socket_path.display()
+            );
+            Ok(())
+        }
+        RuntimeState::Inconsistent { reason } => Err(io::Error::other(format!(
+            "Atlas Runtime state is inconsistent at {}: {reason}",
+            paths.socket_path.display()
+        ))
+        .into()),
+    }
 }
 
 fn stop_existing_runtime(paths: &RuntimePaths) -> Result<bool, Box<dyn Error>> {
@@ -206,6 +267,8 @@ impl RuntimePaths {
 #[cfg(test)]
 mod tests {
     use super::RuntimePaths;
+    use super::RuntimeState;
+    use super::classify_runtime_state;
 
     #[test]
     fn cli_socket_override_takes_precedence_over_environment() {
@@ -219,5 +282,40 @@ mod tests {
             paths.pid_path,
             std::path::PathBuf::from("/tmp/atlas-explicit.sock.pid")
         );
+    }
+
+    #[test]
+    fn status_reports_an_active_runtime() {
+        let state = classify_runtime_state(Some(42), |pid| pid == 42, true);
+
+        assert_eq!(state, RuntimeState::Active { pid: 42 });
+    }
+
+    #[test]
+    fn status_reports_a_stopped_runtime_without_files() {
+        let state = classify_runtime_state(None, |_| false, false);
+
+        assert_eq!(state, RuntimeState::Stopped);
+    }
+
+    #[test]
+    fn status_reports_a_stale_pid_file() {
+        let state = classify_runtime_state(Some(7), |_| false, false);
+
+        assert!(matches!(state, RuntimeState::Inconsistent { .. }));
+    }
+
+    #[test]
+    fn status_reports_a_live_process_without_a_listening_socket() {
+        let state = classify_runtime_state(Some(7), |_| true, false);
+
+        assert!(matches!(state, RuntimeState::Inconsistent { .. }));
+    }
+
+    #[test]
+    fn status_reports_a_listening_socket_without_a_pid_file() {
+        let state = classify_runtime_state(None, |_| false, true);
+
+        assert!(matches!(state, RuntimeState::Inconsistent { .. }));
     }
 }
