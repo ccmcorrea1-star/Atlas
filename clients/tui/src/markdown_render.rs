@@ -809,10 +809,37 @@ mod writer {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        if let Some(index) = text.find(|character: char| !character.is_whitespace()) {
-            return index;
+        let mut prefix_end = text
+            .char_indices()
+            .take_while(|(_, character)| character.is_whitespace())
+            .map(|(index, character)| index + character.len_utf8())
+            .last()
+            .unwrap_or(0);
+        loop {
+            let rest = &text[prefix_end..];
+            if let Some(after_quote) = rest.strip_prefix("> ") {
+                prefix_end += rest.len() - after_quote.len();
+                continue;
+            }
+            if let Some(after_marker) = rest.strip_prefix(['-', '*', '+'])
+                && after_marker.starts_with(' ')
+            {
+                prefix_end += rest.len() - after_marker.len() + 1;
+                break;
+            }
+            let Some(dot) = rest.find(". ") else {
+                break;
+            };
+            if dot > 0
+                && rest[..dot]
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+            {
+                prefix_end += dot + 2;
+            }
+            break;
         }
-        0
+        crate::wrapping::display_width(&text[..prefix_end])
     }
 
     fn heading_style(level: pulldown_cmark::HeadingLevel) -> Style {
@@ -922,6 +949,27 @@ mod tests {
                 .any(|span| span.style.fg.is_some())
         );
         insta::assert_snapshot!(text.join("\n"));
+    }
+
+    #[test]
+    fn list_wrapping_preserves_item_indent() {
+        let rendered = super::render_markdown_text_with_width(
+            "- A deliberately long list item that wraps across multiple rows",
+            Some(24),
+        );
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(text[0].starts_with("- "));
+        assert!(text.iter().skip(1).all(|line| line.starts_with("  ")));
+        insta::assert_snapshot!("list_wrapping_preserves_item_indent", text.join("\n"));
     }
 
     #[test]

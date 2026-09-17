@@ -1,0 +1,7 @@
+---
+source: src/markdown_render.rs
+expression: "text.join(\"\\n\")"
+---
+- A deliberately long
+  list item that wraps
+  across multiple rows
