@@ -22,6 +22,7 @@ use crate::wrapping::wrap_line;
 pub(crate) struct TranscriptOverlay {
     open: Cell<bool>,
     live_tail_cache: RefCell<Option<LiveTailCache>>,
+    committed_cache: RefCell<Option<CommittedTranscriptCache>>,
     scroll_offset: Cell<usize>,
     last_max_scroll: Cell<usize>,
     last_content_height: Cell<usize>,
@@ -30,6 +31,14 @@ pub(crate) struct TranscriptOverlay {
 #[derive(Debug, Clone)]
 struct LiveTailCache {
     width: u16,
+    revision: u64,
+    lines: Vec<Line<'static>>,
+}
+
+#[derive(Debug, Clone)]
+struct CommittedTranscriptCache {
+    width: u16,
+    cell_count: usize,
     revision: u64,
     lines: Vec<Line<'static>>,
 }
@@ -55,6 +64,7 @@ impl TranscriptOverlay {
 
     pub(crate) fn on_resize(&self) {
         self.live_tail_cache.borrow_mut().take();
+        self.committed_cache.borrow_mut().take();
         self.last_content_height.set(0);
     }
 
@@ -147,17 +157,34 @@ impl TranscriptOverlay {
 
         let content_height = area.height.saturating_sub(5);
         let content = Rect::new(area.x, area.y.saturating_add(1), area.width, content_height);
-        let mut lines = Vec::new();
-        for cell in app.cells() {
-            if !lines.is_empty() && !cell.is_stream_continuation() {
-                lines.push(Line::default());
+        let width = content.width.max(1);
+        let cell_count = app.cells().len();
+        let revision = app.history_revision();
+        let cached_lines = self
+            .committed_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.width == width && cache.cell_count == cell_count && cache.revision == revision
+            })
+            .map(|cache| cache.lines.clone());
+        let mut lines = cached_lines.unwrap_or_else(|| {
+            let mut lines = Vec::new();
+            for cell in app.cells() {
+                if !lines.is_empty() && !cell.is_stream_continuation() {
+                    lines.push(Line::default());
+                }
+                lines.extend(wrap_lines(cell.transcript_lines(width), width));
             }
-            lines.extend(wrap_lines(
-                cell.transcript_lines(content.width.max(1)),
-                content.width.max(1),
-            ));
-        }
-        let active_lines = self.live_tail(app, content.width.max(1));
+            *self.committed_cache.borrow_mut() = Some(CommittedTranscriptCache {
+                width,
+                cell_count,
+                revision,
+                lines: lines.clone(),
+            });
+            lines
+        });
+        let active_lines = self.live_tail(app, width);
         if !active_lines.is_empty()
             && !lines.is_empty()
             && app

@@ -108,6 +108,10 @@ impl App {
         self.chatwidget.active_revision()
     }
 
+    pub(crate) fn history_revision(&self) -> u64 {
+        self.chatwidget.history_revision()
+    }
+
     pub(crate) fn transcript_overlay(&self) -> &TranscriptOverlay {
         &self.transcript_overlay
     }

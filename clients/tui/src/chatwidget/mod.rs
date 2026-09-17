@@ -35,6 +35,7 @@ pub(crate) struct ChatWidget {
     turn_active: bool,
     context_usage: Option<ContextUsage>,
     active_revision: u64,
+    history_revision: u64,
     stream_states: HashMap<String, MarkdownStreamState>,
     turn_started_at: Option<Instant>,
 }
@@ -48,6 +49,7 @@ impl ChatWidget {
             turn_active: false,
             context_usage: None,
             active_revision: 0,
+            history_revision: 0,
             stream_states: HashMap::new(),
             turn_started_at: None,
         }
@@ -63,6 +65,10 @@ impl ChatWidget {
 
     pub(crate) fn active_revision(&self) -> u64 {
         self.active_revision
+    }
+
+    pub(crate) fn history_revision(&self) -> u64 {
+        self.history_revision
     }
 
     pub(crate) fn status(&self) -> &Status {
@@ -276,6 +282,7 @@ impl ChatWidget {
     }
 
     fn history_changed(&mut self) {
+        self.history_revision = self.history_revision.wrapping_add(1);
         while self.cells.len() > MAX_CELLS || self.cell_bytes() > MAX_CELL_BYTES {
             if self.cells.len() <= 1 {
                 break;
