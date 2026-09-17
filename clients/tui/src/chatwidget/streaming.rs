@@ -66,45 +66,31 @@ fn stable_prefix_len(source: &str) -> usize {
 
     let mut stable_len = 0;
     let mut offset = 0;
-    let mut fence = None;
+    let mut fences = crate::table_detect::FenceTracker::new();
 
     for segment in source.split_inclusive('\n') {
         let line = segment.trim_end_matches(['\n', '\r']);
-        let trimmed = line.trim_start();
-        if let Some((marker, marker_len)) = fence {
-            if is_closing_fence(trimmed, marker, marker_len) {
-                fence = None;
-                stable_len = offset + segment.len();
-            }
-        } else if let Some(next_fence) = opening_fence(trimmed) {
-            fence = Some(next_fence);
-        } else {
+        let before = fences.kind();
+        fences.advance(line);
+        let after = fences.kind();
+        if after == crate::table_detect::FenceKind::Outside {
+            // The final source segment without a newline remains mutable. This
+            // matches the Codex collector: only complete source lines enter the
+            // committed prefix.
+            stable_len = offset + segment.len();
+        } else if before != crate::table_detect::FenceKind::Outside
+            && after == crate::table_detect::FenceKind::Outside
+        {
             stable_len = offset + segment.len();
         }
         offset += segment.len();
     }
 
-    table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
-}
-
-fn opening_fence(line: &str) -> Option<(char, usize)> {
-    let marker = line.chars().next()?;
-    if !matches!(marker, '`' | '~') {
-        return None;
+    if !source.ends_with(['\n', '\r']) && stable_len == source.len() {
+        stable_len = source.rfind(['\n', '\r']).map_or(0, |index| index + 1);
     }
-    let marker_len = line
-        .chars()
-        .take_while(|character| *character == marker)
-        .count();
-    (marker_len >= 3).then_some((marker, marker_len))
-}
 
-fn is_closing_fence(line: &str, marker: char, marker_len: usize) -> bool {
-    let count = line
-        .chars()
-        .take_while(|character| *character == marker)
-        .count();
-    count >= marker_len && line.chars().skip(count).all(char::is_whitespace)
+    table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
 }
 
 fn is_reference_link_definition(line: &str) -> bool {
@@ -119,37 +105,43 @@ fn is_reference_link_definition(line: &str) -> bool {
 }
 
 fn table_holdback_start(source: &str) -> Option<usize> {
-    let mut cursor = source.len();
-    if source[..cursor].ends_with('\n') {
-        cursor = cursor.saturating_sub(1);
-    }
-    let mut block_start = cursor;
-    let mut block_has_separator = false;
-    while cursor > 0 {
-        let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
-        let line = source[line_start..cursor].trim();
-        if !line.contains('|') {
-            break;
-        }
-        block_start = line_start;
-        block_has_separator |= is_table_separator(line);
-        cursor = line_start.saturating_sub(1);
-    }
-    block_has_separator.then_some(block_start)
-}
+    let mut fences = crate::table_detect::FenceTracker::new();
+    let mut previous: Option<(usize, crate::table_detect::FenceKind, bool)> = None;
+    let mut pending_header = None;
+    let mut confirmed_table = None;
+    let mut offset = 0;
 
-fn is_table_separator(line: &str) -> bool {
-    let trimmed = line.trim_matches('|').trim();
-    !trimmed.is_empty()
-        && trimmed.split('|').all(|cell| {
-            let cell = cell.trim();
-            cell.len() >= 3
-                && cell.starts_with('-')
-                && cell.ends_with('-')
-                && cell
-                    .chars()
-                    .all(|character| matches!(character, '-' | ':' | ' '))
-        })
+    for segment in source.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\n', '\r']);
+        let fence_kind = fences.kind();
+        let candidate = (fence_kind != crate::table_detect::FenceKind::Other)
+            .then(|| crate::table_detect::strip_blockquote_prefix(line).trim())
+            .filter(|line| crate::table_detect::parse_table_segments(line).is_some());
+        let is_explicit_pipe_row =
+            candidate.is_some_and(|line| line.starts_with('|') || line.ends_with('|'));
+        let is_header = is_explicit_pipe_row
+            && candidate.is_some_and(crate::table_detect::is_table_header_line);
+        let is_delimiter = candidate.is_some_and(crate::table_detect::is_table_delimiter_line);
+
+        if let Some((start, previous_kind, previous_header)) = previous
+            && previous_kind != crate::table_detect::FenceKind::Other
+            && fence_kind != crate::table_detect::FenceKind::Other
+            && previous_header
+            && is_delimiter
+        {
+            confirmed_table.get_or_insert(start);
+            pending_header = None;
+        }
+        if confirmed_table.is_none() && !line.trim().is_empty() {
+            pending_header = is_header.then_some(offset);
+        }
+
+        previous = Some((offset, fence_kind, is_header));
+        fences.advance(line);
+        offset += segment.len();
+    }
+
+    confirmed_table.or(pending_header)
 }
 
 impl ChatWidget {
@@ -205,6 +197,32 @@ impl ChatWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_final_line_stays_in_the_mutable_tail() {
+        let mut state = MarkdownStreamState::default();
+        state.push("one\ntwo");
+
+        assert_eq!(state.stable_source(), "one\n");
+        assert_eq!(state.tail_source(), "two");
+    }
+
+    #[test]
+    fn table_holdback_ignores_pipes_inside_non_markdown_fences() {
+        let mut state = MarkdownStreamState::default();
+        state.push("```rust\n| not | a | table |\n```\nplain\n");
+
+        assert_eq!(state.stable_source(), state.source());
+    }
+
+    #[test]
+    fn table_holdback_supports_blockquote_tables() {
+        let mut state = MarkdownStreamState::default();
+        state.push("> | A | B |\n> | --- | --- |\n");
+
+        assert_eq!(state.stable_source(), "");
+        assert_eq!(state.tail_source(), "> | A | B |\n> | --- | --- |\n");
+    }
 
     #[test]
     fn stable_region_stops_before_an_open_code_fence() {

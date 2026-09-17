@@ -17,6 +17,7 @@ mod render;
 mod runtime;
 mod server;
 mod session_header;
+mod table_detect;
 mod ui_consts;
 mod wrapping;
 
