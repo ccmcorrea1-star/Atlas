@@ -229,7 +229,7 @@ impl HistoryCell for StreamingAgentTailCell {
 
 fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static>> {
     let usable_width = usize::from(width).saturating_sub(2).max(1);
-    let rendered = render_markdown_agent(source, Some(usable_width));
+    let rendered = render_markdown_agent(source, None);
     let mut result = Vec::new();
     for (line_index, line) in rendered.into_iter().enumerate() {
         let prefix = if first && line_index == 0 {

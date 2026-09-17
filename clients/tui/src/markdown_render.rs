@@ -519,7 +519,11 @@ mod writer {
                             crate::render::highlight::highlight_code_to_lines(code, language)
                         },
                     );
-                    let prefix = "  ".repeat(self.list_stack.len());
+                    let prefix = format!(
+                        "{}{}",
+                        "> ".repeat(self.quote_depth),
+                        "  ".repeat(self.list_stack.len())
+                    );
                     for mut line in highlighted {
                         let mut spans = vec![Span::styled(prefix.clone(), Style::default())];
                         spans.append(&mut line.spans);
@@ -812,5 +816,46 @@ mod tests {
             .collect::<String>();
 
         assert_eq!(text, "## Result");
+    }
+
+    #[test]
+    fn code_block_inside_blockquote_keeps_quote_prefix() {
+        let rendered = super::render_markdown_text("> ```rust\n> let answer = 42;\n> ```");
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            text.iter()
+                .any(|line| line.starts_with("> ") && line.contains("answer"))
+        );
+    }
+
+    #[test]
+    fn code_block_inside_list_keeps_list_indent() {
+        let rendered =
+            super::render_markdown_text("- item\n\n  ```rust\n  let answer = 42;\n  ```");
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            text.iter()
+                .any(|line| line.starts_with("  ") && line.contains("answer"))
+        );
     }
 }

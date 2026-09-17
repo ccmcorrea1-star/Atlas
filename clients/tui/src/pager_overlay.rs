@@ -134,7 +134,7 @@ impl TranscriptOverlay {
         .render(header, buffer);
         Span::styled("/ T R A N S C R I P T", Style::default().dim()).render(header, buffer);
 
-        let content_height = area.height.saturating_sub(4);
+        let content_height = area.height.saturating_sub(5);
         let content = Rect::new(area.x, area.y.saturating_add(1), area.width, content_height);
         let mut lines = Vec::new();
         for cell in app.cells() {
@@ -271,8 +271,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(rows[0].starts_with("/ T R A N S C R I P T"));
-        assert!(rows[8].contains("to scroll"));
-        assert!(rows[9].contains("q close"));
+        assert!(rows[7].contains("to scroll"));
+        assert!(rows[8].contains("q close"));
     }
 
     #[test]
