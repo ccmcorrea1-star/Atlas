@@ -1035,6 +1035,24 @@ mod tests {
     }
 
     #[test]
+    fn nested_blockquote_list_preserves_structure() {
+        let rendered =
+            super::render_markdown_text_with_width("> - outer item\n>   - nested item", Some(40));
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!("nested_blockquote_list_preserves_structure", text);
+    }
+
+    #[test]
     fn links_preserve_the_destination_as_terminal_hyperlink_metadata() {
         let rendered = super::render_markdown_text("[Atlas](https://example.com/atlas)");
         let text = rendered.lines[0]
