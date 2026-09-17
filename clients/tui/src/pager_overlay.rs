@@ -32,6 +32,8 @@ pub(crate) struct TranscriptOverlay {
 struct LiveTailCache {
     width: u16,
     revision: u64,
+    is_stream_continuation: bool,
+    animation_tick: Option<u64>,
     lines: Vec<Line<'static>>,
 }
 
@@ -254,9 +256,19 @@ impl TranscriptOverlay {
 
     fn live_tail(&self, app: &App, width: u16) -> Vec<Line<'static>> {
         let revision = app.active_revision();
+        let is_stream_continuation = app
+            .active_cells()
+            .first()
+            .is_some_and(|cell| cell.is_stream_continuation());
+        let animation_tick = app
+            .active_cells()
+            .iter()
+            .find_map(|cell| cell.transcript_animation_tick());
         if let Some(cache) = self.live_tail_cache.borrow().as_ref()
             && cache.width == width
             && cache.revision == revision
+            && cache.is_stream_continuation == is_stream_continuation
+            && cache.animation_tick == animation_tick
         {
             return cache.lines.clone();
         }
@@ -270,6 +282,8 @@ impl TranscriptOverlay {
         *self.live_tail_cache.borrow_mut() = Some(LiveTailCache {
             width,
             revision,
+            is_stream_continuation,
+            animation_tick,
             lines: lines.clone(),
         });
         lines
