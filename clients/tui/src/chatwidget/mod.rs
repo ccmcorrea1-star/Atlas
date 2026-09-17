@@ -84,7 +84,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn tick(&mut self) {
-        if !self.active_cells.is_empty() {
+        let committed = self
+            .stream_states
+            .values_mut()
+            .any(MarkdownStreamState::commit_tick);
+        if committed || !self.active_cells.is_empty() {
             self.active_revision = self.active_revision.wrapping_add(1);
         }
     }

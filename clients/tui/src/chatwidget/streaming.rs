@@ -11,6 +11,7 @@ use super::*;
 pub(super) struct MarkdownStreamState {
     source: String,
     stable_len: usize,
+    committed_len: usize,
     width: Option<u16>,
     revision: u64,
 }
@@ -24,6 +25,15 @@ impl MarkdownStreamState {
 
     fn source(&self) -> &str {
         &self.source
+    }
+
+    pub(super) fn commit_tick(&mut self) -> bool {
+        if self.committed_len == self.stable_len {
+            return false;
+        }
+        self.committed_len = self.stable_len;
+        self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     #[allow(dead_code)]
@@ -55,14 +65,33 @@ fn stable_prefix_len(source: &str) -> usize {
     };
     let prefix = &source[..=last_newline];
     let fence_count = prefix.match_indices("```").count();
-    if fence_count.is_multiple_of(2) {
+    let fence_stable_len = if fence_count.is_multiple_of(2) {
         prefix.len()
     } else {
         let fence_start = prefix.rfind("```").unwrap_or(0);
         source[..fence_start]
             .rfind('\n')
             .map_or(0, |index| index + 1)
+    };
+    table_holdback_start(&source[..fence_stable_len]).unwrap_or(fence_stable_len)
+}
+
+fn table_holdback_start(source: &str) -> Option<usize> {
+    let mut cursor = source.len();
+    if source[..cursor].ends_with('\n') {
+        cursor = cursor.saturating_sub(1);
     }
+    let mut first_table_line = None;
+    while cursor > 0 {
+        let line_start = source[..cursor].rfind('\n').map_or(0, |index| index + 1);
+        let line = source[line_start..cursor].trim();
+        if !line.contains('|') {
+            break;
+        }
+        first_table_line = Some(line_start);
+        cursor = line_start.saturating_sub(1);
+    }
+    first_table_line
 }
 
 impl ChatWidget {
@@ -134,5 +163,25 @@ mod tests {
 
         assert_eq!(state.tail_source(), "");
         assert_eq!(state.stable_source(), state.source());
+    }
+
+    #[test]
+    fn commit_tick_drains_only_new_stable_text() {
+        let mut state = MarkdownStreamState::default();
+        state.push("one\ntwo");
+
+        assert!(state.commit_tick());
+        assert!(!state.commit_tick());
+        state.push("\nthree");
+        assert!(state.commit_tick());
+    }
+
+    #[test]
+    fn table_rows_remain_in_the_mutable_tail_until_the_table_is_followed_by_text() {
+        let mut state = MarkdownStreamState::default();
+        state.push("before\n| a | b |\n|---|---|\n| 1 | 2 |\n");
+
+        assert_eq!(state.stable_source(), "before\n");
+        assert!(state.tail_source().starts_with("| a | b |"));
     }
 }
