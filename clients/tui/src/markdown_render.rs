@@ -921,6 +921,7 @@ mod tests {
                 .flat_map(|line| line.spans.iter())
                 .any(|span| span.style.fg.is_some())
         );
+        insta::assert_snapshot!(text.join("\n"));
     }
 
     #[test]

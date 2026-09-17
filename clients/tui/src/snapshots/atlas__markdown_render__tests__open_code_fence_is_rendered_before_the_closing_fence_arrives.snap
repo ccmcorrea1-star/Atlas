@@ -1,0 +1,5 @@
+---
+source: src/markdown_render.rs
+expression: "text.join(\"\\n\")"
+---
+let answer = 42;
