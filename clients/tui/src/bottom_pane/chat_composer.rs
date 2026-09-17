@@ -164,7 +164,7 @@ fn completion_popup_height(app: &App, width: u16) -> u16 {
         .iter()
         .map(|(_, description)| wrap_text(description, description_width).len().max(1))
         .sum::<usize>();
-    u16::try_from(rows).unwrap_or(u16::MAX)
+    u16::try_from(rows.min(crate::app::MAX_COMPLETION_ROWS)).unwrap_or(u16::MAX)
 }
 
 fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {

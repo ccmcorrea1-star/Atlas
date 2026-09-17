@@ -27,7 +27,7 @@ use crate::pager_overlay::TranscriptOverlay;
 use crate::runtime::ContextUsage;
 use crate::runtime::RuntimeEvent;
 
-const MAX_COMPLETION_ROWS: usize = 8;
+pub(crate) const MAX_COMPLETION_ROWS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -639,7 +639,7 @@ impl App {
                 return true;
             }
         }
-        if self.all_completion_popup_items().len() > 1 {
+        if !self.all_completion_popup_items().is_empty() {
             match (key.code, key.modifiers) {
                 (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                     self.move_completion_selection(false);
