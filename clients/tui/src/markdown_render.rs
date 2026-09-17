@@ -371,10 +371,36 @@ mod writer {
             while let Some(event) = self.events.next() {
                 self.handle(event);
             }
+            self.flush_open_code_block();
             self.flush_line();
             while self.lines.last().is_some_and(|line| line.spans.is_empty()) {
                 self.lines.pop();
             }
+        }
+
+        fn flush_open_code_block(&mut self) {
+            if !self.in_code_block {
+                return;
+            }
+            let code = self
+                .code_buffer
+                .strip_suffix('\n')
+                .unwrap_or(&self.code_buffer);
+            let highlighted = self.code_lang.as_deref().map_or_else(
+                || crate::render::highlight::highlight_code_to_lines(code, "text"),
+                |language| crate::render::highlight::highlight_code_to_lines(code, language),
+            );
+            let prefix = format!(
+                "{}{}",
+                "> ".repeat(self.quote_depth),
+                "  ".repeat(self.list_stack.len())
+            );
+            for mut line in highlighted {
+                let mut spans = vec![Span::styled(prefix.clone(), Style::default())];
+                spans.append(&mut line.spans);
+                self.lines.push(Line::from(spans).style(line.style));
+            }
+            self.in_code_block = false;
         }
 
         fn handle(&mut self, event: Event<'a>) {
@@ -870,6 +896,30 @@ mod tests {
         assert!(
             text.iter()
                 .any(|line| line.starts_with("  ") && line.contains("answer"))
+        );
+    }
+
+    #[test]
+    fn open_code_fence_is_rendered_before_the_closing_fence_arrives() {
+        let rendered = super::render_markdown_text("```rust\nlet answer = 42;\n");
+        let text = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(text.iter().any(|line| line.contains("let answer = 42;")));
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.style.fg.is_some())
         );
     }
 
