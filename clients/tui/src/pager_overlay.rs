@@ -373,6 +373,41 @@ mod tests {
     }
 
     #[test]
+    fn manual_scroll_position_is_preserved_when_transcript_grows() {
+        let mut app = App::new("pager-growth".to_owned());
+        let content = (0..20)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "first".to_owned(),
+            content,
+        });
+        let area = Rect::new(0, 0, 32, 10);
+        let mut buffer = Buffer::empty(area);
+        let overlay = TranscriptOverlay::default();
+        overlay.render(&app, area, &mut buffer);
+        overlay.scroll_to_top();
+
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "second".to_owned(),
+            content: "new tail".to_owned(),
+        });
+        overlay.render(&app, area, &mut buffer);
+
+        assert_eq!(overlay.scroll_offset.get(), 0);
+        let rows = (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("line-0")));
+        assert!(!rows.iter().any(|row| row.contains("new tail")));
+    }
+
+    #[test]
     fn owns_open_state_and_returns_completion_when_closed() {
         let overlay = TranscriptOverlay::default();
         assert!(!overlay.is_open());
