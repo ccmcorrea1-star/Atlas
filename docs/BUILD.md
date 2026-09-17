@@ -81,6 +81,7 @@ atlas server stop
 | ---------------------- | -------------------------------------------------------- |
 | `npm run dev`          | Executa o TypeScript em modo watch                       |
 | `atlas server run`     | Inicia o servidor local do Atlas Runtime                 |
+| `atlas server status`  | Consulta o estado do servidor sem alterá-lo              |
 | `atlas server restart` | Reinicia o servidor local do Atlas Runtime               |
 | `atlas server stop`    | Desliga o servidor local do Atlas Runtime                |
 | `npm run format`       | Formata os arquivos com Prettier                         |

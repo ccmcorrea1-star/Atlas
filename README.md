@@ -27,15 +27,35 @@ export OPENCODE_GO_API_KEY="sua-chave"
 atlas server run
 ```
 
-Para reiniciar ou desligar o servidor:
+Em outro terminal, abra o cliente de terminal:
 
 ```bash
+atlas
+```
+
+Para acompanhar, reiniciar ou desligar o servidor:
+
+```bash
+atlas server status
 atlas server restart
 atlas server stop
 ```
 
-Em outro terminal:
+## Configuração
 
-```bash
-cargo run --manifest-path clients/tui/Cargo.toml -- --conversation-id minha-conversa
+O Runtime lê uma configuração global única em JSON. O caminho é resolvido nesta
+ordem: `ATLAS_CONFIG`, `$XDG_CONFIG_HOME/atlas/config.json`,
+`~/.config/atlas/config.json`. Sem o arquivo, os defaults atuais são usados; o
+arquivo nunca é criado automaticamente.
+
+```json
+{
+  "version": 1,
+  "provider": "opencode-go",
+  "model": "gpt-5.6-luna"
+}
 ```
+
+`version`, `provider` e `model` são obrigatórios; credenciais não fazem parte
+desse arquivo e `OPENCODE_GO_API_KEY` continua sendo lida do ambiente. O
+contrato completo está em [`protocol/config.schema.json`](protocol/config.schema.json).
