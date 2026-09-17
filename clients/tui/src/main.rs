@@ -10,6 +10,7 @@ mod file_search;
 mod history_cell;
 mod history_store;
 mod keymap;
+mod line_truncation;
 mod markdown;
 mod markdown_render;
 mod pager_overlay;
@@ -19,6 +20,7 @@ mod server;
 mod session_header;
 mod table_detect;
 mod ui_consts;
+mod width;
 mod wrapping;
 
 use std::error::Error;
