@@ -321,6 +321,24 @@ fn render_stream_part(
         if cached.width == width && cached.revision == revision {
             return cached.lines.clone();
         }
+        if cached.width == width && cached.open_code.is_none() && source.starts_with(&cached.source)
+        {
+            let appended = &source[cached.source.len()..];
+            if appended.is_empty() {
+                cached.source = source.to_owned();
+                cached.revision = revision;
+                return cached.lines.clone();
+            }
+            if appended.ends_with('\n') {
+                cached
+                    .lines
+                    .extend(render_agent_lines(appended, width, false));
+                cached.incremental_appends = cached.incremental_appends.saturating_add(1);
+                cached.source = source.to_owned();
+                cached.revision = revision;
+                return cached.lines.clone();
+            }
+        }
         if cached.width == width
             && source.starts_with(&cached.source)
             && let Some((language, body)) = open_code_parts(source)
@@ -451,6 +469,26 @@ mod tests {
                 .filter(|line| line.starts_with("• "))
                 .count()
                 <= 1
+        );
+    }
+
+    #[test]
+    fn stable_stream_appends_only_the_new_complete_region() {
+        let mut cell = AgentMessageCell::new("stable".to_owned(), "", true);
+        cell.set_stream_parts("intro\n", 6);
+        let _ = cell.display_lines(80);
+        cell.set_stream_parts("intro\nsecond\n", 13);
+        let rendered = cell.display_lines(80);
+
+        let cache = cell.stable_render_cache.lock().unwrap();
+        assert_eq!(
+            cache.as_ref().map(|cache| cache.incremental_appends),
+            Some(1)
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text(line).contains("second"))
         );
     }
 
