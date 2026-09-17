@@ -3,6 +3,7 @@
 //! O Runtime permanece agnostico ao provider; este tipo cuida apenas do texto,
 //! movimento do cursor, quebra visual e buffer de descarte dos atalhos.
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use crossterm::event::KeyCode;
@@ -64,6 +65,7 @@ pub(crate) struct TextArea {
     cursor_pos: usize,
     preferred_col: Option<usize>,
     kill_buffer: String,
+    viewport_scroll: Cell<u16>,
 }
 
 impl TextArea {
@@ -301,10 +303,19 @@ impl TextArea {
             return TextAreaState::default();
         }
         let (row, _) = cursor_position(&self.text, self.cursor_pos, usize::from(area.width).max(1));
-        TextAreaState {
-            scroll: u16::try_from(row.saturating_sub(usize::from(area.height.saturating_sub(1))))
-                .unwrap_or(u16::MAX),
-        }
+        let height = usize::from(area.height.max(1));
+        let max_scroll = row.saturating_sub(height.saturating_sub(1));
+        let current = usize::from(self.viewport_scroll.get());
+        let next = if row < current {
+            row
+        } else if row >= current.saturating_add(height) {
+            max_scroll
+        } else {
+            current.min(max_scroll)
+        };
+        let scroll = u16::try_from(next).unwrap_or(u16::MAX);
+        self.viewport_scroll.set(scroll);
+        TextAreaState { scroll }
     }
 
     pub(crate) fn cursor_pos_with_state(
@@ -501,5 +512,18 @@ mod tests {
         assert_eq!(area.cursor(), 8);
         area.input(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
         assert_eq!(area.cursor(), 11);
+    }
+
+    #[test]
+    fn viewport_scroll_persists_until_cursor_leaves_the_visible_window() {
+        let mut area = TextArea::new();
+        area.insert_str("a\na\na");
+        let viewport = ratatui::layout::Rect::new(0, 0, 4, 2);
+
+        assert_eq!(area.state_for_viewport(viewport).scroll, 1);
+        assert_eq!(area.state_for_viewport(viewport).scroll, 1);
+        area.move_cursor_up();
+        area.move_cursor_up();
+        assert_eq!(area.state_for_viewport(viewport).scroll, 0);
     }
 }
