@@ -430,11 +430,15 @@ impl App {
 
     /// O paste pertence a view ativa, nunca a um composer oculto.
     pub fn handle_paste(&mut self, text: &str) {
-        if self.shortcuts_open()
-            || self.transcript_overlay.is_open()
-            || self.quit_confirmation
-            || self.bottom_pane.composer.history_search_open
-        {
+        if self.shortcuts_open() || self.transcript_overlay.is_open() || self.quit_confirmation {
+            return;
+        }
+        if self.bottom_pane.composer.history_search_open {
+            self.bottom_pane
+                .composer
+                .history_search_query
+                .push_str(text);
+            self.refresh_history_search();
             return;
         }
         self.bottom_pane
@@ -568,17 +572,6 @@ impl App {
             self.bottom_pane.composer.file_popup_suppressed = false;
             self.bottom_pane.composer.completion_popup.reset();
         }
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
-            && key.modifiers == KeyModifiers::NONE
-            && !self.completion_popup_items().is_empty()
-        {
-            if self.slash_popup_active() {
-                self.complete_slash_command();
-            } else {
-                self.complete_file_mention();
-            }
-            return None;
-        }
         let modified = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -642,6 +635,18 @@ impl App {
             .composer
             .paste_burst
             .clear_window_after_non_char();
+
+        if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
+            && key.modifiers == KeyModifiers::NONE
+            && !self.completion_popup_items().is_empty()
+        {
+            if self.slash_popup_active() {
+                self.complete_slash_command();
+            } else {
+                self.complete_file_mention();
+            }
+            return None;
+        }
 
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1143,6 +1148,46 @@ mod tests {
         assert_eq!(app.input(), "second");
         assert!(app.handle_global_key(down));
         assert_eq!(app.input(), "draft");
+    }
+
+    #[test]
+    fn reverse_history_search_accepts_pasted_query_and_restores_draft() {
+        let mut app = App::new("history-search-paste".to_owned());
+        app.insert_text("git status");
+        assert_eq!(app.submit_input().as_deref(), Some("git status"));
+        app.insert_text("draft");
+
+        assert!(app.handle_global_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL,)));
+        app.handle_paste("git");
+        assert_eq!(app.history_search_query(), "git");
+        assert_eq!(app.input(), "git status");
+
+        assert!(app.handle_global_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
+        assert_eq!(app.input(), "draft");
+    }
+
+    #[test]
+    fn paste_burst_tab_does_not_accept_an_active_completion_popup() {
+        let mut app = App::new("paste-popup-priority".to_owned());
+        app.insert_text("/");
+        assert!(!app.completion_popup_items().is_empty());
+        app.bottom_pane
+            .composer
+            .paste_burst
+            .begin_with_retro_grabbed("review this".to_owned(), Instant::now());
+
+        assert!(
+            app.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE,))
+                .is_none()
+        );
+        let pasted = app
+            .bottom_pane
+            .composer
+            .paste_burst
+            .flush_before_modified_input()
+            .expect("active paste burst");
+        app.handle_paste(&pasted);
+        assert_eq!(app.input(), "/review this\t");
     }
 
     #[test]
