@@ -5,6 +5,7 @@ import {
   MemorySession,
   Runner,
   type FunctionTool,
+  type Model,
   type RunStreamEvent,
 } from '@openai/agents';
 
@@ -36,6 +37,8 @@ export const Atlas = new Agent({
 export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // O signal permite ao Runtime interromper o request de modelo ativo.
   abortSignal?: AbortSignal;
+  // O modelo da forma "provider/modelo" definido pela configuração global.
+  model?: string;
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
   capabilityRuntime?: CapabilityRuntime;
@@ -351,11 +354,12 @@ function createAtlasAgent(
     channel: 'stdout' | 'stderr',
     delta: string,
   ) => void | Promise<void>,
+  model: string | Model = Atlas.model,
 ): Agent {
   return new Agent({
     name: Atlas.name,
     instructions: ATLAS_INSTRUCTIONS,
-    model: Atlas.model,
+    model,
     tools: [
       listToolsTool(capabilityRuntime),
       discoveryTool(capabilityRuntime),
@@ -613,6 +617,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     capabilityRuntime: requestedCapabilityRuntime,
     abortSignal,
     onEvent,
+    model: requestedModel,
     ...providerOptions
   } = options;
   const runtime = getAtlasRuntime(providerOptions);
@@ -633,6 +638,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
             });
           }
         },
+    requestedModel, // Sem modelo explicito, o Agent base continua sendo usado.
   );
   // A Session guarda o historico; o contexto assincrono aplica seu ID ao request.
   const session = runtime.sessions.get(sessionId) ?? new MemorySession({ sessionId });

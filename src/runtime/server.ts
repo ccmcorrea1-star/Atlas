@@ -2,11 +2,18 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import {
+  atlasRuntimeSessionData,
+  DEFAULT_ATLAS_CONFIG,
+  type AtlasConfig,
+  loadAtlasConfig,
+} from '../config/index.js';
 import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
 import {
   getOpenCodeGoContextWindow,
-  OPENCODE_GO_MODEL_ID,
+  OPENCODE_GO_MODELS,
   OPENCODE_GO_PROVIDER,
+  type OpenCodeGoModelDefinition,
 } from '../opencode-go.js';
 import {
   parseRuntimeMessage,
@@ -62,13 +69,17 @@ async function removeRuntimePid(socketPath: string): Promise<void> {
 export type RuntimeServerOptions = {
   socketPath?: string;
   runOptions?: Omit<AtlasRunOptions, 'conversationId' | 'onEvent'>;
+  // Configuração global já resolvida pelo loader canônico.
+  atlasConfig?: AtlasConfig;
 };
 
 export class AtlasRuntimeServer {
   public readonly socketPath: string;
 
-  private readonly runOptions;
+  private readonly runOptions: Omit<AtlasRunOptions, 'conversationId' | 'onEvent'>;
   private readonly contextWindow: number | undefined;
+  private readonly sessionData: RuntimeSessionUpdatedData;
+  private readonly atlasModel: string;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
@@ -76,7 +87,21 @@ export class AtlasRuntimeServer {
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
     this.runOptions = options.runOptions ?? {};
-    this.contextWindow = getOpenCodeGoContextWindow(this.runOptions);
+    // Provider/model da sessão são definidos pela configuração global do Atlas.
+    this.sessionData = atlasRuntimeSessionData(options.atlasConfig ?? DEFAULT_ATLAS_CONFIG);
+    this.atlasModel = `${OPENCODE_GO_PROVIDER}/${this.sessionData.model}`;
+    // Modelos fora do registro inicial usam o endpoint de responses por padrão.
+    const registry = OPENCODE_GO_MODELS as Readonly<Record<string, OpenCodeGoModelDefinition>>;
+    this.runOptions = Object.hasOwn(registry, this.sessionData.model)
+      ? this.runOptions
+      : {
+          ...this.runOptions,
+          models: {
+            ...this.runOptions.models,
+            [this.sessionData.model]: { endpoint: 'responses' },
+          },
+        };
+    this.contextWindow = getOpenCodeGoContextWindow(this.runOptions, this.atlasModel);
     this.transport = new UnixSocketServer({
       socketPath: this.socketPath,
       onLine: (line, send) => this.handleLine(line, send),
@@ -167,10 +192,7 @@ export class AtlasRuntimeServer {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
     };
-    const sessionData: RuntimeSessionUpdatedData = {
-      model: OPENCODE_GO_MODEL_ID,
-      provider: OPENCODE_GO_PROVIDER,
-    };
+    const sessionData: RuntimeSessionUpdatedData = this.sessionData;
     publish(runtimeEvent(request, 'session.updated', sessionData));
     publish(runtimeEvent(request, 'turn.started'));
 
@@ -182,6 +204,8 @@ export class AtlasRuntimeServer {
       const result = await runAtlas(request.input, {
         ...this.runOptions,
         abortSignal,
+        // O provider é fixo nesta fase; o modelo vem da configuração global.
+        model: this.atlasModel,
         conversationId: request.conversation_id,
         onEvent: (event) => {
           messageId = eventMessageId(event) ?? messageId;
@@ -277,7 +301,9 @@ function isMainModule(): boolean {
 }
 
 async function runServer(): Promise<void> {
-  const server = new AtlasRuntimeServer();
+  // O Runtime só inicia com uma configuração global válida.
+  const { config, path, source } = await loadAtlasConfig();
+  const server = new AtlasRuntimeServer({ atlasConfig: config });
   await server.listen();
   try {
     await writeRuntimePid(server.socketPath);
@@ -299,6 +325,8 @@ async function runServer(): Promise<void> {
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
   console.log(`Atlas Runtime listening on ${server.socketPath}`);
+  // Sem arquivo, os defaults vigentes são usados e o caminho é reportado.
+  console.log(`Atlas config: ${path} (${source})`);
 }
 
 if (isMainModule()) {

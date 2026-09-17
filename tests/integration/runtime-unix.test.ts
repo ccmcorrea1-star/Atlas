@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
 import type { CapabilityRuntime } from '../../src/capability-runtime.js';
+import { atlasRuntimeSessionData } from '../../src/config/index.js';
 import { runAtlas } from '../../src/index.js';
 import { AtlasRuntimeServer } from '../../src/runtime/server.js';
 import { RUNTIME_PROTOCOL, RUNTIME_PROTOCOL_VERSION } from '../../src/runtime/protocol.js';
@@ -829,4 +830,44 @@ test('publishes provider stream failures as a terminal runtime error', async () 
     await runtime.close();
     await model.close();
   }
+});
+
+test('session metadata follows the global Atlas config', async () => {
+  const model = await startStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-config-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    atlasConfig: { version: 1, provider: 'opencode-go', model: 'custom-model' },
+    runOptions: {
+      apiKey: 'atlas-config-integration-key',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurn(socketPath, 'config-integration-conversation');
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      // Modelos fora do registro não têm janela de contexto declarada.
+      ['session.updated', 'turn.started', 'message.delta', 'message.completed', 'turn.completed'],
+    );
+    assert.deepEqual(events[0]?.data, {
+      model: 'custom-model',
+      provider: 'opencode-go',
+    });
+    assert.equal(model.requests[0]?.model, 'custom-model');
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('rejects providers that the Runtime does not support yet', () => {
+  assert.throws(
+    () => atlasRuntimeSessionData({ version: 1, provider: 'anthropic', model: 'claude-x' }),
+    /is not supported yet/,
+  );
 });

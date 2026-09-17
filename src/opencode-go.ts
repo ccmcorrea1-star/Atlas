@@ -86,11 +86,15 @@ function validateContextWindow(contextWindow: number | undefined): number | unde
 
 export function getOpenCodeGoContextWindow(
   options: OpenCodeGoProviderOptions = {},
+  model: string = OPENCODE_GO_MODEL,
 ): number | undefined {
-  const models = { ...OPENCODE_GO_MODELS, ...(options.models ?? {}) };
-  return validateContextWindow(
-    options.contextWindow ?? models[OPENCODE_GO_MODEL_ID]?.contextWindow,
-  );
+  // A janela deve corresponder ao modelo da sessão, não ao modelo padrão.
+  const modelId = getModelId(model);
+  const models: Readonly<Record<string, OpenCodeGoModelDefinition>> = {
+    ...OPENCODE_GO_MODELS,
+    ...(options.models ?? {}),
+  };
+  return validateContextWindow(options.contextWindow ?? models[modelId]?.contextWindow);
 }
 
 function normalizeBaseURL(baseURL: string): string {
