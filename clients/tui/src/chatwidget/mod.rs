@@ -104,10 +104,8 @@ impl ChatWidget {
             })
             .collect::<Vec<_>>();
         for (message_id, source, stable_len) in committed_parts {
-            if let Some(message) = self.find_active_agent_mut(&message_id) {
-                let display_source = bounded_text(&source);
-                message.set_stream_parts(&display_source, stable_len);
-            }
+            let display_source = bounded_text(&source);
+            self.materialize_stream_commit(&message_id, &display_source, stable_len);
         }
         if !self.stream_states.is_empty() || !self.active_cells.is_empty() {
             self.active_revision = self.active_revision.wrapping_add(1);
@@ -227,6 +225,74 @@ impl ChatWidget {
                 .downcast_mut::<ToolCell>()
                 .filter(|tool| tool.tool_id() == id)
         })
+    }
+
+    fn materialize_stream_commit(&mut self, id: &str, source: &str, stable_len: usize) {
+        let stable_len = stable_len.min(source.len());
+        let stable = &source[..stable_len];
+        let tail = &source[stable_len..];
+        let positions = self
+            .active_cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                cell.as_any()
+                    .downcast_ref::<AgentMessageCell>()
+                    .filter(|message| message.message_id == id)
+                    .map(|_| index)
+            })
+            .collect::<Vec<_>>();
+        let Some(&first_index) = positions.first() else {
+            return;
+        };
+
+        if stable.is_empty() {
+            let tail_index = *positions.last().unwrap_or(&first_index);
+            if let Some(message) = self.active_cells[tail_index]
+                .as_any_mut()
+                .downcast_mut::<AgentMessageCell>()
+            {
+                message.set_stream_parts(tail, 0);
+                message.markdown_source = source.to_owned();
+            }
+            return;
+        }
+
+        if let Some(message) = self.active_cells[first_index]
+            .as_any_mut()
+            .downcast_mut::<AgentMessageCell>()
+        {
+            message.set_stream_parts(stable, stable.len());
+        }
+
+        if tail.is_empty() {
+            for &index in positions.iter().skip(1).rev() {
+                self.active_cells.remove(index);
+            }
+            return;
+        }
+
+        let tail_cell = {
+            let mut cell = AgentMessageCell::new(id.to_owned(), tail, false);
+            cell.set_stream_parts(tail, 0);
+            cell.markdown_source = source.to_owned();
+            Box::new(cell) as Box<dyn HistoryCell>
+        };
+        if let Some(&tail_index) = positions.last() {
+            if tail_index == first_index {
+                self.active_cells.insert(first_index + 1, tail_cell);
+            } else {
+                self.active_cells[tail_index] = tail_cell;
+                for &index in positions
+                    .iter()
+                    .skip(1)
+                    .take(positions.len().saturating_sub(2))
+                    .rev()
+                {
+                    self.active_cells.remove(index);
+                }
+            }
+        }
     }
 
     fn commit_active_agent(&mut self, id: &str) {
