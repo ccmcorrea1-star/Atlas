@@ -40,7 +40,7 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
             status: 'completed',
             call_id: 'discover-call',
             name: 'discover',
-            arguments: JSON.stringify({ path: 'process' }),
+            arguments: JSON.stringify({ query: 'executar processo' }),
           },
         ]
       : requestNumber === 2
@@ -152,7 +152,7 @@ function materializedToolNameAt(request: RequestBody, index: number): string {
   return name;
 }
 
-test('discovers and materializes process.exec progressively', async () => {
+test('queries, chooses, materializes, and executes process.exec in the same turn', async () => {
   const server = await startCapabilityAgentServer();
 
   try {
@@ -178,7 +178,7 @@ test('discovers and materializes process.exec progressively', async () => {
       tools(secondRequest).map((tool) => tool.name),
       ['discover'],
     );
-    assert.match(JSON.stringify(secondRequest.input), /\\"path\\":\\"process\\"/);
+    assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar processo\\"/);
     assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /description/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /schema/);
@@ -204,6 +204,10 @@ test('discovers and materializes process.exec progressively', async () => {
     assert.match(
       JSON.stringify(fourthRequest.input),
       new RegExp(process.version.replaceAll('.', '\\.')),
+    );
+    assert.deepEqual(
+      tools(fourthRequest).map((tool) => tool.name),
+      ['discover', materializedTool.name],
     );
   } finally {
     await server.close();
@@ -259,7 +263,7 @@ test('materializes only the selected capability for the current turn', async () 
   const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
   const capabilityRuntime: CapabilityRuntime = {
     discover: async (request = {}) =>
-      request.path === undefined
+      request.query === undefined && request.path === undefined
         ? [{ id: 'process', type: 'group', summary: 'ferramentas de processo' }]
         : [{ id: definition.id, type: definition.type, summary: definition.summary }],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),

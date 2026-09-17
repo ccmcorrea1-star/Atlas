@@ -6,6 +6,7 @@ import {
   Runner,
   type FunctionTool,
   type RunStreamEvent,
+  type AgentOptions,
 } from '@openai/agents';
 
 import {
@@ -236,7 +237,7 @@ function materializeTool(
 
 function discoveryTool(
   capabilityRuntime: CapabilityRuntime,
-  addTool: (definition: CapabilityDefinition) => void,
+  exposeCapability: (definition: CapabilityDefinition) => void,
 ): FunctionTool {
   const parameters = {
     type: 'object',
@@ -269,7 +270,7 @@ function discoveryTool(
           throw new Error(`Capability "${id}" was not found.`);
         }
         if (definition.type === 'tool') {
-          addTool(definition);
+          exposeCapability(definition);
         }
         return JSON.stringify(definition);
       }
@@ -292,6 +293,20 @@ type AtlasAgent = {
   capabilityIdsByToolName: ReadonlyMap<string, string>;
 };
 
+class ProgressiveAtlasAgent extends Agent {
+  private readonly exposedTools: ReadonlyMap<string, FunctionTool>;
+
+  public constructor(config: AgentOptions, exposedTools: ReadonlyMap<string, FunctionTool>) {
+    super(config);
+    this.exposedTools = exposedTools;
+  }
+
+  public override async getAllTools(...args: Parameters<Agent['getAllTools']>) {
+    const directTools = await super.getAllTools(...args);
+    return [...directTools, ...this.exposedTools.values()];
+  }
+}
+
 type DiscoveryToolRequest = CapabilityDiscoveryRequest & {
   id?: string;
 };
@@ -307,17 +322,12 @@ function createAtlasAgent(
   ) => void | Promise<void>,
 ): AtlasAgent {
   const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
-  const agent = Atlas.clone({
-    instructions: `${ATLAS_INSTRUCTIONS}\n\nAvailable capability groups:\n${catalog}`,
-    tools: [],
-  });
-  const materialized = new Set<string>();
+  const exposedTools = new Map<string, FunctionTool>();
   const capabilityIdsByToolName = new Map<string, string>();
-  const addTool = (definition: CapabilityDefinition) => {
-    if (materialized.has(definition.id)) {
+  const exposeCapability = (definition: CapabilityDefinition) => {
+    if (exposedTools.has(definition.id)) {
       return;
     }
-    materialized.add(definition.id);
     const toolName = providerToolName(definition.id);
     const mappedCapabilityId = capabilityIdsByToolName.get(toolName);
     if (mappedCapabilityId !== undefined && mappedCapabilityId !== definition.id) {
@@ -326,12 +336,21 @@ function createAtlasAgent(
       );
     }
     capabilityIdsByToolName.set(toolName, definition.id);
-    agent.tools.push(
+    exposedTools.set(
+      definition.id,
       materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName, onOutput),
     );
   };
-  const discover = discoveryTool(capabilityRuntime, addTool);
-  agent.tools.push(discover);
+  const discover = discoveryTool(capabilityRuntime, exposeCapability);
+  const agent = new ProgressiveAtlasAgent(
+    {
+      name: Atlas.name,
+      instructions: `${ATLAS_INSTRUCTIONS}\n\nAvailable capability groups:\n${catalog}`,
+      model: Atlas.model,
+      tools: [discover],
+    },
+    exposedTools,
+  );
   return { agent, capabilityIdsByToolName };
 }
 
