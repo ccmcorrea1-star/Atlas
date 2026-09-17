@@ -3,6 +3,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::sync::Mutex;
 use unicode_width::UnicodeWidthStr;
 
 use super::HistoryCell;
@@ -80,12 +81,21 @@ impl HistoryCell for UserHistoryCell {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StreamingRenderCache {
+    width: u16,
+    revision: u64,
+    lines: Vec<Line<'static>>,
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentMessageCell {
     pub(crate) message_id: String,
     pub(crate) markdown_source: String,
     stream_stable_source: Option<String>,
     stream_tail_source: String,
+    stream_revision: u64,
+    stream_render_cache: Mutex<Option<StreamingRenderCache>>,
     pub(crate) completed: bool,
     pub(crate) is_first_line: bool,
 }
@@ -101,6 +111,8 @@ impl AgentMessageCell {
             markdown_source: markdown_source.into(),
             stream_stable_source: None,
             stream_tail_source: String::new(),
+            stream_revision: 0,
+            stream_render_cache: Mutex::new(None),
             completed: false,
             is_first_line,
         }
@@ -110,10 +122,28 @@ impl AgentMessageCell {
 impl HistoryCell for AgentMessageCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         if let Some(stable) = &self.stream_stable_source {
+            if let Some(lines) = self
+                .stream_render_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .filter(|cache| cache.width == width && cache.revision == self.stream_revision)
+                .map(|cache| cache.lines.clone())
+            {
+                return lines;
+            }
             let mut lines = render_agent_lines(stable, width, self.is_first_line);
             if !self.stream_tail_source.is_empty() {
                 lines.extend(render_agent_lines(&self.stream_tail_source, width, false));
             }
+            *self
+                .stream_render_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(StreamingRenderCache {
+                width,
+                revision: self.stream_revision,
+                lines: lines.clone(),
+            });
             lines
         } else {
             render_agent_lines(&self.markdown_source, width, self.is_first_line)
@@ -148,11 +178,21 @@ impl AgentMessageCell {
         self.markdown_source.push_str(source);
         self.stream_stable_source = Some(source[..stable_len].to_owned());
         self.stream_tail_source = source[stable_len..].to_owned();
+        self.stream_revision = self.stream_revision.wrapping_add(1);
+        self.stream_render_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
     pub(crate) fn clear_stream_parts(&mut self) {
         self.stream_stable_source = None;
         self.stream_tail_source.clear();
+        self.stream_revision = self.stream_revision.wrapping_add(1);
+        self.stream_render_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 }
 
@@ -299,6 +339,7 @@ mod tests {
         cell.set_stream_parts("intro\n**tail**", "intro\n".len());
 
         let lines = cell.display_lines(80);
+        assert!(cell.stream_render_cache.lock().unwrap().is_some());
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
         assert!(rendered.iter().any(|line| line.contains("intro")));
         assert!(rendered.iter().any(|line| line.contains("tail")));
