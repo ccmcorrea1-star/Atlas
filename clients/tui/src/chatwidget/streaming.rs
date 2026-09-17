@@ -60,6 +60,10 @@ impl MarkdownStreamState {
 }
 
 fn stable_prefix_len(source: &str) -> usize {
+    if source.lines().any(is_reference_link_definition) {
+        return 0;
+    }
+
     let mut stable_len = 0;
     let mut offset = 0;
     let mut fence = None;
@@ -101,6 +105,17 @@ fn is_closing_fence(line: &str, marker: char, marker_len: usize) -> bool {
         .take_while(|character| *character == marker)
         .count();
     count >= marker_len && line.chars().skip(count).all(char::is_whitespace)
+}
+
+fn is_reference_link_definition(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix('[') else {
+        return false;
+    };
+    let Some(label_end) = rest.find("]:") else {
+        return false;
+    };
+    label_end > 0 && !rest[label_end + 2..].trim().is_empty()
 }
 
 fn table_holdback_start(source: &str) -> Option<usize> {
@@ -293,6 +308,15 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("answer"))
         }));
+    }
+
+    #[test]
+    fn reference_definitions_keep_prior_links_mutable() {
+        let mut state = MarkdownStreamState::default();
+        state.push("[Atlas][home]\n\n[home]: https://atlas.invalid\n");
+
+        assert_eq!(state.stable_source(), "");
+        assert_eq!(state.tail_source(), state.source());
     }
 
     #[test]
