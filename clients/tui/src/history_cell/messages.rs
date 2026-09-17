@@ -101,10 +101,6 @@ impl AgentMessageCell {
             is_first_line,
         }
     }
-
-    pub(crate) fn append(&mut self, delta: &str) {
-        self.markdown_source.push_str(delta);
-    }
 }
 
 impl HistoryCell for AgentMessageCell {

@@ -9,8 +9,10 @@ mod exec_state;
 pub(crate) mod rendering;
 mod streaming;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
+use self::streaming::MarkdownStreamState;
 use crate::app::Status;
 use crate::exec_cell::ExecCell;
 use crate::history_cell::AgentMarkdownCell;
@@ -33,6 +35,7 @@ pub(crate) struct ChatWidget {
     turn_active: bool,
     context_usage: Option<ContextUsage>,
     active_revision: u64,
+    stream_states: HashMap<String, MarkdownStreamState>,
     turn_started_at: Option<Instant>,
 }
 
@@ -45,6 +48,7 @@ impl ChatWidget {
             turn_active: false,
             context_usage: None,
             active_revision: 0,
+            stream_states: HashMap::new(),
             turn_started_at: None,
         }
     }
@@ -288,19 +292,4 @@ fn truncate_text(text: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}{}", &text[..end], TRUNCATION_MARKER)
-}
-
-fn truncate_delta(delta: &str, current_bytes: usize) -> String {
-    let available = 1024
-        * 1024usize
-            .saturating_sub(current_bytes)
-            .saturating_sub(TRUNCATION_MARKER.len());
-    if delta.len() <= available {
-        return delta.to_owned();
-    }
-    let mut end = available.min(delta.len());
-    while end > 0 && !delta.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{}", &delta[..end], TRUNCATION_MARKER)
 }

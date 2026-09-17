@@ -338,6 +338,7 @@ mod writer {
         list_stack: Vec<Option<u64>>,
         item_prefix: Option<String>,
         quote_depth: usize,
+        link_destinations: Vec<Option<String>>,
         in_code_block: bool,
         code_lang: Option<String>,
         code_buffer: String,
@@ -356,6 +357,7 @@ mod writer {
                 list_stack: Vec::new(),
                 item_prefix: None,
                 quote_depth: 0,
+                link_destinations: Vec::new(),
                 in_code_block: false,
                 code_lang: None,
                 code_buffer: String::new(),
@@ -454,11 +456,14 @@ mod writer {
                 Tag::Emphasis => self.styles.push(self.current_style().italic()),
                 Tag::Strong => self.styles.push(self.current_style().bold()),
                 Tag::Strikethrough => self.styles.push(self.current_style().crossed_out()),
-                Tag::Link { .. } => self.styles.push(
-                    self.current_style()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
+                Tag::Link { dest_url, .. } => {
+                    self.link_destinations.push(Some(dest_url.to_string()));
+                    self.styles.push(
+                        self.current_style()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::UNDERLINED),
+                    );
+                }
                 Tag::Table(_) => {
                     self.flush_line();
                     if !self.lines.is_empty() {
@@ -548,6 +553,7 @@ mod writer {
                 }
                 TagEnd::Link => {
                     self.styles.pop();
+                    self.link_destinations.pop();
                 }
                 TagEnd::Table => {
                     if let Some(table) = self.table.take() {
@@ -605,9 +611,17 @@ mod writer {
                 if index > 0 {
                     self.flush_line();
                 }
-                for span in ansi_spans(part, style) {
+                if let Some(Some(destination)) = self.link_destinations.last().cloned() {
                     self.ensure_prefix();
-                    self.current.push(span);
+                    self.current.push(Span::styled(
+                        format!("\x1b]8;;{destination}\x07{part}\x1b]8;;\x07"),
+                        style,
+                    ));
+                } else {
+                    for span in ansi_spans(part, style) {
+                        self.ensure_prefix();
+                        self.current.push(span);
+                    }
                 }
             }
         }
@@ -857,5 +871,19 @@ mod tests {
             text.iter()
                 .any(|line| line.starts_with("  ") && line.contains("answer"))
         );
+    }
+
+    #[test]
+    fn links_preserve_the_destination_as_terminal_hyperlink_metadata() {
+        let rendered = super::render_markdown_text("[Atlas](https://example.com/atlas)");
+        let text = rendered.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("\x1b]8;;https://example.com/atlas\x07"));
+        assert!(text.contains("Atlas"));
+        assert!(text.contains("\x1b]8;;\x07"));
     }
 }

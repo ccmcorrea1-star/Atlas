@@ -36,12 +36,12 @@ pub(crate) fn render(
 
     session_header::render(header_area, buffer, app);
     render_history(buffer, app, history_area);
-    bottom_pane.render(app, composer_area, buffer);
-    let cursor = bottom_pane.cursor_pos(app, composer_area);
     if app.transcript_open() {
         app.transcript_overlay().render(app, area, buffer);
+        return None;
     }
-    cursor
+    bottom_pane.render(app, composer_area, buffer);
+    bottom_pane.cursor_pos(app, composer_area)
 }
 
 fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {

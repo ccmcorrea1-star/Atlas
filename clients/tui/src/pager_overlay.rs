@@ -24,6 +24,7 @@ pub(crate) struct TranscriptOverlay {
     live_tail_cache: RefCell<Option<LiveTailCache>>,
     scroll_offset: Cell<usize>,
     last_max_scroll: Cell<usize>,
+    last_content_height: Cell<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,11 +67,11 @@ impl TranscriptOverlay {
                 None
             }
             Some(Action::PageUp) => {
-                self.scroll_up(8);
+                self.scroll_up(self.page_height());
                 None
             }
             Some(Action::PageDown) => {
-                self.scroll_down(8);
+                self.scroll_down(self.page_height());
                 None
             }
             Some(Action::JumpTop) => {
@@ -120,6 +121,10 @@ impl TranscriptOverlay {
         self.scroll_offset.set(usize::MAX);
     }
 
+    fn page_height(&self) -> usize {
+        self.last_content_height.get().max(1)
+    }
+
     pub(crate) fn render(&self, app: &App, area: Rect, buffer: &mut Buffer) {
         if area.is_empty() {
             return;
@@ -159,6 +164,7 @@ impl TranscriptOverlay {
         lines.extend(wrap_lines(active_lines, content.width.max(1)));
 
         let total_height = lines.len();
+        self.last_content_height.set(usize::from(content.height));
         let max_scroll = total_height.saturating_sub(usize::from(content.height));
         self.last_max_scroll.set(max_scroll);
         let scroll = self.scroll_offset.get().min(max_scroll);

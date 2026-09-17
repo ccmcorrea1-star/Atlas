@@ -16,11 +16,13 @@ impl ChatWidget {
             }
             RuntimeEvent::ToolStarted { tool_id, tool_name } => {
                 self.status = Status::Executing;
-                self.active_cells.push(Box::new(ToolCell::new(
-                    tool_id,
-                    bounded_metadata(&tool_name),
-                )));
-                self.bump_active_revision();
+                if self.find_active_tool_mut(&tool_id).is_none() {
+                    self.active_cells.push(Box::new(ToolCell::new(
+                        tool_id,
+                        bounded_metadata(&tool_name),
+                    )));
+                    self.bump_active_revision();
+                }
             }
             RuntimeEvent::ToolCompleted {
                 tool_id,
@@ -107,5 +109,35 @@ impl ChatWidget {
         self.turn_active = false;
         self.turn_started_at = None;
         self.history_changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_tool_started_updates_one_active_card() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "search".to_owned(),
+        });
+        widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "search".to_owned(),
+        });
+
+        assert_eq!(widget.active_cells().len(), 1);
+
+        widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "search".to_owned(),
+            output: Some("done".to_owned()),
+        });
+
+        assert!(widget.active_cells().is_empty());
+        assert_eq!(widget.cells().len(), 1);
     }
 }
