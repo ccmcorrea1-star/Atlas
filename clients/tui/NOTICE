@@ -1,5 +1,6 @@
-Atlas TUI includes presentation and wrapping adaptations based on the OpenAI Codex
-CLI TUI (https://github.com/openai/codex/tree/main/codex-rs/tui).
+Atlas TUI includes presentation, Markdown, Mermaid, streaming, and wrapping adaptations
+based on the OpenAI Codex CLI TUI and its terminal-native Mermaid renderer
+(https://github.com/openai/codex/tree/main/codex-rs/tui).
 
 Copyright 2025 OpenAI. Those adaptations are licensed under the Apache License,
 Version 2.0. See LICENSE-APACHE for the license text.

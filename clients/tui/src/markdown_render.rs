@@ -18,6 +18,9 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
+#[path = "markdown_render/math/render.rs"]
+mod math;
+
 const ESC: char = '\x1b';
 const ANSI_MARKER: &str = "␛";
 
@@ -316,6 +319,7 @@ mod writer {
         let mut options = Options::empty();
         options.insert(Options::ENABLE_STRIKETHROUGH);
         options.insert(Options::ENABLE_TABLES);
+        options.insert(Options::ENABLE_MATH);
         let protected = input.replace(ESC, ANSI_MARKER);
         let mut writer = Writer::new(Parser::new_ext(&protected, options), width);
         writer.run();
@@ -388,7 +392,17 @@ mod writer {
                 .unwrap_or(&self.code_buffer);
             let highlighted = self.code_lang.as_deref().map_or_else(
                 || crate::render::highlight::highlight_code_to_lines(code, "text"),
-                |language| crate::render::highlight::highlight_code_to_lines(code, language),
+                |language| {
+                    if language.eq_ignore_ascii_case("mermaid")
+                        && let Ok(diagram) = crate::mermaid::render(code, self.width.unwrap_or(120))
+                    {
+                        return diagram
+                            .lines()
+                            .map(|line| Line::from(line.to_owned()))
+                            .collect();
+                    }
+                    crate::render::highlight::highlight_code_to_lines(code, language)
+                },
             );
             let prefix = format!(
                 "{}{}",
@@ -416,7 +430,20 @@ mod writer {
                     self.needs_blank = true;
                 }
                 Event::Html(html) | Event::InlineHtml(html) => self.push_text(&html),
-                Event::InlineMath(math) | Event::DisplayMath(math) => self.push_text(&math),
+                Event::InlineMath(math) => {
+                    let rendered =
+                        super::math::render(&math, false).unwrap_or_else(|| math.to_string());
+                    self.push_styled_text(&rendered, Style::default().cyan());
+                }
+                Event::DisplayMath(math) => {
+                    self.flush_line();
+                    let rendered =
+                        super::math::render(&math, true).unwrap_or_else(|| math.to_string());
+                    for line in rendered.lines() {
+                        self.push_line(Line::from(line.to_owned()));
+                    }
+                    self.needs_blank = true;
+                }
                 Event::FootnoteReference(_) | Event::TaskListMarker(_) => {}
             }
         }
@@ -1050,6 +1077,64 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         insta::assert_snapshot!("nested_blockquote_list_preserves_structure", text);
+    }
+
+    #[test]
+    fn math_uses_the_codex_unicode_renderer_with_literal_fallback() {
+        let inline = super::render_markdown_text("Inline $x^2$ and $\\frac{1}{2}$");
+        let inline_text = inline
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(inline_text.contains("x²"));
+        assert!(inline_text.contains("((1)/(2))"));
+
+        let display = super::render_markdown_text("$$\\frac{1}{2}$$");
+        let display_text = display
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(display_text.iter().any(|line| line.contains('─')));
+        assert!(display_text.iter().any(|line| line.contains('1')));
+        assert!(display_text.iter().any(|line| line.contains('2')));
+
+        let fallback = super::render_markdown_text("$\\unknown{value}$");
+        assert!(fallback.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("\\unknown"))
+        }));
+    }
+
+    #[test]
+    fn mermaid_fences_use_the_codex_terminal_renderer_and_fallback_on_error() {
+        let rendered =
+            super::render_markdown_text("```mermaid\nflowchart LR; A[Start] --> B[Done]\n```");
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| { line.spans.iter().any(|span| span.content.contains("Start")) })
+        );
+
+        let fallback = super::render_markdown_text("```mermaid\nnot-supported syntax\n```");
+        assert!(fallback.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("not-supported"))
+        }));
     }
 
     #[test]

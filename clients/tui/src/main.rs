@@ -14,6 +14,7 @@ mod line_truncation;
 mod markdown;
 mod markdown_render;
 mod markdown_streaming;
+mod mermaid;
 mod pager_overlay;
 mod render;
 mod runtime;
