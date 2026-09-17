@@ -7,6 +7,13 @@ pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
     aggregated_output: String,
     live_output: Option<LiveCommandOutput>,
+    stream_chunks: Vec<OutputChunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputChunk {
+    pub(crate) channel: String,
+    pub(crate) text: String,
 }
 
 impl CommandOutput {
@@ -15,6 +22,7 @@ impl CommandOutput {
             exit_code,
             aggregated_output,
             live_output: None,
+            stream_chunks: Vec::new(),
         }
     }
 
@@ -49,10 +57,14 @@ impl CommandOutput {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn append_output(&mut self, chunk: &str) {
+    pub(crate) fn append_output(&mut self, channel: &str, chunk: &str) {
         if chunk.is_empty() {
             return;
         }
+        self.stream_chunks.push(OutputChunk {
+            channel: channel.to_owned(),
+            text: chunk.to_owned(),
+        });
         self.live_output
             .get_or_insert_with(LiveCommandOutput::default)
             .push_str(chunk);
@@ -131,7 +143,13 @@ impl ExecCell {
     pub(crate) fn append_output(&mut self, chunk: &str) {
         self.output
             .get_or_insert_with(CommandOutput::default)
-            .append_output(chunk);
+            .append_output("stdout", chunk);
+    }
+
+    pub(crate) fn append_output_channel(&mut self, channel: &str, chunk: &str) {
+        self.output
+            .get_or_insert_with(CommandOutput::default)
+            .append_output(channel, chunk);
     }
 
     pub(crate) fn output(&self) -> Option<&CommandOutput> {
@@ -162,5 +180,40 @@ fn interleave_output(stdout: String, stderr: String) -> String {
         (false, true) => stdout,
         (true, false) => stderr,
         (false, false) => format!("{stdout}{stderr}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streamed_output_preserves_channel_and_arrival_order() {
+        let mut cell = ExecCell::new("exec".to_owned(), "bash".to_owned(), Vec::new());
+        cell.append_output_channel("stderr", "warning\n");
+        cell.append_output_channel("stdout", "result\n");
+        cell.complete(String::new(), String::new(), 0, 1, "success".to_owned());
+
+        let chunks = &cell.output().expect("streamed output").stream_chunks;
+        assert_eq!(
+            chunks,
+            &[
+                OutputChunk {
+                    channel: "stderr".to_owned(),
+                    text: "warning\n".to_owned(),
+                },
+                OutputChunk {
+                    channel: "stdout".to_owned(),
+                    text: "result\n".to_owned(),
+                },
+            ]
+        );
+        let rendered = cell
+            .output()
+            .expect("streamed output")
+            .lines()
+            .map(|line| line.into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, ["warning", "result"]);
     }
 }

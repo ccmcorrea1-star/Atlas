@@ -27,12 +27,12 @@ impl ChatWidget {
             RuntimeEvent::ExecutionOutputDelta {
                 execution_id,
                 capability: _,
-                channel: _,
+                channel,
                 delta,
             } => {
                 self.status = Status::Executing;
                 if let Some(cell) = self.find_active_exec_mut(&execution_id) {
-                    cell.append_output(&delta);
+                    cell.append_output_channel(&channel, &delta);
                     self.bump_active_revision();
                     self.history_changed();
                 }
