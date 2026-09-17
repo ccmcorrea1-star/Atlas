@@ -9,7 +9,6 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Clear;
-use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -211,8 +210,18 @@ impl TranscriptOverlay {
         let max_scroll = total_height.saturating_sub(usize::from(content.height));
         self.last_max_scroll.set(max_scroll);
         let scroll = self.scroll_offset.get().min(max_scroll);
-        let visible = Paragraph::new(lines).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
-        visible.render(content, buffer);
+        for (row, line) in lines
+            .iter()
+            .skip(scroll)
+            .take(usize::from(content.height))
+            .enumerate()
+        {
+            let y = content
+                .y
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+            line.clone()
+                .render(Rect::new(content.x, y, content.width, 1), buffer);
+        }
 
         let drawn_rows = total_height
             .saturating_sub(scroll)
