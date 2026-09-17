@@ -60,48 +60,12 @@ impl MarkdownStreamState {
 }
 
 fn stable_prefix_len(source: &str) -> usize {
-    if source.lines().any(is_reference_link_definition) {
+    let metadata = crate::markdown_streaming::scan(source);
+    if metadata.has_reference_link_definition {
         return 0;
     }
-
-    let mut stable_len = 0;
-    let mut offset = 0;
-    let mut fences = crate::table_detect::FenceTracker::new();
-
-    for segment in source.split_inclusive('\n') {
-        let line = segment.trim_end_matches(['\n', '\r']);
-        let before = fences.kind();
-        fences.advance(line);
-        let after = fences.kind();
-        if after == crate::table_detect::FenceKind::Outside {
-            // The final source segment without a newline remains mutable. This
-            // matches the Codex collector: only complete source lines enter the
-            // committed prefix.
-            stable_len = offset + segment.len();
-        } else if before != crate::table_detect::FenceKind::Outside
-            && after == crate::table_detect::FenceKind::Outside
-        {
-            stable_len = offset + segment.len();
-        }
-        offset += segment.len();
-    }
-
-    if !source.ends_with(['\n', '\r']) && stable_len == source.len() {
-        stable_len = source.rfind(['\n', '\r']).map_or(0, |index| index + 1);
-    }
-
+    let stable_len = metadata.last_top_level_block_start.unwrap_or(0);
     table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
-}
-
-fn is_reference_link_definition(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    let Some(rest) = trimmed.strip_prefix('[') else {
-        return false;
-    };
-    let Some(label_end) = rest.find("]:") else {
-        return false;
-    };
-    label_end > 0 && !rest[label_end + 2..].trim().is_empty()
 }
 
 fn table_holdback_start(source: &str) -> Option<usize> {
@@ -203,8 +167,8 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("one\ntwo");
 
-        assert_eq!(state.stable_source(), "one\n");
-        assert_eq!(state.tail_source(), "two");
+        assert_eq!(state.stable_source(), "");
+        assert_eq!(state.tail_source(), "one\ntwo");
     }
 
     #[test]
@@ -212,7 +176,8 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("```rust\n| not | a | table |\n```\nplain\n");
 
-        assert_eq!(state.stable_source(), state.source());
+        assert_eq!(state.stable_source(), "```rust\n| not | a | table |\n```\n");
+        assert_eq!(state.tail_source(), "plain\n");
     }
 
     #[test]
@@ -238,8 +203,11 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("intro\n```rust\nlet answer = 42;\n```\nfinal\n");
 
-        assert_eq!(state.tail_source(), "");
-        assert_eq!(state.stable_source(), state.source());
+        assert_eq!(
+            state.stable_source(),
+            "intro\n```rust\nlet answer = 42;\n```\n"
+        );
+        assert_eq!(state.tail_source(), "final\n");
     }
 
     #[test]
@@ -272,7 +240,7 @@ mod tests {
             delta: "```\nfinal\n".to_owned(),
         });
         widget.tick();
-        assert_eq!(widget.active_cells().len(), 1);
+        assert_eq!(widget.active_cells().len(), 2);
 
         widget.handle_runtime_event(RuntimeEvent::MessageCompleted {
             message_id: "message-1".to_owned(),
@@ -342,8 +310,8 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("before\nUse ```inline``` without a block.\n");
 
-        assert_eq!(state.stable_source(), state.source());
-        assert_eq!(state.tail_source(), "");
+        assert_eq!(state.stable_source(), "");
+        assert_eq!(state.tail_source(), state.source());
     }
 
     #[test]
@@ -353,7 +321,8 @@ mod tests {
         assert_eq!(state.stable_source(), "before\n");
 
         state.push("~~~\nafter\n");
-        assert_eq!(state.stable_source(), state.source());
+        assert_eq!(state.stable_source(), "before\n~~~text\ninside\n~~~\n");
+        assert_eq!(state.tail_source(), "after\n");
     }
 
     #[test]
@@ -361,9 +330,9 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("one\ntwo");
 
-        assert!(state.commit_tick());
         assert!(!state.commit_tick());
-        state.push("\nthree");
+        assert!(!state.commit_tick());
+        state.push("\n\nthree");
         assert!(state.commit_tick());
     }
 
@@ -381,7 +350,7 @@ mod tests {
         let mut state = MarkdownStreamState::default();
         state.push("before\nUse `a | b` when needed.\n");
 
-        assert_eq!(state.stable_source(), state.source());
-        assert_eq!(state.tail_source(), "");
+        assert_eq!(state.stable_source(), "");
+        assert_eq!(state.tail_source(), state.source());
     }
 }
