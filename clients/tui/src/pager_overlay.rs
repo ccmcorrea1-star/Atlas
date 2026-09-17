@@ -42,6 +42,7 @@ struct CommittedTranscriptCache {
     width: u16,
     cell_count: usize,
     revision: u64,
+    cell_heights: Vec<usize>,
     lines: Vec<Line<'static>>,
 }
 
@@ -169,19 +170,26 @@ impl TranscriptOverlay {
             .filter(|cache| {
                 cache.width == width && cache.cell_count == cell_count && cache.revision == revision
             })
-            .map(|cache| cache.lines.clone());
+            .map(|cache| {
+                debug_assert_eq!(cache.cell_heights.iter().sum::<usize>(), cache.lines.len());
+                cache.lines.clone()
+            });
         let mut lines = cached_lines.unwrap_or_else(|| {
             let mut lines = Vec::new();
+            let mut cell_heights = Vec::with_capacity(cell_count);
             for cell in app.cells() {
+                let start = lines.len();
                 if !lines.is_empty() && !cell.is_stream_continuation() {
                     lines.push(Line::default());
                 }
                 lines.extend(wrap_lines(cell.transcript_lines(width), width));
+                cell_heights.push(lines.len().saturating_sub(start));
             }
             *self.committed_cache.borrow_mut() = Some(CommittedTranscriptCache {
                 width,
                 cell_count,
                 revision,
+                cell_heights,
                 lines: lines.clone(),
             });
             lines
@@ -315,6 +323,11 @@ mod tests {
 
         let overlay = TranscriptOverlay::default();
         overlay.render(&app, area, &mut buffer);
+
+        let cache = overlay.committed_cache.borrow();
+        let cache = cache.as_ref().expect("committed transcript cache");
+        assert_eq!(cache.cell_count, 1);
+        assert_eq!(cache.cell_heights.iter().sum::<usize>(), cache.lines.len());
 
         let rows = (area.y..area.bottom())
             .map(|y| {
