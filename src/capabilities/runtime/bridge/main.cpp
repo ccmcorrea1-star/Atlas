@@ -5,9 +5,12 @@
 #include "../executable/protocol.hpp"
 
 #include <cstdlib>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -70,6 +73,21 @@ bool optionalBoolean(
   return *boolean;
 }
 
+std::optional<std::size_t> optionalLimit(
+    const StructuredValue::Object& object,
+    std::string_view name) {
+  const StructuredValue* value = field(object, name);
+  if (value == nullptr) {
+    return std::nullopt;
+  }
+  const auto* integer = std::get_if<std::int64_t>(&value->value);
+  if (integer == nullptr || *integer < 0 ||
+      static_cast<std::uint64_t>(*integer) > std::numeric_limits<std::size_t>::max()) {
+    throw std::runtime_error("field '" + std::string(name) + "' must be a non-negative integer");
+  }
+  return static_cast<std::size_t>(*integer);
+}
+
 std::filesystem::path capabilitiesDirectory(const char* executable) {
   if (const char* configured = std::getenv("ATLAS_CAPABILITIES_DIR"); configured != nullptr && *configured != '\0') {
     return std::filesystem::path(configured);
@@ -99,6 +117,7 @@ StructuredValue discoveryValue(const Discovery& discovery, const StructuredValue
   DiscoveryRequest discoveryRequest;
   discoveryRequest.path = optionalString(request, "path");
   discoveryRequest.query = optionalString(request, "query");
+  discoveryRequest.limit = optionalLimit(request, "limit");
 
   StructuredValue::Array results;
   for (const auto& result : discovery.discover(discoveryRequest)) {
@@ -126,10 +145,10 @@ StructuredValue definitionValue(const Capability& capability) {
 }
 
 StructuredValue getDefinitionValue(
-    const Registry& registry,
+    const Discovery& discovery,
     const StructuredValue::Object& request) {
   const std::string id = requiredString(request, "id");
-  const auto definition = registry.getDefinition(id);
+  const auto definition = discovery.getDefinition(id);
   return StructuredValue(StructuredValue::Object{
       {"definition", definition.has_value() ? definitionValue(definition.value()) : StructuredValue(nullptr)},
   });
@@ -202,7 +221,7 @@ int main(int argc, char* argv[]) {
     if (operation == "discover") {
       response = discoveryValue(Discovery(registry), *request);
     } else if (operation == "get_definition") {
-      response = getDefinitionValue(registry, *request);
+      response = getDefinitionValue(Discovery(registry), *request);
     } else if (operation == "execute") {
       response = executeValue(registry, *request);
     } else {

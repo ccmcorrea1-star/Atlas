@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 export type CapabilityDiscoveryRequest = {
   path?: string;
   query?: string;
+  limit?: number;
 };
 
 export type CapabilityDiscoveryResult = {
@@ -90,6 +91,7 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       operation: 'discover',
       ...(request.path === undefined ? {} : { path: request.path }),
       ...(request.query === undefined ? {} : { query: request.query }),
+      ...(request.limit === undefined ? {} : { limit: request.limit }),
     });
     const results = response.results;
     if (!Array.isArray(results)) {

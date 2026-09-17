@@ -328,18 +328,27 @@ async function startProcessStreamingModelServer(): Promise<{
           }
         : requests.length === 2
           ? {
-              id: 'execution-call',
+              id: 'discover-definition-call',
               type: 'function_call',
               status: 'completed',
-              call_id: 'execution-call',
-              name: materializedToolName(body),
-              arguments: JSON.stringify({
-                program: failed ? 'false' : 'node',
-                args: failed ? [] : ['--version'],
-                cwd: '/tmp',
-              }),
+              call_id: 'discover-definition-call',
+              name: 'discover',
+              arguments: JSON.stringify({ id: 'process.exec' }),
             }
-          : undefined;
+          : requests.length === 3
+            ? {
+                id: 'execution-call',
+                type: 'function_call',
+                status: 'completed',
+                call_id: 'execution-call',
+                name: materializedToolName(body),
+                arguments: JSON.stringify({
+                  program: failed ? 'false' : 'node',
+                  args: failed ? [] : ['--version'],
+                  cwd: '/tmp',
+                }),
+              }
+            : undefined;
     const events = output
       ? functionCallStream(output)
       : messageStream(failed ? 'process failed' : 'Executed node --version: v22.x.x');

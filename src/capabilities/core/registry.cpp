@@ -28,29 +28,44 @@ std::vector<std::string> queryTokens(std::string_view query) {
   return tokens;
 }
 
-bool containsAllTokens(const Capability& capability, const std::vector<std::string>& tokens) {
-  std::string searchable = lowerAscii(capability.id);
-  searchable += ' ';
-  searchable += lowerAscii(capability.type);
-  searchable += ' ';
-  searchable += lowerAscii(capability.summary);
-  searchable += ' ';
-  searchable += lowerAscii(capability.description);
-  if (capability.parent.has_value()) {
-    searchable += ' ';
-    searchable += lowerAscii(capability.parent.value());
+int fieldRank(const Capability& capability, std::string_view token) {
+  if (lowerAscii(capability.id).find(token) != std::string::npos) {
+    return 4;
   }
-  for (const std::string& alias : capability.aliases) {
-    searchable += ' ';
-    searchable += lowerAscii(alias);
+  if (std::any_of(
+          capability.aliases.begin(),
+          capability.aliases.end(),
+          [token](const std::string& alias) {
+            return lowerAscii(alias).find(token) != std::string::npos;
+          })) {
+    return 3;
+  }
+  if (lowerAscii(capability.summary).find(token) != std::string::npos) {
+    return 2;
+  }
+  if (lowerAscii(capability.description).find(token) != std::string::npos) {
+    return 1;
+  }
+  return 0;
+}
+
+int searchScore(const Capability& capability, const std::vector<std::string>& tokens) {
+  if (tokens.empty()) {
+    return 0;
   }
 
+  int highestRank = 0;
+  int rankTotal = 0;
   for (const std::string& token : tokens) {
-    if (searchable.find(token) == std::string::npos) {
-      return false;
+    const int rank = fieldRank(capability, token);
+    if (rank == 0) {
+      return -1;
     }
+    highestRank = std::max(highestRank, rank);
+    rankTotal += rank;
   }
-  return true;
+  // Uma correspondencia mais especifica domina os campos de menor prioridade.
+  return highestRank * 10000 + rankTotal * 100;
 }
 
 }  // namespace
@@ -207,15 +222,39 @@ std::vector<Capability> Registry::children(std::string_view path) const {
   return result;
 }
 
-std::vector<Capability> Registry::search(std::string_view query) const {
+std::vector<Capability> Registry::search(
+    std::string_view query,
+    std::optional<std::size_t> limit) const {
   const std::vector<std::string> tokens = queryTokens(query);
   std::shared_lock lock(mutex_);
-  std::vector<Capability> result;
+  struct ScoredCapability {
+    Capability capability;
+    int score;
+  };
+  std::vector<ScoredCapability> scored;
   for (const auto& entry : capabilities_) {
     const Capability& capability = entry.second;
-    if (tokens.empty() || containsAllTokens(capability, tokens)) {
-      result.push_back(capability);
+    const int score = searchScore(capability, tokens);
+    if (score >= 0) {
+      scored.push_back({capability, score});
     }
+  }
+
+  std::sort(
+      scored.begin(),
+      scored.end(),
+      [](const ScoredCapability& left, const ScoredCapability& right) {
+        if (left.score != right.score) {
+          return left.score > right.score;
+        }
+        return left.capability.id < right.capability.id;
+      });
+
+  std::vector<Capability> result;
+  const std::size_t resultSize = limit.has_value() ? std::min(*limit, scored.size()) : scored.size();
+  result.reserve(resultSize);
+  for (std::size_t index = 0; index < resultSize; ++index) {
+    result.push_back(std::move(scored[index].capability));
   }
   return result;
 }

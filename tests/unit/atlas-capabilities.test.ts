@@ -46,29 +46,40 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
       : requestNumber === 2
         ? [
             {
-              id: 'function-call-process-exec',
+              id: 'function-call-discover-definition',
               type: 'function_call',
               status: 'completed',
-              call_id: 'process-exec-call',
-              name: materializedToolName(input),
-              arguments: JSON.stringify({ program: 'node', args: ['--version'] }),
+              call_id: 'discover-definition-call',
+              name: 'discover',
+              arguments: JSON.stringify({ id: 'process.exec' }),
             },
           ]
-        : [
-            {
-              id: 'final-message',
-              type: 'message',
-              status: 'completed',
-              role: 'assistant',
-              content: [
-                {
-                  type: 'output_text',
-                  text: `Executed node --version: ${process.version}`,
-                  annotations: [],
-                },
-              ],
-            },
-          ];
+        : requestNumber === 3
+          ? [
+              {
+                id: 'function-call-process-exec',
+                type: 'function_call',
+                status: 'completed',
+                call_id: 'process-exec-call',
+                name: materializedToolName(input),
+                arguments: JSON.stringify({ program: 'node', args: ['--version'] }),
+              },
+            ]
+          : [
+              {
+                id: 'final-message',
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: `Executed node --version: ${process.version}`,
+                    annotations: [],
+                  },
+                ],
+              },
+            ];
 
   return responseEnvelope(requestNumber, input, output);
 }
@@ -141,7 +152,7 @@ function materializedToolNameAt(request: RequestBody, index: number): string {
   return name;
 }
 
-test('discovers and executes process.exec as a directly materialized Agent tool', async () => {
+test('discovers and materializes process.exec progressively', async () => {
   const server = await startCapabilityAgentServer();
 
   try {
@@ -152,7 +163,7 @@ test('discovers and executes process.exec as a directly materialized Agent tool'
     });
 
     assert.equal(result.finalOutput, `Executed node --version: ${process.version}`);
-    assert.equal(server.requests.length, 3);
+    assert.equal(server.requests.length, 4);
 
     const firstRequest = server.requests[0] as RequestBody;
     const firstTools = tools(firstRequest);
@@ -163,7 +174,18 @@ test('discovers and executes process.exec as a directly materialized Agent tool'
     assert.match(JSON.stringify(firstRequest), /process - executar e gerenciar processos/);
 
     const secondRequest = server.requests[1] as RequestBody;
-    const materializedTool = tools(secondRequest).find((tool) => tool.name !== 'discover');
+    assert.deepEqual(
+      tools(secondRequest).map((tool) => tool.name),
+      ['discover'],
+    );
+    assert.match(JSON.stringify(secondRequest.input), /\\"path\\":\\"process\\"/);
+    assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
+    assert.doesNotMatch(JSON.stringify(secondRequest.input), /description/);
+    assert.doesNotMatch(JSON.stringify(secondRequest.input), /schema/);
+    assert.doesNotMatch(JSON.stringify(firstTools), /get_definition|call_tool/);
+
+    const thirdRequest = server.requests[2] as RequestBody;
+    const materializedTool = tools(thirdRequest).find((tool) => tool.name !== 'discover');
     assert.ok(materializedTool);
     assert.match(materializedTool.name as string, /^process_exec_[a-f0-9]{16}$/);
     assert.equal(materializedTool.description, 'executar um programa local diretamente, sem shell');
@@ -172,15 +194,15 @@ test('discovers and executes process.exec as a directly materialized Agent tool'
     assert.ok(properties.program);
     assert.ok(properties.args);
     assert.deepEqual(schema.required, ['program']);
-    assert.match(JSON.stringify(secondRequest.input), /\\"path\\":\\"process\\"/);
-    assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
-    assert.doesNotMatch(JSON.stringify(firstTools), /get_definition|call_tool/);
+    assert.match(JSON.stringify(thirdRequest.input), /\\"id\\":\\"process\.exec\\"/);
+    assert.match(JSON.stringify(thirdRequest.input), /description/);
+    assert.match(JSON.stringify(thirdRequest.input), /schema/);
 
-    const thirdRequest = server.requests[2] as RequestBody;
-    assert.match(JSON.stringify(thirdRequest.input), /process-exec-call/);
-    assert.match(JSON.stringify(thirdRequest.input), new RegExp(materializedTool.name as string));
+    const fourthRequest = server.requests[3] as RequestBody;
+    assert.match(JSON.stringify(fourthRequest.input), /process-exec-call/);
+    assert.match(JSON.stringify(fourthRequest.input), new RegExp(materializedTool.name as string));
     assert.match(
-      JSON.stringify(thirdRequest.input),
+      JSON.stringify(fourthRequest.input),
       new RegExp(process.version.replaceAll('.', '\\.')),
     );
   } finally {
@@ -218,7 +240,7 @@ test('forwards streamed output from the native process capability', async () => 
   assert.equal(result.stderr, 'err-one');
 });
 
-test('keeps a discovered capability available in later turns of the same conversation', async () => {
+test('materializes only the selected capability for the current turn', async () => {
   const definition: CapabilityDefinition = {
     id: 'process.exec',
     type: 'tool',
@@ -253,43 +275,54 @@ test('keeps a discovered capability available in later turns of the same convers
   };
   const server = await startCapabilityAgentServer((requestNumber, input) => {
     const output =
-      requestNumber === 1
+      requestNumber === 1 || requestNumber === 5
         ? [
             {
-              id: 'function-call-discover-later',
+              id: `function-call-discover-${requestNumber}`,
               type: 'function_call',
               status: 'completed',
-              call_id: 'discover-later-call',
+              call_id: `discover-call-${requestNumber}`,
               name: 'discover',
               arguments: JSON.stringify({ path: 'process' }),
             },
           ]
-        : requestNumber === 2 || requestNumber === 4
+        : requestNumber === 2 || requestNumber === 6
           ? [
               {
-                id: `function-call-process-exec-${requestNumber}`,
+                id: `function-call-discover-definition-${requestNumber}`,
                 type: 'function_call',
                 status: 'completed',
-                call_id: `process-exec-later-call-${requestNumber}`,
-                name: materializedToolName(input),
-                arguments: JSON.stringify({ program: 'echo', args: [`turn-${requestNumber}`] }),
+                call_id: `discover-definition-call-${requestNumber}`,
+                name: 'discover',
+                arguments: JSON.stringify({ id: definition.id }),
               },
             ]
-          : [
-              {
-                id: `final-message-${requestNumber}`,
-                type: 'message',
-                status: 'completed',
-                role: 'assistant',
-                content: [
-                  {
-                    type: 'output_text',
-                    text: `Turn ${requestNumber === 3 ? 'one' : 'two'} completed.`,
-                    annotations: [],
-                  },
-                ],
-              },
-            ];
+          : requestNumber === 3 || requestNumber === 7
+            ? [
+                {
+                  id: `function-call-process-exec-${requestNumber}`,
+                  type: 'function_call',
+                  status: 'completed',
+                  call_id: `process-exec-later-call-${requestNumber}`,
+                  name: materializedToolName(input),
+                  arguments: JSON.stringify({ program: 'echo', args: [`turn-${requestNumber}`] }),
+                },
+              ]
+            : [
+                {
+                  id: `final-message-${requestNumber}`,
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: `Turn ${requestNumber === 4 ? 'one' : 'two'} completed.`,
+                      annotations: [],
+                    },
+                  ],
+                },
+              ];
 
     return responseEnvelope(requestNumber, input, output);
   });
@@ -306,15 +339,18 @@ test('keeps a discovered capability available in later turns of the same convers
 
     assert.equal(firstResult.finalOutput, 'Turn one completed.');
     assert.equal(secondResult.finalOutput, 'Turn two completed.');
-    assert.equal(server.requests.length, 5);
-    assert.equal(materializedToolNames(server.requests[3] as RequestBody).length, 1);
+    assert.equal(server.requests.length, 8);
+    assert.deepEqual(materializedToolNames(server.requests[0] as RequestBody), []);
+    assert.deepEqual(materializedToolNames(server.requests[4] as RequestBody), []);
+    assert.equal(materializedToolNames(server.requests[2] as RequestBody).length, 1);
+    assert.equal(materializedToolNames(server.requests[6] as RequestBody).length, 1);
     assert.equal(
-      materializedToolName(server.requests[3] as RequestBody),
-      materializedToolName(server.requests[1] as RequestBody),
+      materializedToolName(server.requests[6] as RequestBody),
+      materializedToolName(server.requests[2] as RequestBody),
     );
     assert.deepEqual(executed, [
-      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-2'] } },
-      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-4'] } },
+      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-3'] } },
+      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-7'] } },
     ]);
   } finally {
     await server.close();
@@ -386,28 +422,42 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
               arguments: JSON.stringify({ path: 'demo' }),
             },
           ]
-        : requestNumber <= 3
+        : requestNumber === 2 || requestNumber === 4
           ? [
               {
-                id: `function-call-${requestNumber}`,
+                id: `function-call-discover-definition-${requestNumber}`,
                 type: 'function_call',
                 status: 'completed',
-                call_id: `capability-call-${requestNumber}`,
-                name: materializedToolNameAt(input, requestNumber - 2),
-                arguments: JSON.stringify({ value: `value-${requestNumber}` }),
+                call_id: `discover-definition-call-${requestNumber}`,
+                name: 'discover',
+                arguments: JSON.stringify({ id: definitions[requestNumber === 2 ? 0 : 1]?.id }),
               },
             ]
-          : [
-              {
-                id: 'final-message',
-                type: 'message',
-                status: 'completed',
-                role: 'assistant',
-                content: [
-                  { type: 'output_text', text: 'Capabilities executadas.', annotations: [] },
-                ],
-              },
-            ];
+          : requestNumber === 3 || requestNumber === 5
+            ? [
+                {
+                  id: `function-call-${requestNumber}`,
+                  type: 'function_call',
+                  status: 'completed',
+                  call_id: `capability-call-${requestNumber}`,
+                  name:
+                    requestNumber === 3
+                      ? materializedToolName(input)
+                      : materializedToolNameAt(input, 1),
+                  arguments: JSON.stringify({ value: `value-${requestNumber}` }),
+                },
+              ]
+            : [
+                {
+                  id: 'final-message',
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    { type: 'output_text', text: 'Capabilities executadas.', annotations: [] },
+                  ],
+                },
+              ];
 
     return responseEnvelope(requestNumber, input, output);
   });
@@ -421,23 +471,31 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
     });
 
     assert.equal(result.finalOutput, 'Capabilities executadas.');
-    const materializedTools = tools(server.requests[1] as RequestBody).filter(
+    assert.deepEqual(
+      tools(server.requests[1] as RequestBody).map((tool) => tool.name),
+      ['discover'],
+    );
+    const firstMaterializedTools = tools(server.requests[2] as RequestBody).filter(
+      (tool) => tool.name !== 'discover',
+    );
+    assert.equal(firstMaterializedTools.length, 1);
+    const materializedTools = tools(server.requests[4] as RequestBody).filter(
       (tool) => tool.name !== 'discover',
     );
     const names = materializedTools.map((tool) => tool.name as string);
-    assert.equal(names.length, 3);
+    assert.equal(names.length, 2);
     assert.ok(names.every((name) => /^[a-zA-Z0-9_-]+$/.test(name)));
     assert.match(names[0] as string, /^foo_bar_[a-f0-9]{16}$/);
     assert.match(names[1] as string, /^foo_bar_[a-f0-9]{16}$/);
     assert.notEqual(names[0], names[1]);
-    assert.match(names[2] as string, /^already_valid_[a-f0-9]{16}$/);
+    assert.match(JSON.stringify(server.requests[2]?.input), /description/);
     assert.deepEqual(
       executed.map(({ id }) => id),
       ['foo.bar', 'foo_bar'],
     );
     assert.deepEqual(
       executed.map(({ arguments_ }) => arguments_),
-      [{ value: 'value-2' }, { value: 'value-3' }],
+      [{ value: 'value-3' }, { value: 'value-5' }],
     );
     assert.match(JSON.stringify(server.requests[1]?.input), /foo\.bar/);
   } finally {

@@ -98,7 +98,6 @@ type AtlasRuntime = {
   runner: Runner;
   sessions: Map<string, MemorySession>;
   capabilityRuntime: CapabilityRuntime;
-  materializedCapabilitiesByConversation: Map<string, Map<string, CapabilityDefinition>>;
 };
 
 // A chave e a configuracao do provider, nao o ID da conversa.
@@ -157,7 +156,6 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
     runner: createRunner(options),
     sessions: new Map(),
     capabilityRuntime: createCapabilityRuntime(),
-    materializedCapabilitiesByConversation: new Map(),
   };
   atlasRuntimes.set(key, runtime);
   return runtime;
@@ -243,8 +241,10 @@ function discoveryTool(
   const parameters = {
     type: 'object',
     properties: {
+      id: { type: 'string', description: 'identificador exato da capability' },
       path: { type: 'string', description: 'caminho hierarquico opcional' },
       query: { type: 'string', description: 'consulta textual opcional' },
+      limit: { type: 'integer', minimum: 0, description: 'quantidade maxima de resultados' },
     },
     required: [],
     additionalProperties: false,
@@ -259,18 +259,30 @@ function discoveryTool(
     needsApproval: async () => false,
     isEnabled: async () => true,
     invoke: async (_runContext, input) => {
-      const request = parseObjectInput(input, 'discover') as CapabilityDiscoveryRequest;
-      const results = await capabilityRuntime.discover(request);
-      for (const result of results) {
-        if (result.type !== 'tool') {
-          continue;
+      const { id, ...summaryRequest } = parseObjectInput(input, 'discover') as DiscoveryToolRequest;
+      if (id !== undefined) {
+        if (typeof id !== 'string' || !id) {
+          throw new Error('discover id must be a non-empty string.');
         }
-        const definition = await capabilityRuntime.getDefinition(result.id);
-        if (definition !== undefined) {
+        const definition = await capabilityRuntime.getDefinition(id);
+        if (definition === undefined) {
+          throw new Error(`Capability "${id}" was not found.`);
+        }
+        if (definition.type === 'tool') {
           addTool(definition);
         }
+        return JSON.stringify(definition);
       }
-      return JSON.stringify(results satisfies CapabilityDiscoveryResult[]);
+
+      if (
+        summaryRequest.limit !== undefined &&
+        (!Number.isSafeInteger(summaryRequest.limit) || summaryRequest.limit < 0)
+      ) {
+        throw new Error('discover limit must be a non-negative integer.');
+      }
+      const results = await capabilityRuntime.discover(summaryRequest);
+      const summaries = results.map(({ id, type, summary }) => ({ id, type, summary }));
+      return JSON.stringify(summaries satisfies CapabilityDiscoveryResult[]);
     },
   };
 }
@@ -280,10 +292,13 @@ type AtlasAgent = {
   capabilityIdsByToolName: ReadonlyMap<string, string>;
 };
 
+type DiscoveryToolRequest = CapabilityDiscoveryRequest & {
+  id?: string;
+};
+
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
   rootGroups: readonly CapabilityDiscoveryResult[],
-  materializedDefinitions: Map<string, CapabilityDefinition>,
   onOutput?: (
     capabilityId: string,
     executionId: string,
@@ -311,14 +326,10 @@ function createAtlasAgent(
       );
     }
     capabilityIdsByToolName.set(toolName, definition.id);
-    materializedDefinitions.set(definition.id, definition);
     agent.tools.push(
       materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName, onOutput),
     );
   };
-  for (const definition of materializedDefinitions.values()) {
-    addTool(definition);
-  }
   const discover = discoveryTool(capabilityRuntime, addTool);
   agent.tools.push(discover);
   return { agent, capabilityIdsByToolName };
@@ -560,14 +571,9 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   const rootGroups = await capabilityRuntime.discover();
-  // As tools descobertas sobrevivem à recriação do Agent entre turnos da conversa.
-  const materializedDefinitions =
-    runtime.materializedCapabilitiesByConversation.get(sessionId) ?? new Map();
-  runtime.materializedCapabilitiesByConversation.set(sessionId, materializedDefinitions);
   const { agent, capabilityIdsByToolName } = createAtlasAgent(
     capabilityRuntime,
     rootGroups,
-    materializedDefinitions,
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {

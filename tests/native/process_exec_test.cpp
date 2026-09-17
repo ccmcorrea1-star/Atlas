@@ -108,11 +108,11 @@ Capability runtimeCapability() {
 }
 
 DiscoveryRequest queryRequest(std::string query) {
-  return {.path = std::nullopt, .query = std::move(query)};
+  return {.path = std::nullopt, .query = std::move(query), .limit = std::nullopt};
 }
 
 DiscoveryRequest pathRequest(std::string path) {
-  return {.path = std::move(path), .query = std::nullopt};
+  return {.path = std::move(path), .query = std::nullopt, .limit = std::nullopt};
 }
 
 const StructuredValue* objectField(const StructuredValue& value, std::string_view name) {
@@ -216,7 +216,69 @@ void testRegistryAndDiscovery() {
       runtimeChildren.size() == 1 && runtimeChildren.front().id == "runtime.echo" &&
           runtimeChildren.front().type == "tool" &&
           runtimeChildren.front().summary == "repete um texto",
-      "new capability should appear in Discovery children");
+           "new capability should appear in Discovery children");
+
+  require(
+      registry.registerCapability(Capability{
+          .id = "arquivo.read",
+          .type = "tool",
+          .summary = "le um recurso",
+          .parent = std::nullopt,
+          .aliases = {},
+          .implementation = "test://arquivo/read",
+          .description = "carrega dados",
+          .schema = {},
+      }),
+      "id ranking capability should be registered");
+  require(
+      registry.registerCapability(Capability{
+          .id = "ranking.alias",
+          .type = "tool",
+          .summary = "resultado geral",
+          .parent = std::nullopt,
+          .aliases = {"arquivo"},
+          .implementation = "test://ranking/alias",
+          .description = "carrega dados",
+          .schema = {},
+      }),
+      "alias ranking capability should be registered");
+  require(
+      registry.registerCapability(Capability{
+          .id = "ranking.summary",
+          .type = "tool",
+          .summary = "arquivo resumido",
+          .parent = std::nullopt,
+          .aliases = {},
+          .implementation = "test://ranking/summary",
+          .description = "carrega dados",
+          .schema = {},
+      }),
+      "summary ranking capability should be registered");
+  require(
+      registry.registerCapability(Capability{
+          .id = "ranking.description",
+          .type = "tool",
+          .summary = "resultado detalhado",
+          .parent = std::nullopt,
+          .aliases = {},
+          .implementation = "test://ranking/description",
+          .description = "arquivo detalhado",
+          .schema = {},
+      }),
+      "description ranking capability should be registered");
+  const auto rankedSearch = registry.search("arquivo");
+  require(
+      rankedSearch.size() == 4 && rankedSearch[0].id == "arquivo.read" &&
+          rankedSearch[1].id == "ranking.alias" && rankedSearch[2].id == "ranking.summary" &&
+          rankedSearch[3].id == "ranking.description",
+      "search should rank id, alias, summary and description in that order");
+  DiscoveryRequest limitedSearch = queryRequest("arquivo");
+  limitedSearch.limit = 2;
+  const auto limitedResults = discovery.discover(limitedSearch);
+  require(
+      limitedResults.size() == 2 && limitedResults[0].id == "arquivo.read" &&
+          limitedResults[1].id == "ranking.alias",
+      "Discovery search should apply its result limit after ranking");
 
   dynamic.summary = "repete texto atualizado";
   dynamic.aliases = {"repeat"};

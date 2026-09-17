@@ -2,6 +2,7 @@
 
 #include "execution.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <optional>
@@ -85,7 +86,10 @@ class Registry {
   std::vector<Capability> list() const;
   std::vector<Capability> rootGroups() const;
   std::vector<Capability> children(std::string_view path) const;
-  std::vector<Capability> search(std::string_view query) const;
+  // Ordena por especificidade do campo e aplica o limite quando informado.
+  std::vector<Capability> search(
+      std::string_view query,
+      std::optional<std::size_t> limit = std::nullopt) const;
 
  private:
   static bool isValid(const Capability& capability);

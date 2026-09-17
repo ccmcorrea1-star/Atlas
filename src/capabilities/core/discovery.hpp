@@ -2,6 +2,7 @@
 
 #include "registry.hpp"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@ namespace atlas::capabilities {
 struct DiscoveryRequest {
   std::optional<std::string> path;
   std::optional<std::string> query;
+  std::optional<std::size_t> limit;
 };
 
 // Projecao minima enviada ao Agent, sem detalhes de execucao ou aliases.
@@ -28,6 +30,9 @@ class Discovery {
 
   std::vector<DiscoveryResult> discover(const DiscoveryRequest& request = {}) const;
   std::vector<DiscoveryResult> discover(std::string_view path) const;
+
+  // Carrega os detalhes de uma capability somente quando o Agent a escolhe.
+  std::optional<Capability> getDefinition(std::string_view id) const;
 
  private:
   static std::vector<DiscoveryResult> project(const std::vector<Capability>& capabilities);
