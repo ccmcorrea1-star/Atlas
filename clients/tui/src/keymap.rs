@@ -24,6 +24,22 @@ pub(crate) enum Action {
     JumpBottom,
 }
 
+/// Label curto usado por overlays para manter os hints sincronizados com as
+/// teclas aceitas por [`resolve`].
+pub(crate) fn hint(action: Action) -> &'static str {
+    match action {
+        Action::Cancel => "esc",
+        Action::CloseOverlay => "q",
+        Action::PageUp => "pgup",
+        Action::PageDown => "pgdn",
+        Action::JumpTop => "ctrl-home",
+        Action::JumpBottom => "ctrl-end",
+        Action::ScrollUp => "↑",
+        Action::ScrollDown => "↓",
+        _ => "",
+    }
+}
+
 pub(crate) fn resolve(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let none = key.modifiers == KeyModifiers::NONE;

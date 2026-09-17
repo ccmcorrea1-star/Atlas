@@ -247,16 +247,23 @@ impl TranscriptOverlay {
             buffer,
         );
         let navigation = Rect::new(area.x, separator.y.saturating_add(1), area.width, 1);
-        Line::from(Span::styled(
-            " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump",
-            Style::default().dim(),
-        ))
-        .render(navigation, buffer);
-        Line::from(Span::styled(
-            " q close   esc to edit prev",
-            Style::default().dim(),
-        ))
-        .render(
+        let navigation_hint = format!(
+            " {}/{} to scroll   {}/{} to page   {}/{} to jump",
+            crate::keymap::hint(Action::ScrollUp),
+            crate::keymap::hint(Action::ScrollDown),
+            crate::keymap::hint(Action::PageUp),
+            crate::keymap::hint(Action::PageDown),
+            crate::keymap::hint(Action::JumpTop),
+            crate::keymap::hint(Action::JumpBottom),
+        );
+        Line::from(Span::styled(navigation_hint, Style::default().dim()))
+            .render(navigation, buffer);
+        let close_hint = format!(
+            " {} close   {} to edit prev",
+            crate::keymap::hint(Action::CloseOverlay),
+            crate::keymap::hint(Action::Cancel),
+        );
+        Line::from(Span::styled(close_hint, Style::default().dim())).render(
             Rect::new(area.x, navigation.y.saturating_add(1), area.width, 1),
             buffer,
         );
