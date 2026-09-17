@@ -329,7 +329,7 @@ fn render_stream_part(
                 cached.revision = revision;
                 return cached.lines.clone();
             }
-            if appended.ends_with('\n') {
+            if appended.ends_with('\n') && safe_incremental_suffix(appended) {
                 cached
                     .lines
                     .extend(render_agent_lines(appended, width, false));
@@ -403,6 +403,22 @@ fn open_code_parts(source: &str) -> Option<(String, &str)> {
         return None;
     }
     Some((language.to_owned(), body))
+}
+
+fn safe_incremental_suffix(source: &str) -> bool {
+    source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .all(|line| {
+            let trimmed = line.trim_start();
+            let starts_ordered_list = trimmed.find('.').is_some_and(|dot| {
+                dot > 0
+                    && trimmed[..dot]
+                        .chars()
+                        .all(|character| character.is_ascii_digit())
+            });
+            !trimmed.starts_with(['-', '*', '+', '>', '|', '`', '~', '<']) && !starts_ordered_list
+        })
 }
 
 fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static>> {
@@ -489,6 +505,21 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line_text(line).contains("second"))
+        );
+    }
+
+    #[test]
+    fn context_sensitive_list_suffix_falls_back_to_full_render() {
+        let mut cell = AgentMessageCell::new("list".to_owned(), "", true);
+        cell.set_stream_parts("- first\n", 8);
+        let _ = cell.display_lines(80);
+        cell.set_stream_parts("- first\n- second\n", 18);
+        let _ = cell.display_lines(80);
+
+        let cache = cell.stable_render_cache.lock().unwrap();
+        assert_eq!(
+            cache.as_ref().map(|cache| cache.incremental_appends),
+            Some(0)
         );
     }
 
