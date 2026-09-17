@@ -111,8 +111,21 @@ void testGroupIsNotExecutable() {
   const ExecutionResult result = Executor(registry).execute("process", "local", {});
   require(result.status == ExecutionStatus::failed, "a group should not be executable");
   require(
-      result.error == "capability 'process' has no valid implementation",
-      "group execution should fail without an implementation");
+      result.error == "capability 'process' of type 'group' is not executable",
+      "group execution should be rejected by type");
+}
+
+void testSkillIsNotExecutable() {
+  Registry registry;
+  Capability skill = descriptor("process.procedure", "native", "not-used");
+  skill.type = "skill";
+  require(registry.registerCapability(std::move(skill)), "skill should be registerable");
+
+  const ExecutionResult result = Executor(registry).execute("process.procedure", "local", {});
+  require(result.status == ExecutionStatus::failed, "a skill should not be executable");
+  require(
+      result.error == "capability 'process.procedure' of type 'skill' is not executable",
+      "skill execution should be rejected by type");
 }
 
 void testMissingCapability() {
@@ -203,6 +216,7 @@ void testInvalidImplementationIsNotRunnable() {
 int main() {
   testProcessExecution();
   testGroupIsNotExecutable();
+  testSkillIsNotExecutable();
   testMissingCapability();
   testUnsupportedKinds();
   testInvalidEntrypoint();

@@ -40,17 +40,17 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
             status: 'completed',
             call_id: 'discover-call',
             name: 'discover',
-            arguments: JSON.stringify({ query: 'executar processo' }),
+            arguments: JSON.stringify({ query: 'executar programa' }),
           },
         ]
       : requestNumber === 2
         ? [
             {
-              id: 'function-call-discover-definition',
+              id: 'function-call-describe',
               type: 'function_call',
               status: 'completed',
-              call_id: 'discover-definition-call',
-              name: 'discover',
+              call_id: 'describe-call',
+              name: 'describe',
               arguments: JSON.stringify({ id: 'process.exec' }),
             },
           ]
@@ -61,8 +61,11 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
                 type: 'function_call',
                 status: 'completed',
                 call_id: 'process-exec-call',
-                name: materializedToolName(input),
-                arguments: JSON.stringify({ program: 'node', args: ['--version'] }),
+                name: 'execute',
+                arguments: JSON.stringify({
+                  id: 'process.exec',
+                  arguments: { program: 'node', args: ['--version'] },
+                }),
               },
             ]
           : [
@@ -130,29 +133,7 @@ function tools(request: RequestBody): RequestBody[] {
   return (request.tools as RequestBody[] | undefined) ?? [];
 }
 
-function materializedToolName(request: RequestBody): string {
-  const tool = tools(request).find((candidate) => candidate.name !== 'discover');
-  if (!tool || typeof tool.name !== 'string') {
-    throw new Error('Capability test server did not receive a materialized tool.');
-  }
-  return tool.name;
-}
-
-function materializedToolNames(request: RequestBody): string[] {
-  return tools(request).flatMap((tool) =>
-    typeof tool.name === 'string' && tool.name !== 'discover' ? [tool.name] : [],
-  );
-}
-
-function materializedToolNameAt(request: RequestBody, index: number): string {
-  const name = materializedToolNames(request)[index];
-  if (name === undefined) {
-    throw new Error(`Capability test server did not receive materialized tool ${index}.`);
-  }
-  return name;
-}
-
-test('queries, chooses, materializes, and executes process.exec in the same turn', async () => {
+test('discovers, describes, and executes process.exec through base tools', async () => {
   const server = await startCapabilityAgentServer();
 
   try {
@@ -166,48 +147,57 @@ test('queries, chooses, materializes, and executes process.exec in the same turn
     assert.equal(server.requests.length, 4);
 
     const firstRequest = server.requests[0] as RequestBody;
-    const firstTools = tools(firstRequest);
     assert.deepEqual(
-      firstTools.map((tool) => tool.name),
-      ['discover'],
+      tools(firstRequest).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
     );
-    assert.match(JSON.stringify(firstRequest), /process - executar e gerenciar processos/);
+    const discoverTool = tools(firstRequest).find((tool) => tool.name === 'discover');
+    assert.ok(discoverTool);
+    const discoverParameters = discoverTool.parameters as RequestBody;
+    assert.deepEqual(Object.keys(discoverParameters.properties as RequestBody).sort(), [
+      'limit',
+      'query',
+    ]);
+    assert.doesNotMatch(JSON.stringify(tools(firstRequest)), /path|group/);
 
     const secondRequest = server.requests[1] as RequestBody;
     assert.deepEqual(
       tools(secondRequest).map((tool) => tool.name),
-      ['discover'],
+      ['discover', 'describe', 'execute'],
     );
-    assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar processo\\"/);
+    assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar programa\\"/);
     assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
+    assert.doesNotMatch(JSON.stringify(secondRequest.input), /process - executar/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /description/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /schema/);
-    assert.doesNotMatch(JSON.stringify(firstTools), /get_definition|call_tool/);
+    assert.doesNotMatch(JSON.stringify(tools(firstRequest)), /get_definition|call_tool/);
 
     const thirdRequest = server.requests[2] as RequestBody;
-    const materializedTool = tools(thirdRequest).find((tool) => tool.name !== 'discover');
-    assert.ok(materializedTool);
-    assert.match(materializedTool.name as string, /^process_exec_[a-f0-9]{16}$/);
-    assert.equal(materializedTool.description, 'executar um programa local diretamente, sem shell');
-    const schema = materializedTool.parameters as RequestBody;
+    assert.deepEqual(
+      tools(thirdRequest).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
+    );
+    const executeTool = tools(thirdRequest).find((tool) => tool.name === 'execute');
+    assert.ok(executeTool);
+    const schema = executeTool.parameters as RequestBody;
     const properties = schema.properties as RequestBody;
-    assert.ok(properties.program);
-    assert.ok(properties.args);
-    assert.deepEqual(schema.required, ['program']);
+    assert.ok(properties.id);
+    assert.ok(properties.arguments);
+    assert.deepEqual(schema.required, ['id', 'arguments']);
     assert.match(JSON.stringify(thirdRequest.input), /\\"id\\":\\"process\.exec\\"/);
     assert.match(JSON.stringify(thirdRequest.input), /description/);
     assert.match(JSON.stringify(thirdRequest.input), /schema/);
 
     const fourthRequest = server.requests[3] as RequestBody;
     assert.match(JSON.stringify(fourthRequest.input), /process-exec-call/);
-    assert.match(JSON.stringify(fourthRequest.input), new RegExp(materializedTool.name as string));
+    assert.match(JSON.stringify(fourthRequest.input), /execute/);
     assert.match(
       JSON.stringify(fourthRequest.input),
       new RegExp(process.version.replaceAll('.', '\\.')),
     );
     assert.deepEqual(
       tools(fourthRequest).map((tool) => tool.name),
-      ['discover', materializedTool.name],
+      ['discover', 'describe', 'execute'],
     );
   } finally {
     await server.close();
@@ -244,7 +234,7 @@ test('forwards streamed output from the native process capability', async () => 
   assert.equal(result.stderr, 'err-one');
 });
 
-test('materializes only the selected capability for the current turn', async () => {
+test('keeps capability schemas out of tools across conversation turns', async () => {
   const definition: CapabilityDefinition = {
     id: 'process.exec',
     type: 'tool',
@@ -262,10 +252,9 @@ test('materializes only the selected capability for the current turn', async () 
   };
   const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
   const capabilityRuntime: CapabilityRuntime = {
-    discover: async (request = {}) =>
-      request.query === undefined && request.path === undefined
-        ? [{ id: 'process', type: 'group', summary: 'ferramentas de processo' }]
-        : [{ id: definition.id, type: definition.type, summary: definition.summary }],
+    discover: async () => [
+      { id: definition.id, type: definition.type, summary: definition.summary },
+    ],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
@@ -279,54 +268,46 @@ test('materializes only the selected capability for the current turn', async () 
   };
   const server = await startCapabilityAgentServer((requestNumber, input) => {
     const output =
-      requestNumber === 1 || requestNumber === 5
+      requestNumber === 1
         ? [
             {
-              id: `function-call-discover-${requestNumber}`,
+              id: 'function-call-describe',
               type: 'function_call',
               status: 'completed',
-              call_id: `discover-call-${requestNumber}`,
-              name: 'discover',
-              arguments: JSON.stringify({ path: 'process' }),
+              call_id: 'describe-process-exec-call',
+              name: 'describe',
+              arguments: JSON.stringify({ id: definition.id }),
             },
           ]
-        : requestNumber === 2 || requestNumber === 6
+        : requestNumber === 3
           ? [
               {
-                id: `function-call-discover-definition-${requestNumber}`,
+                id: 'function-call-execute',
                 type: 'function_call',
                 status: 'completed',
-                call_id: `discover-definition-call-${requestNumber}`,
-                name: 'discover',
-                arguments: JSON.stringify({ id: definition.id }),
+                call_id: 'execute-process-exec-call',
+                name: 'execute',
+                arguments: JSON.stringify({
+                  id: definition.id,
+                  arguments: { program: 'python', args: ['--version'] },
+                }),
               },
             ]
-          : requestNumber === 3 || requestNumber === 7
-            ? [
-                {
-                  id: `function-call-process-exec-${requestNumber}`,
-                  type: 'function_call',
-                  status: 'completed',
-                  call_id: `process-exec-later-call-${requestNumber}`,
-                  name: materializedToolName(input),
-                  arguments: JSON.stringify({ program: 'echo', args: [`turn-${requestNumber}`] }),
-                },
-              ]
-            : [
-                {
-                  id: `final-message-${requestNumber}`,
-                  type: 'message',
-                  status: 'completed',
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'output_text',
-                      text: `Turn ${requestNumber === 4 ? 'one' : 'two'} completed.`,
-                      annotations: [],
-                    },
-                  ],
-                },
-              ];
+          : [
+              {
+                id: `final-message-${requestNumber}`,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: requestNumber === 2 ? 'Capability described.' : 'Python tested.',
+                    annotations: [],
+                  },
+                ],
+              },
+            ];
 
     return responseEnvelope(requestNumber, input, output);
   });
@@ -338,30 +319,30 @@ test('materializes only the selected capability for the current turn', async () 
       conversationId: 'capability-continuation-conversation',
       capabilityRuntime,
     };
-    const firstResult = await runAtlas('Descubra as ferramentas de processo.', options);
-    const secondResult = await runAtlas('Execute process.exec novamente.', options);
+    const firstResult = await runAtlas('O que process.exec faz?', options);
+    const secondResult = await runAtlas('Agora testa com python.', options);
 
-    assert.equal(firstResult.finalOutput, 'Turn one completed.');
-    assert.equal(secondResult.finalOutput, 'Turn two completed.');
-    assert.equal(server.requests.length, 8);
-    assert.deepEqual(materializedToolNames(server.requests[0] as RequestBody), []);
-    assert.deepEqual(materializedToolNames(server.requests[4] as RequestBody), []);
-    assert.equal(materializedToolNames(server.requests[2] as RequestBody).length, 1);
-    assert.equal(materializedToolNames(server.requests[6] as RequestBody).length, 1);
-    assert.equal(
-      materializedToolName(server.requests[6] as RequestBody),
-      materializedToolName(server.requests[2] as RequestBody),
+    assert.equal(firstResult.finalOutput, 'Capability described.');
+    assert.equal(secondResult.finalOutput, 'Python tested.');
+    assert.equal(server.requests.length, 4);
+    assert.deepEqual(
+      tools(server.requests[0] as RequestBody).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
     );
+    assert.deepEqual(
+      tools(server.requests[2] as RequestBody).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
+    );
+    assert.doesNotMatch(JSON.stringify(tools(server.requests[2] as RequestBody)), /process\.exec/);
     assert.deepEqual(executed, [
-      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-3'] } },
-      { id: 'process.exec', arguments_: { program: 'echo', args: ['turn-7'] } },
+      { id: 'process.exec', arguments_: { program: 'python', args: ['--version'] } },
     ]);
   } finally {
     await server.close();
   }
 });
 
-test('keeps provider names safe and dispatches colliding IDs to their capabilities', async () => {
+test('dispatches different capability IDs through the generic execute tool', async () => {
   const definitions: CapabilityDefinition[] = [
     {
       id: 'foo.bar',
@@ -403,10 +384,7 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
   const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
   const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
   const capabilityRuntime: CapabilityRuntime = {
-    discover: async (request = {}) =>
-      request.path === undefined
-        ? [{ id: 'demo', type: 'group', summary: 'capabilities de teste' }]
-        : definitions.map(({ id, type, summary }) => ({ id, type, summary })),
+    discover: async () => definitions.map(({ id, type, summary }) => ({ id, type, summary })),
     getDefinition: async (id) => definitionsById.get(id),
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
@@ -423,17 +401,17 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
               status: 'completed',
               call_id: 'discover-call',
               name: 'discover',
-              arguments: JSON.stringify({ path: 'demo' }),
+              arguments: JSON.stringify({ query: 'capabilities de teste' }),
             },
           ]
         : requestNumber === 2 || requestNumber === 4
           ? [
               {
-                id: `function-call-discover-definition-${requestNumber}`,
+                id: `function-call-describe-${requestNumber}`,
                 type: 'function_call',
                 status: 'completed',
-                call_id: `discover-definition-call-${requestNumber}`,
-                name: 'discover',
+                call_id: `describe-call-${requestNumber}`,
+                name: 'describe',
                 arguments: JSON.stringify({ id: definitions[requestNumber === 2 ? 0 : 1]?.id }),
               },
             ]
@@ -444,11 +422,11 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
                   type: 'function_call',
                   status: 'completed',
                   call_id: `capability-call-${requestNumber}`,
-                  name:
-                    requestNumber === 3
-                      ? materializedToolName(input)
-                      : materializedToolNameAt(input, 1),
-                  arguments: JSON.stringify({ value: `value-${requestNumber}` }),
+                  name: 'execute',
+                  arguments: JSON.stringify({
+                    id: definitions[requestNumber === 3 ? 0 : 1]?.id,
+                    arguments: { value: `value-${requestNumber}` },
+                  }),
                 },
               ]
             : [
@@ -476,22 +454,17 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
 
     assert.equal(result.finalOutput, 'Capabilities executadas.');
     assert.deepEqual(
-      tools(server.requests[1] as RequestBody).map((tool) => tool.name),
-      ['discover'],
+      tools(server.requests[0] as RequestBody).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
     );
-    const firstMaterializedTools = tools(server.requests[2] as RequestBody).filter(
-      (tool) => tool.name !== 'discover',
+    assert.deepEqual(
+      tools(server.requests[2] as RequestBody).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
     );
-    assert.equal(firstMaterializedTools.length, 1);
-    const materializedTools = tools(server.requests[4] as RequestBody).filter(
-      (tool) => tool.name !== 'discover',
+    assert.deepEqual(
+      tools(server.requests[4] as RequestBody).map((tool) => tool.name),
+      ['discover', 'describe', 'execute'],
     );
-    const names = materializedTools.map((tool) => tool.name as string);
-    assert.equal(names.length, 2);
-    assert.ok(names.every((name) => /^[a-zA-Z0-9_-]+$/.test(name)));
-    assert.match(names[0] as string, /^foo_bar_[a-f0-9]{16}$/);
-    assert.match(names[1] as string, /^foo_bar_[a-f0-9]{16}$/);
-    assert.notEqual(names[0], names[1]);
     assert.match(JSON.stringify(server.requests[2]?.input), /description/);
     assert.deepEqual(
       executed.map(({ id }) => id),
@@ -502,6 +475,7 @@ test('keeps provider names safe and dispatches colliding IDs to their capabiliti
       [{ value: 'value-3' }, { value: 'value-5' }],
     );
     assert.match(JSON.stringify(server.requests[1]?.input), /foo\.bar/);
+    assert.doesNotMatch(JSON.stringify(server.requests[2]?.tools), /foo\.bar|foo_bar/);
   } finally {
     await server.close();
   }

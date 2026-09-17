@@ -18,10 +18,7 @@ const capabilityRuntime: CapabilityRuntime = {
 };
 
 const processCapabilityRuntime: CapabilityRuntime = {
-  discover: async (request = {}) =>
-    request.path === undefined
-      ? [{ id: 'process', type: 'group', summary: 'process tools' }]
-      : [{ id: 'process.exec', type: 'tool', summary: 'execute a process' }],
+  discover: async () => [{ id: 'process.exec', type: 'tool', summary: 'execute a process' }],
   getDefinition: async (id) =>
     id === 'process.exec'
       ? {
@@ -71,15 +68,6 @@ function responseBody(status: string, output: WireMessage[] = []): WireMessage {
       total_tokens: 3,
     },
   };
-}
-
-function materializedToolName(request: WireMessage): string {
-  const tools = (request.tools as WireMessage[] | undefined) ?? [];
-  const tool = tools.find((candidate) => candidate.name !== 'discover');
-  if (!tool || typeof tool.name !== 'string') {
-    throw new Error('Process execution test did not receive a materialized tool.');
-  }
-  return tool.name;
 }
 
 async function startStreamingModelServer(): Promise<{
@@ -324,15 +312,15 @@ async function startProcessStreamingModelServer(): Promise<{
             status: 'completed',
             call_id: 'discover-call',
             name: 'discover',
-            arguments: JSON.stringify({ path: 'process' }),
+            arguments: JSON.stringify({ query: 'executar programa' }),
           }
         : requests.length === 2
           ? {
-              id: 'discover-definition-call',
+              id: 'describe-call',
               type: 'function_call',
               status: 'completed',
-              call_id: 'discover-definition-call',
-              name: 'discover',
+              call_id: 'describe-call',
+              name: 'describe',
               arguments: JSON.stringify({ id: 'process.exec' }),
             }
           : requests.length === 3
@@ -341,11 +329,14 @@ async function startProcessStreamingModelServer(): Promise<{
                 type: 'function_call',
                 status: 'completed',
                 call_id: 'execution-call',
-                name: materializedToolName(body),
+                name: 'execute',
                 arguments: JSON.stringify({
-                  program: failed ? 'false' : 'node',
-                  args: failed ? [] : ['--version'],
-                  cwd: '/tmp',
+                  id: 'process.exec',
+                  arguments: {
+                    program: failed ? 'false' : 'node',
+                    args: failed ? [] : ['--version'],
+                    cwd: '/tmp',
+                  },
                 }),
               }
             : undefined;

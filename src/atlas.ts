@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import {
   Agent,
@@ -6,7 +6,6 @@ import {
   Runner,
   type FunctionTool,
   type RunStreamEvent,
-  type AgentOptions,
 } from '@openai/agents';
 
 import {
@@ -18,7 +17,6 @@ import {
 } from './opencode-go.js';
 import {
   createCapabilityRuntime,
-  type CapabilityDefinition,
   type CapabilityDiscoveryRequest,
   type CapabilityDiscoveryResult,
   type CapabilityExecutionOptions,
@@ -26,9 +24,9 @@ import {
 } from './capability-runtime.js';
 
 const ATLAS_INSTRUCTIONS =
-  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform.';
+  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. Capabilities are accessed only through discover, describe, and execute. Use discover with a natural-language query, describe for a known capability definition, and execute with the capability id and arguments. A known capability does not need to be exposed as an individual Function Tool.';
 
-// O Agent base define a identidade; cada turno recebe um clone com capabilities isoladas.
+// O Agent base define a identidade; cada turno recebe as tools base do Atlas.
 export const Atlas = new Agent({
   name: 'Atlas',
   instructions: ATLAS_INSTRUCTIONS,
@@ -179,22 +177,8 @@ function parseObjectInput(input: string, toolName: string): Record<string, unkno
   return parsed as Record<string, unknown>;
 }
 
-function schemaForTool(definition: CapabilityDefinition): FunctionTool['parameters'] {
-  return definition.schema as FunctionTool['parameters'];
-}
-
-function providerToolName(capabilityId: string): string {
-  // O digest diferencia IDs que produzem a mesma forma sanitizada.
-  const readableName = capabilityId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'capability';
-  const suffix = createHash('sha256').update(capabilityId).digest('hex').slice(0, 16);
-  return `${readableName}_${suffix}`;
-}
-
-function materializeTool(
-  definition: CapabilityDefinition,
+function executionTool(
   capabilityRuntime: CapabilityRuntime,
-  toolName: string,
-  capabilityIdsByToolName: ReadonlyMap<string, string>,
   onOutput?: (
     capabilityId: string,
     executionId: string,
@@ -204,47 +188,54 @@ function materializeTool(
 ): FunctionTool {
   return {
     type: 'function',
-    name: toolName,
-    description: definition.description,
-    parameters: schemaForTool(definition),
+    name: 'execute',
+    description: 'executa qualquer capability registrada pelo id e pelos argumentos fornecidos',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'identificador exato da capability' },
+        arguments: {
+          type: 'object',
+          description: 'argumentos definidos pelo schema da capability',
+          additionalProperties: true,
+        },
+      },
+      required: ['id', 'arguments'],
+      additionalProperties: false,
+    } as FunctionTool['parameters'],
     strict: false,
     needsApproval: async () => false,
     isEnabled: async () => true,
     invoke: async (_runContext, input, details) => {
-      if (capabilityIdsByToolName.get(toolName) !== definition.id) {
-        throw new Error(`Unknown provider tool mapping for capability "${definition.id}".`);
+      const request = parseObjectInput(input, 'execute');
+      const id = request.id;
+      if (typeof id !== 'string' || !id) {
+        throw new Error('execute id must be a non-empty string.');
       }
-      const arguments_ = parseObjectInput(input, definition.id);
+      const arguments_ = recordValue(decodedJsonValue(request.arguments));
+      if (arguments_ === undefined) {
+        throw new Error('execute arguments must be a JSON object.');
+      }
       const executionId = details?.toolCall?.callId;
       const executionOptions: CapabilityExecutionOptions = {
         signal: details?.signal,
         ...(executionId === undefined || onOutput === undefined
           ? {}
           : {
-              onOutput: (channel, delta) => onOutput(definition.id, executionId, channel, delta),
+              onOutput: (channel, delta) => onOutput(id, executionId, channel, delta),
             }),
       };
-      const result = await capabilityRuntime.execute(
-        definition.id,
-        'local',
-        arguments_,
-        executionOptions,
-      );
+      const result = await capabilityRuntime.execute(id, 'local', arguments_, executionOptions);
       return JSON.stringify(result);
     },
   };
 }
 
-function discoveryTool(
-  capabilityRuntime: CapabilityRuntime,
-  exposeCapability: (definition: CapabilityDefinition) => void,
-): FunctionTool {
+function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   const parameters = {
     type: 'object',
     properties: {
-      id: { type: 'string', description: 'identificador exato da capability' },
-      path: { type: 'string', description: 'caminho hierarquico opcional' },
-      query: { type: 'string', description: 'consulta textual opcional' },
+      query: { type: 'string', description: 'consulta textual' },
       limit: { type: 'integer', minimum: 0, description: 'quantidade maxima de resultados' },
     },
     required: [],
@@ -254,104 +245,92 @@ function discoveryTool(
   return {
     type: 'function',
     name: 'discover',
-    description: 'encontra grupos e capabilities disponíveis sem executar uma capability',
+    description: 'encontra capabilities utilizáveis sem executar uma capability',
     parameters,
     strict: false,
     needsApproval: async () => false,
     isEnabled: async () => true,
     invoke: async (_runContext, input) => {
-      const { id, ...summaryRequest } = parseObjectInput(input, 'discover') as DiscoveryToolRequest;
-      if (id !== undefined) {
-        if (typeof id !== 'string' || !id) {
-          throw new Error('discover id must be a non-empty string.');
-        }
-        const definition = await capabilityRuntime.getDefinition(id);
-        if (definition === undefined) {
-          throw new Error(`Capability "${id}" was not found.`);
-        }
-        if (definition.type === 'tool') {
-          exposeCapability(definition);
-        }
-        return JSON.stringify(definition);
+      const request = parseObjectInput(input, 'discover');
+      if (Object.keys(request).some((key) => key !== 'query' && key !== 'limit')) {
+        throw new Error('discover accepts only query and limit.');
       }
-
+      const query = request.query;
+      if (query !== undefined && typeof query !== 'string') {
+        throw new Error('discover query must be a string.');
+      }
+      const limit = request.limit;
+      const summaryRequest: CapabilityDiscoveryRequest = {
+        ...(query === undefined ? {} : { query }),
+      };
       if (
-        summaryRequest.limit !== undefined &&
-        (!Number.isSafeInteger(summaryRequest.limit) || summaryRequest.limit < 0)
+        limit !== undefined &&
+        (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 0)
       ) {
         throw new Error('discover limit must be a non-negative integer.');
       }
+      if (typeof limit === 'number') {
+        summaryRequest.limit = limit;
+      }
       const results = await capabilityRuntime.discover(summaryRequest);
-      const summaries = results.map(({ id, type, summary }) => ({ id, type, summary }));
+      const summaries = results
+        .filter(({ type }) => type === 'tool' || type === 'skill')
+        .map(({ id, type, summary }) => ({ id, type, summary }));
       return JSON.stringify(summaries satisfies CapabilityDiscoveryResult[]);
     },
   };
 }
 
-type AtlasAgent = {
-  agent: Agent;
-  capabilityIdsByToolName: ReadonlyMap<string, string>;
-};
-
-class ProgressiveAtlasAgent extends Agent {
-  private readonly exposedTools: ReadonlyMap<string, FunctionTool>;
-
-  public constructor(config: AgentOptions, exposedTools: ReadonlyMap<string, FunctionTool>) {
-    super(config);
-    this.exposedTools = exposedTools;
-  }
-
-  public override async getAllTools(...args: Parameters<Agent['getAllTools']>) {
-    const directTools = await super.getAllTools(...args);
-    return [...directTools, ...this.exposedTools.values()];
-  }
+function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
+  return {
+    type: 'function',
+    name: 'describe',
+    description: 'retorna a definição completa de uma capability conhecida pelo id',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'identificador exato da capability' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    } as FunctionTool['parameters'],
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input) => {
+      const request = parseObjectInput(input, 'describe');
+      const id = request.id;
+      if (typeof id !== 'string' || !id) {
+        throw new Error('describe id must be a non-empty string.');
+      }
+      const definition = await capabilityRuntime.getDefinition(id);
+      if (definition === undefined || (definition.type !== 'tool' && definition.type !== 'skill')) {
+        throw new Error(`Capability "${id}" was not found.`);
+      }
+      return JSON.stringify(definition);
+    },
+  };
 }
-
-type DiscoveryToolRequest = CapabilityDiscoveryRequest & {
-  id?: string;
-};
 
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
-  rootGroups: readonly CapabilityDiscoveryResult[],
   onOutput?: (
     capabilityId: string,
     executionId: string,
     channel: 'stdout' | 'stderr',
     delta: string,
   ) => void | Promise<void>,
-): AtlasAgent {
-  const catalog = rootGroups.map(({ id, summary }) => `${id} - ${summary}`).join('\n');
-  const exposedTools = new Map<string, FunctionTool>();
-  const capabilityIdsByToolName = new Map<string, string>();
-  const exposeCapability = (definition: CapabilityDefinition) => {
-    if (exposedTools.has(definition.id)) {
-      return;
-    }
-    const toolName = providerToolName(definition.id);
-    const mappedCapabilityId = capabilityIdsByToolName.get(toolName);
-    if (mappedCapabilityId !== undefined && mappedCapabilityId !== definition.id) {
-      throw new Error(
-        `Provider tool name collision between capabilities "${mappedCapabilityId}" and "${definition.id}".`,
-      );
-    }
-    capabilityIdsByToolName.set(toolName, definition.id);
-    exposedTools.set(
-      definition.id,
-      materializeTool(definition, capabilityRuntime, toolName, capabilityIdsByToolName, onOutput),
-    );
-  };
-  const discover = discoveryTool(capabilityRuntime, exposeCapability);
-  const agent = new ProgressiveAtlasAgent(
-    {
-      name: Atlas.name,
-      instructions: `${ATLAS_INSTRUCTIONS}\n\nAvailable capability groups:\n${catalog}`,
-      model: Atlas.model,
-      tools: [discover],
-    },
-    exposedTools,
-  );
-  return { agent, capabilityIdsByToolName };
+): Agent {
+  return new Agent({
+    name: Atlas.name,
+    instructions: ATLAS_INSTRUCTIONS,
+    model: Atlas.model,
+    tools: [
+      discoveryTool(capabilityRuntime),
+      describeTool(capabilityRuntime),
+      executionTool(capabilityRuntime, onOutput),
+    ],
+  });
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -397,6 +376,21 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function executeCall(item: Record<string, unknown>):
+  | {
+      id: string;
+      arguments_: Record<string, unknown>;
+    }
+  | undefined {
+  const request = recordValue(decodedJsonValue(item.arguments));
+  const id = stringValue(request?.id);
+  const arguments_ = recordValue(decodedJsonValue(request?.arguments));
+  if (id === undefined || arguments_ === undefined) {
+    return undefined;
+  }
+  return { id, arguments_ };
+}
+
 function processExecArguments(item: Record<string, unknown>):
   | {
       program: string;
@@ -404,7 +398,7 @@ function processExecArguments(item: Record<string, unknown>):
       cwd?: string;
     }
   | undefined {
-  const arguments_ = recordValue(decodedJsonValue(item.arguments));
+  const arguments_ = executeCall(item)?.arguments_;
   const program = stringValue(arguments_?.program);
   if (program === undefined) {
     return undefined;
@@ -473,7 +467,7 @@ async function publishRunEvent(
   event: RunStreamEvent,
   onEvent: (event: AtlasRunEvent) => void | Promise<void>,
   fallbackMessageId: string,
-  capabilityIdsByToolName: ReadonlyMap<string, string>,
+  capabilityIdsByCallId: Map<string, string>,
 ): Promise<void> {
   if (event.type === 'raw_model_stream_event') {
     if (event.data.type !== 'output_text_delta') {
@@ -493,16 +487,19 @@ async function publishRunEvent(
   }
 
   const item = event.item.rawItem as unknown as Record<string, unknown>;
-  const providerToolName = stringValue(item.name);
-  const toolName =
-    providerToolName === undefined
-      ? undefined
-      : (capabilityIdsByToolName.get(providerToolName) ?? providerToolName);
+  const agentToolName = stringValue(item.name);
   const toolId = stringValue(item.callId) ?? stringValue(item.call_id);
+  const toolName =
+    (agentToolName === 'execute' ? executeCall(item)?.id : undefined) ??
+    (toolId === undefined ? undefined : capabilityIdsByCallId.get(toolId));
+
+  if (agentToolName === 'execute' && toolId !== undefined && toolName !== undefined) {
+    capabilityIdsByCallId.set(toolId, toolName);
+  }
 
   if (event.name === 'tool_called') {
-    // Discovery is an Agent implementation detail, not a client-facing tool.
-    if (toolName && providerToolName !== 'discover' && toolId) {
+    // Discovery e describe são detalhes do Agent, não eventos públicos.
+    if (toolName && toolId) {
       if (toolName === 'process.exec') {
         const arguments_ = processExecArguments(item);
         if (arguments_ !== undefined) {
@@ -522,7 +519,7 @@ async function publishRunEvent(
   }
 
   if (event.name === 'tool_output') {
-    if (toolName && providerToolName !== 'discover' && toolId) {
+    if (toolName && toolId) {
       const output = publicText(item.output);
       if (toolName === 'process.exec') {
         await onEvent({
@@ -589,10 +586,8 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const runtime = getAtlasRuntime(providerOptions);
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
-  const rootGroups = await capabilityRuntime.discover();
-  const { agent, capabilityIdsByToolName } = createAtlasAgent(
+  const agent = createAtlasAgent(
     capabilityRuntime,
-    rootGroups,
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {
@@ -623,8 +618,9 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
         stream: true,
       });
       const fallbackMessageId = randomUUID();
+      const capabilityIdsByCallId = new Map<string, string>();
       for await (const event of streamedResult) {
-        await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByToolName);
+        await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByCallId);
       }
 
       // O iterador pode terminar antes da finalizacao interna do Runner.

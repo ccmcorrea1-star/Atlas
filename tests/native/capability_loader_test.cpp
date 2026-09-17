@@ -73,11 +73,12 @@ void testLoader(const std::filesystem::path& directory) {
   require(loaded->implementation.kind == "native", "implementation kind should be preserved");
   require(loaded->implementation.entrypoint == "atlas/test", "entrypoint should be preserved");
   require(
-      discovery.discover().size() == 1 && discovery.discover().front().id == "tests",
-      "Discovery should expose only the loaded root group");
+      discovery.discover().size() == 1 && discovery.discover().front().id == "tests.echo",
+      "Discovery should expose only usable capabilities");
   require(
-      discovery.discover("tests").size() == 1 && discovery.discover("tests").front().id == "tests.echo",
-      "loaded capability should appear below its group in Discovery");
+      discovery.discover({.query = "repete", .limit = std::nullopt}).size() == 1 &&
+          discovery.discover({.query = "repete", .limit = std::nullopt}).front().id == "tests.echo",
+      "loaded capability should appear in Discovery search");
 
   const std::filesystem::path invalidPath = directory / "invalid" / "capability.json";
   std::filesystem::create_directories(invalidPath.parent_path());

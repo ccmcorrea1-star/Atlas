@@ -469,6 +469,12 @@ ExecutionResult Executor::execute(
     return failure(request.target, "capability '" + request.capability_id + "' is not registered");
   }
 
+  if (capability->type != "tool") {
+    return failure(
+        request.target,
+        "capability '" + request.capability_id + "' of type '" + capability->type + "' is not executable");
+  }
+
   const CapabilityImplementation& implementation = capability->implementation;
   if (implementation.empty()) {
     return failure(

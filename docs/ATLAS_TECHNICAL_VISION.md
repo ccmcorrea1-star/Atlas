@@ -43,20 +43,21 @@ Tasks e Workers entram nesse fluxo apenas quando o trabalho precisa ser persiste
 
 ## Discovery, Tools e Skills
 
-O Agent começa conhecendo apenas grupos de capacidades. Discovery permite navegar por domínio ou buscar diretamente:
+O Agent busca diretamente por linguagem natural usando Discovery:
 
 ```text
-discover({ path: "docker.container" })
 discover({ query: "logs de container" })
 ```
 
-Somente a capacidade relevante deve ser materializada por completo.
+Discovery retorna somente Tools e Skills utilizáveis. Grupos podem organizar o
+Registry internamente, mas não são resultados expostos ao Agent. Somente a
+capacidade relevante deve ser materializada por completo.
 
 Uma **Tool** representa uma ação executável. Depois de descoberta, deve ser chamada diretamente e executada de forma determinística sempre que possível.
 
 Uma **Skill** representa um procedimento reutilizável. Ela orienta o Agent a combinar Tools sem precisar se tornar uma Tool monolítica.
 
-Discovery pode encontrar Tools, Skills, memória, conhecimento e outros recursos. O [`Capability Registry`](#capability-registry) administra capacidades executáveis e procedurais.
+Discovery encontra Tools e Skills. O [`Capability Registry`](#capability-registry) administra capacidades executáveis e procedurais.
 
 ## Contexto e memória
 

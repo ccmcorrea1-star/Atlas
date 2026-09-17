@@ -108,11 +108,7 @@ Capability runtimeCapability() {
 }
 
 DiscoveryRequest queryRequest(std::string query) {
-  return {.path = std::nullopt, .query = std::move(query), .limit = std::nullopt};
-}
-
-DiscoveryRequest pathRequest(std::string path) {
-  return {.path = std::move(path), .query = std::nullopt, .limit = std::nullopt};
+  return {.query = std::move(query), .limit = std::nullopt};
 }
 
 const StructuredValue* objectField(const StructuredValue& value, std::string_view name) {
@@ -168,7 +164,7 @@ void testRegistryAndDiscovery() {
           objectField(*schemaProperties, "timeout_ms") != nullptr,
       "registered capability should preserve complete schema properties");
 
-  const auto definition = registry.getDefinition("process.exec");
+  const auto definition = discovery.getDefinition("process.exec");
   require(
       definition.has_value() && definition->description == registered->description &&
           objectField(definition->schema, "required") != nullptr,
@@ -179,19 +175,20 @@ void testRegistryAndDiscovery() {
 
   const auto root = discovery.discover();
   require(
-      root.size() == 1 && root.front().id == "process" && root.front().type == "group" &&
-          root.front().summary == "executar e gerenciar processos",
-      "discover without a request should return only the process root group");
-
-  const auto discoveredChildren = discovery.discover(pathRequest("process"));
-  require(
-      discoveredChildren.size() == 1 && discoveredChildren.front().id == "process.exec",
-      "discover by path should return the process.exec capability");
+      root.size() == 1 && root.front().id == "process.exec" && root.front().type == "tool",
+      "discover without a query should return usable capabilities only");
+  require(!discovery.getDefinition("process").has_value(), "group definitions should not be exposed");
 
   const auto directSearch = discovery.discover(queryRequest("executar programa"));
   require(
       directSearch.size() == 1 && directSearch.front().id == "process.exec",
       "direct Discovery search should find process.exec");
+  DiscoveryRequest limitedSearchByGroup = queryRequest("executar");
+  limitedSearchByGroup.limit = 1;
+  const auto limitedSearchResult = discovery.discover(limitedSearchByGroup);
+  require(
+      limitedSearchResult.size() == 1 && limitedSearchResult.front().id == "process.exec",
+      "Discovery should apply the limit after filtering internal groups");
 
   const auto processChildren = registry.children("process");
   require(
@@ -211,12 +208,11 @@ void testRegistryAndDiscovery() {
   require(
       discovery.discover(queryRequest("echo")).size() == 1,
       "new capability should appear in Discovery search");
-  const auto runtimeChildren = discovery.discover(pathRequest("runtime"));
+  const auto runtimeSearch = discovery.discover(queryRequest("repete texto"));
   require(
-      runtimeChildren.size() == 1 && runtimeChildren.front().id == "runtime.echo" &&
-          runtimeChildren.front().type == "tool" &&
-          runtimeChildren.front().summary == "repete um texto",
-           "new capability should appear in Discovery children");
+      runtimeSearch.size() == 1 && runtimeSearch.front().id == "runtime.echo" &&
+          runtimeSearch.front().type == "tool" && runtimeSearch.front().summary == "repete um texto",
+      "new capability should appear in Discovery search");
 
   require(
       registry.registerCapability(Capability{

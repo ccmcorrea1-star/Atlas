@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 export type CapabilityDiscoveryRequest = {
-  path?: string;
   query?: string;
   limit?: number;
 };
@@ -61,6 +60,10 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function isUsableType(type: string): boolean {
+  return type === 'tool' || type === 'skill';
+}
+
 function discoveryResult(value: unknown): CapabilityDiscoveryResult {
   const result = asObject(value, 'Discovery result');
   return {
@@ -89,7 +92,6 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
   ): Promise<CapabilityDiscoveryResult[]> {
     const response = await this.request({
       operation: 'discover',
-      ...(request.path === undefined ? {} : { path: request.path }),
       ...(request.query === undefined ? {} : { query: request.query }),
       ...(request.limit === undefined ? {} : { limit: request.limit }),
     });
@@ -98,7 +100,7 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       throw new Error('Capability runtime response field "results" must be an array.');
     }
 
-    return results.map(discoveryResult);
+    return results.map(discoveryResult).filter(({ type }) => isUsableType(type));
   }
 
   public async getDefinition(id: string): Promise<CapabilityDefinition | undefined> {
@@ -108,13 +110,14 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     }
 
     const definition = asObject(response.definition, 'Capability definition');
-    return {
+    const parsedDefinition = {
       id: requiredString(definition.id, 'id'),
       type: requiredString(definition.type, 'type'),
       summary: requiredString(definition.summary, 'summary'),
       description: requiredString(definition.description, 'description'),
       schema: jsonSchema(definition.schema),
     };
+    return isUsableType(parsedDefinition.type) ? parsedDefinition : undefined;
   }
 
   public async execute(

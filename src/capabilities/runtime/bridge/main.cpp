@@ -115,7 +115,6 @@ void loadRegistry(const char* executable, Registry& registry) {
 
 StructuredValue discoveryValue(const Discovery& discovery, const StructuredValue::Object& request) {
   DiscoveryRequest discoveryRequest;
-  discoveryRequest.path = optionalString(request, "path");
   discoveryRequest.query = optionalString(request, "query");
   discoveryRequest.limit = optionalLimit(request, "limit");
 
