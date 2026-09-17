@@ -312,6 +312,30 @@ mod tests {
         assert!(rows[0].starts_with("/ T R A N S C R I P T"));
         assert!(rows[7].contains("to scroll"));
         assert!(rows[8].contains("q close"));
+        insta::assert_snapshot!(rows.join("\n"));
+    }
+
+    #[test]
+    fn transcript_wraps_long_lines_in_the_pager_viewport() {
+        let mut app = App::new("pager-wrap".to_owned());
+        app.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message".to_owned(),
+            content: "This is a deliberately long transcript line that must wrap inside the pager."
+                .to_owned(),
+        });
+        let area = Rect::new(0, 0, 24, 10);
+        let mut buffer = Buffer::empty(area);
+        let overlay = TranscriptOverlay::default();
+        overlay.render(&app, area, &mut buffer);
+
+        let rows = (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        insta::assert_snapshot!(rows.join("\n"));
     }
 
     #[test]

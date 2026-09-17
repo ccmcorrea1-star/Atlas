@@ -1,0 +1,13 @@
+---
+source: src/pager_overlay.rs
+expression: "rows.join(\"\\n\")"
+---
+/ T R A N S C R I P T / / / / / / / / / 
+• answer                                
+~                                       
+~                                       
+~                                       
+~                                       
+────────────────────────────────── 100% 
+ ↑/↓ to scroll   pgup/pgdn to page   hom
+ q close   esc to edit prev
