@@ -1,0 +1,6 @@
+---
+source: src/chatwidget/streaming.rs
+expression: rendered
+---
+• intro
+  let answer = 42;

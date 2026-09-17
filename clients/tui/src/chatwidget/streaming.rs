@@ -250,6 +250,29 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_materialized_stable_and_tail_stream() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "snapshot-stream".to_owned(),
+            delta: "intro\n```rust\nlet answer = 42;\n".to_owned(),
+        });
+        widget.tick();
+        let rendered = widget
+            .active_cells()
+            .iter()
+            .flat_map(|cell| cell.display_lines(40))
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!("streaming_materialized_stable_tail", rendered);
+    }
+
+    #[test]
     fn completion_compacts_stable_and_tail_even_without_a_closing_delta() {
         let mut widget = ChatWidget::new();
         widget.handle_runtime_event(RuntimeEvent::MessageDelta {
