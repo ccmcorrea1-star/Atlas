@@ -11,6 +11,13 @@ pub(crate) struct MarkdownRenderCache {
 }
 
 impl MarkdownRenderCache {
+    pub(crate) fn clear(&self) {
+        self.cached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+
     pub(crate) fn render(
         &self,
         width: u16,

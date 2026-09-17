@@ -71,11 +71,11 @@ impl ChatWidget {
             });
             let id = id.unwrap_or_else(|| "turn-completed".to_owned());
             if let Some(message) = self.find_active_agent_mut(&id) {
-                message.markdown_source = bounded_text(&content);
+                message.set_markdown_source(bounded_text(&content));
                 message.completed = true;
                 self.commit_active_agent(&id);
             } else if let Some(message) = self.find_markdown_mut(&id) {
-                message.markdown_source = bounded_text(&content);
+                message.set_markdown_source(bounded_text(&content));
             } else if self.find_agent(&id).is_none() {
                 self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
                     Some(id),

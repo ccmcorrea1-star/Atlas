@@ -28,6 +28,7 @@ use crate::runtime::ContextUsage;
 use crate::runtime::RuntimeEvent;
 
 pub(crate) const MAX_COMPLETION_ROWS: usize = 8;
+pub(crate) const MAX_USER_INPUT_TEXT_CHARS: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -53,10 +54,34 @@ pub struct App {
     quit_confirmation: bool,
     queued_inputs: VecDeque<String>,
     submission_pending: bool,
+    oversized_paste_pending: bool,
     cancel_requested: bool,
     external_editor_requested: bool,
     session_model: Option<String>,
     session_provider: Option<String>,
+}
+
+fn sanitize_paste_text(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut sanitized = String::with_capacity(normalized.len());
+    let mut chars = normalized.chars();
+    while let Some(character) = chars.next() {
+        if character == '\x1b' {
+            if chars.next() == Some('[') {
+                for sequence_character in chars.by_ref() {
+                    if ('@'..='~').contains(&sequence_character) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if character.is_control() && !matches!(character, '\n' | '\t') {
+            continue;
+        }
+        sanitized.push(character);
+    }
+    sanitized
 }
 
 impl App {
@@ -93,6 +118,7 @@ impl App {
             quit_confirmation: false,
             queued_inputs: VecDeque::new(),
             submission_pending: false,
+            oversized_paste_pending: false,
             cancel_requested: false,
             external_editor_requested: false,
             session_model: None,
@@ -407,6 +433,7 @@ impl App {
 
     pub fn insert_text(&mut self, text: &str) {
         self.bottom_pane.composer.textarea.insert_str(text);
+        self.oversized_paste_pending = false;
     }
 
     pub(crate) fn flush_paste_burst_if_due_at(&mut self, now: Instant) -> bool {
@@ -433,19 +460,24 @@ impl App {
         if self.shortcuts_open() || self.transcript_overlay.is_open() || self.quit_confirmation {
             return;
         }
+        let text = sanitize_paste_text(text);
+        let oversized = text.chars().count() > MAX_USER_INPUT_TEXT_CHARS;
         if self.bottom_pane.composer.history_search_open {
-            self.bottom_pane
-                .composer
-                .history_search_query
-                .push_str(text);
-            self.refresh_history_search();
+            if !text.is_empty() {
+                self.bottom_pane
+                    .composer
+                    .history_search_query
+                    .push_str(&text);
+                self.refresh_history_search();
+            }
             return;
         }
         self.bottom_pane
             .composer
             .paste_burst
             .clear_after_explicit_paste();
-        self.insert_text(text);
+        self.insert_text(&text);
+        self.oversized_paste_pending = oversized;
     }
 
     pub fn insert_newline(&mut self) {
@@ -475,6 +507,10 @@ impl App {
     }
 
     pub fn submit_input(&mut self) -> Option<String> {
+        if self.oversized_paste_pending || self.input().chars().count() > MAX_USER_INPUT_TEXT_CHARS
+        {
+            return None;
+        }
         if self.input().trim().is_empty() {
             return None;
         }
@@ -1545,6 +1581,21 @@ mod tests {
         app.record_history_content_height(100);
 
         assert_eq!(app.history_scroll(), 25);
+    }
+
+    #[test]
+    fn paste_normalizes_newlines_and_removes_control_sequences() {
+        let mut app = App::new("paste-sanitize".to_owned());
+        app.handle_paste("a\r\nb\r\n\x1b[31mc\x07\td");
+        assert_eq!(app.input(), "a\nb\nc\td");
+    }
+
+    #[test]
+    fn submit_rejects_input_over_the_protocol_limit_without_clearing_draft() {
+        let mut app = App::new("input-limit".to_owned());
+        app.handle_paste(&"x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1));
+        assert!(app.submit_input().is_none());
+        assert_eq!(app.input().chars().count(), 65_536);
     }
 
     #[test]

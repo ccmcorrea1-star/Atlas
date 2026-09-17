@@ -741,7 +741,7 @@ mod writer {
                 let budget = width.saturating_sub(columns.saturating_sub(1) * 2 + columns * 2);
                 shrink_widths(&mut widths, budget);
             }
-            self.lines.push(render_table_row(
+            self.lines.extend(render_table_row(
                 &header,
                 &widths,
                 Style::default().bold().cyan(),
@@ -758,7 +758,7 @@ mod writer {
             );
             for (index, row) in rows.iter().enumerate() {
                 self.lines
-                    .push(render_table_row(row, &widths, Style::default()));
+                    .extend(render_table_row(row, &widths, Style::default()));
                 if index + 1 < rows.len() {
                     self.lines.push(
                         Line::from(
@@ -775,19 +775,43 @@ mod writer {
         }
     }
 
-    fn render_table_row(row: &[String], widths: &[usize], style: Style) -> Line<'static> {
-        let mut text = String::new();
-        for (index, width) in widths.iter().enumerate() {
-            if index > 0 {
-                text.push_str("  ");
-            }
-            let cell = row.get(index).map_or("", String::as_str);
-            text.push(' ');
-            text.push_str(cell);
-            let padding = width.saturating_sub(crate::wrapping::display_width(cell));
-            text.push_str(&" ".repeat(padding + 1));
-        }
-        Line::from(Span::styled(text.trim_end().to_owned(), style))
+    fn render_table_row(row: &[String], widths: &[usize], style: Style) -> Vec<Line<'static>> {
+        let wrapped_cells = row
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let width = widths.get(index).copied().unwrap_or(1).max(1);
+                crate::wrapping::wrap_line(Line::from(cell.clone()), width.saturating_add(1))
+                    .into_iter()
+                    .map(|line| {
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+        (0..height)
+            .map(|line_index| {
+                let mut text = String::new();
+                for (index, width) in widths.iter().enumerate() {
+                    if index > 0 {
+                        text.push_str("  ");
+                    }
+                    let cell = wrapped_cells
+                        .get(index)
+                        .and_then(|lines| lines.get(line_index))
+                        .map_or("", String::as_str);
+                    text.push(' ');
+                    text.push_str(cell);
+                    let padding = width.saturating_sub(crate::wrapping::display_width(cell));
+                    text.push_str(&" ".repeat(padding + 1));
+                }
+                Line::from(Span::styled(text.trim_end().to_owned(), style))
+            })
+            .collect()
     }
 
     fn shrink_widths(widths: &mut [usize], budget: usize) {
@@ -992,6 +1016,22 @@ mod tests {
         assert!(text.iter().any(|line| line.contains("Atlas")));
         assert!(text.iter().any(|line| line.contains('━')));
         insta::assert_snapshot!("tables_render_header_separator_and_rows", text.join("\n"));
+    }
+
+    #[test]
+    fn narrow_tables_wrap_cells_within_the_requested_width() {
+        let rendered = super::render_markdown_text_with_width(
+            "| Name | Value |\n| --- | --- |\n| A very long cell | Another very long cell |",
+            Some(20),
+        );
+        assert!(rendered.lines.iter().all(|line| {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            crate::wrapping::display_width(&text) <= 20
+        }));
     }
 
     #[test]

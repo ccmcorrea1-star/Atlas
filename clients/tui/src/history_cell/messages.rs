@@ -181,6 +181,11 @@ impl HistoryCell for AgentMessageCell {
 }
 
 impl AgentMessageCell {
+    pub(crate) fn set_markdown_source(&mut self, source: impl Into<String>) {
+        self.markdown_source = source.into();
+        self.clear_stream_parts();
+    }
+
     pub(crate) fn set_stream_parts(&mut self, source: &str, stable_len: usize) {
         let stable_len = stable_len.min(source.len());
         let stable = source[..stable_len].to_owned();
@@ -221,6 +226,11 @@ pub(crate) struct AgentMarkdownCell {
 }
 
 impl AgentMarkdownCell {
+    pub(crate) fn set_markdown_source(&mut self, markdown_source: impl Into<String>) {
+        self.markdown_source = markdown_source.into();
+        self.rendered_lines.clear();
+    }
+
     pub(crate) fn with_message_id(
         message_id: Option<String>,
         markdown_source: impl Into<String>,
@@ -395,10 +405,17 @@ fn render_stream_part(
 
 fn open_code_parts(source: &str) -> Option<(String, &str)> {
     let (opening, body) = source.split_once('\n')?;
-    let language = opening.strip_prefix("```")?.trim();
+    let marker = if opening.starts_with("```") {
+        "```"
+    } else if opening.starts_with("~~~") {
+        "~~~"
+    } else {
+        return None;
+    };
+    let language = opening.strip_prefix(marker)?.trim();
     if language.is_empty()
-        || opening.contains("````")
-        || body.lines().any(|line| line.trim().starts_with("```"))
+        || opening.contains(&format!("{marker}{marker}"))
+        || body.lines().any(|line| line.trim().starts_with(marker))
     {
         return None;
     }
@@ -465,6 +482,17 @@ mod tests {
     }
 
     #[test]
+    fn final_source_update_invalidates_same_width_markdown_cache() {
+        let mut cell = AgentMarkdownCell::with_message_id(Some("message".to_owned()), "old");
+        let first = cell.display_lines(80);
+        assert!(first.iter().any(|line| line_text(line).contains("old")));
+        cell.set_markdown_source("new");
+        let second = cell.display_lines(80);
+        assert!(second.iter().any(|line| line_text(line).contains("new")));
+        assert!(!second.iter().any(|line| line_text(line).contains("old")));
+    }
+
+    #[test]
     fn streaming_renderer_consumes_stable_region_and_mutable_tail() {
         let mut cell = AgentMessageCell::new("message".to_owned(), "", true);
         cell.set_stream_parts("intro\n**tail**", "intro\n".len());
@@ -520,6 +548,26 @@ mod tests {
         assert_eq!(
             cache.as_ref().map(|cache| cache.incremental_appends),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn tilde_code_stream_appends_to_the_existing_highlighter_cache() {
+        let mut cell = AgentMessageCell::new("tilde-code".to_owned(), "", true);
+        cell.set_stream_parts("~~~rust\nlet answer = 42;\n", 0);
+        let _ = cell.display_lines(80);
+        cell.set_stream_parts("~~~rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0);
+        let rendered = cell.display_lines(80);
+
+        let cache = cell.tail_render_cache.lock().unwrap();
+        assert_eq!(
+            cache.as_ref().map(|cache| cache.incremental_appends),
+            Some(1)
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text(line).contains("println!"))
         );
     }
 
