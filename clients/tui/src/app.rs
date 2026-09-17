@@ -358,6 +358,13 @@ impl App {
         self.history_content_height = height;
     }
 
+    pub(crate) fn on_resize(&mut self) {
+        self.transcript_overlay.on_resize();
+        if !self.manual_scroll {
+            self.history_scroll = 0;
+        }
+    }
+
     pub fn tick(&mut self) {
         self.chatwidget.tick();
     }

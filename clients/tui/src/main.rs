@@ -220,6 +220,7 @@ async fn run(
                 bottom_pane.handle_mouse_event(&mut app, mouse);
             }
             Event::Resize(size) => {
+                app.on_resize();
                 let screen_size = ratatui::layout::Size::new(size.width, size.height);
                 terminal.resize(screen_size)?;
                 terminal.set_viewport_area(ratatui::layout::Rect::new(

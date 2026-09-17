@@ -53,6 +53,11 @@ impl TranscriptOverlay {
         self.open.set(false);
     }
 
+    pub(crate) fn on_resize(&self) {
+        self.live_tail_cache.borrow_mut().take();
+        self.last_content_height.set(0);
+    }
+
     pub(crate) fn handle_action(&self, action: Option<Action>) -> Option<TranscriptViewCompletion> {
         match action {
             Some(Action::Cancel) | Some(Action::CloseOverlay) => {
