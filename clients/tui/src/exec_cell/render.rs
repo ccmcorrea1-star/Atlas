@@ -394,6 +394,7 @@ mod tests {
         let lines = cell.transcript_lines(80);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
         assert_eq!(rendered, ["$ echo hello", "hello", "world", "✓ • 12ms"]);
+        insta::assert_snapshot!(rendered.join("\n"));
     }
 
     #[test]

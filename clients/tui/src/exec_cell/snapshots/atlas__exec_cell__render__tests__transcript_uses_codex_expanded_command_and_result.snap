@@ -1,0 +1,8 @@
+---
+source: src/exec_cell/render.rs
+expression: "rendered.join(\"\\n\")"
+---
+$ echo hello
+hello
+world
+✓ • 12ms
