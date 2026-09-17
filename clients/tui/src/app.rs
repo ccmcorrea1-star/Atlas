@@ -1442,4 +1442,17 @@ mod tests {
         app.record_history_content_height(25);
         assert_eq!(app.history_scroll(), 8);
     }
+
+    #[test]
+    fn resize_preserves_manual_scroll_but_restores_follow_tail() {
+        let mut app = App::new("resize-scroll".to_owned());
+        app.record_history_content_height(20);
+        app.scroll_up(3);
+        app.on_resize();
+        assert_eq!(app.history_scroll(), 3);
+
+        app.scroll_down(3);
+        app.on_resize();
+        assert_eq!(app.history_scroll(), 0);
+    }
 }
