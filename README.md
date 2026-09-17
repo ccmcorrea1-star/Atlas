@@ -22,8 +22,16 @@ Requer Node.js 22+, CMake com suporte a C++23 e Rust/Cargo.
 
 ```bash
 npm ci
+cargo install --locked --path clients/tui
 export OPENCODE_GO_API_KEY="sua-chave"
-npm run runtime
+atlas server run
+```
+
+Para reiniciar ou desligar o servidor:
+
+```bash
+atlas server restart
+atlas server stop
 ```
 
 Em outro terminal:

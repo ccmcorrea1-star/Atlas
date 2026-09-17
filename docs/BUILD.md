@@ -26,6 +26,12 @@ O smoke test é local e não precisa de `OPENCODE_GO_API_KEY`.
 
 ## Cliente TUI
 
+Para disponibilizar o comando `atlas` no PATH:
+
+```bash
+cargo install --locked --path clients/tui
+```
+
 ```bash
 npm run build:client
 npm run test:client
@@ -47,10 +53,22 @@ ctest --test-dir .native-cmake --output-on-failure
 
 ## Execução
 
-Para executar a saída compilada:
+Depois de compilar o cliente TUI, inicie o Runtime com:
 
 ```bash
-npm start
+atlas server run
+```
+
+Para reiniciar uma instância existente:
+
+```bash
+atlas server restart
+```
+
+Para desligar o servidor:
+
+```bash
+atlas server stop
 ```
 
 ## Comandos disponíveis
@@ -58,7 +76,9 @@ npm start
 | Comando                | Finalidade                                               |
 | ---------------------- | -------------------------------------------------------- |
 | `npm run dev`          | Executa o TypeScript em modo watch                       |
-| `npm run runtime`      | Inicia o servidor local do Atlas Runtime                 |
+| `atlas server run`     | Inicia o servidor local do Atlas Runtime                 |
+| `atlas server restart` | Reinicia o servidor local do Atlas Runtime               |
+| `atlas server stop`    | Desliga o servidor local do Atlas Runtime                |
 | `npm run format`       | Formata os arquivos com Prettier                         |
 | `npm run format:check` | Verifica a formatação sem alterar arquivos               |
 | `npm run lint`         | Executa o ESLint                                         |

@@ -15,6 +15,7 @@ mod markdown_render;
 mod pager_overlay;
 mod render;
 mod runtime;
+mod server;
 mod session_header;
 mod ui_consts;
 mod wrapping;
@@ -24,6 +25,7 @@ use std::io::stdout;
 use std::time::Instant;
 
 use clap::Parser;
+use clap::Subcommand;
 use crossterm::cursor::Hide;
 use crossterm::cursor::Show;
 use crossterm::event::DisableBracketedPaste;
@@ -51,6 +53,9 @@ use crate::runtime::UnixTransport;
 #[derive(Debug, Parser)]
 #[command(name = "atlas", version, about = "Atlas terminal client")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Conversation identifier reused for every turn in this process.
     #[arg(long, default_value = "default")]
     conversation_id: String,
@@ -58,6 +63,15 @@ struct Cli {
     /// Override the Atlas Runtime Unix socket path.
     #[arg(long, env = "ATLAS_RUNTIME_SOCKET")]
     socket: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Manage the Atlas Runtime server.
+    Server {
+        #[command(subcommand)]
+        command: server::ServerCommand,
+    },
 }
 
 struct TerminalGuard;
@@ -115,6 +129,10 @@ impl Drop for TerminalGuard {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    if let Some(Command::Server { command }) = cli.command {
+        return server::execute(command);
+    }
+
     let (runtime, runtime_events) = match cli.socket {
         Some(socket) => {
             AtlasRuntimeClient::with_transport(cli.conversation_id, UnixTransport::new(socket))
@@ -239,4 +257,36 @@ async fn run(
 
 fn spawn_send(runtime: AtlasRuntimeClient, input: String) -> JoinHandle<Result<(), RuntimeError>> {
     tokio::spawn(async move { runtime.send_message(input).await })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_server_subcommands() {
+        let run = Cli::try_parse_from(["atlas", "server", "run"]).unwrap();
+        assert!(matches!(
+            run.command,
+            Some(Command::Server {
+                command: server::ServerCommand::Run
+            })
+        ));
+
+        let stop = Cli::try_parse_from(["atlas", "server", "stop"]).unwrap();
+        assert!(matches!(
+            stop.command,
+            Some(Command::Server {
+                command: server::ServerCommand::Stop
+            })
+        ));
+
+        let restart = Cli::try_parse_from(["atlas", "server", "restart"]).unwrap();
+        assert!(matches!(
+            restart.command,
+            Some(Command::Server {
+                command: server::ServerCommand::Restart
+            })
+        ));
+    }
 }

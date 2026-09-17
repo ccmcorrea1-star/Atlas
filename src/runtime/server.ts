@@ -1,3 +1,4 @@
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -29,6 +30,35 @@ function defaultRuntimeSocketPath(): string {
     : resolve(runtimeDirectory, 'atlas-runtime.sock');
 }
 
+function configuredRuntimeSocketPath(): string {
+  return process.env.ATLAS_RUNTIME_SOCKET ?? defaultRuntimeSocketPath();
+}
+
+function runtimePidPath(socketPath: string): string {
+  return `${socketPath}.pid`;
+}
+
+async function writeRuntimePid(socketPath: string): Promise<void> {
+  await writeFile(runtimePidPath(socketPath), `${process.pid}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+}
+
+async function removeRuntimePid(socketPath: string): Promise<void> {
+  const pidPath = runtimePidPath(socketPath);
+  try {
+    const pid = (await readFile(pidPath, 'utf8')).trim();
+    if (pid === String(process.pid)) {
+      await rm(pidPath, { force: true });
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
 export type RuntimeServerOptions = {
   socketPath?: string;
   runOptions?: Omit<AtlasRunOptions, 'conversationId' | 'onEvent'>;
@@ -44,8 +74,7 @@ export class AtlasRuntimeServer {
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
 
   public constructor(options: RuntimeServerOptions = {}) {
-    this.socketPath =
-      options.socketPath ?? process.env.ATLAS_RUNTIME_SOCKET ?? defaultRuntimeSocketPath();
+    this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
     this.runOptions = options.runOptions ?? {};
     this.contextWindow = getOpenCodeGoContextWindow(this.runOptions);
     this.transport = new UnixSocketServer({
@@ -247,15 +276,42 @@ function isMainModule(): boolean {
   return entrypoint !== undefined && import.meta.url === pathToFileURL(resolve(entrypoint)).href;
 }
 
-if (isMainModule()) {
+async function runServer(): Promise<void> {
   const server = new AtlasRuntimeServer();
   await server.listen();
-  console.log(`Atlas Runtime listening on ${server.socketPath}`);
+  try {
+    await writeRuntimePid(server.socketPath);
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
 
   const shutdown = async () => {
-    await server.close();
-    process.exit(0);
+    try {
+      await server.close();
+      await removeRuntimePid(server.socketPath);
+      process.exit(0);
+    } catch (error) {
+      console.error(error);
+      process.exit(1);
+    }
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+  console.log(`Atlas Runtime listening on ${server.socketPath}`);
+}
+
+if (isMainModule()) {
+  try {
+    await runServer();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      console.error(
+        `Atlas Runtime already uses ${configuredRuntimeSocketPath()}. Use "atlas server restart" to restart it.`,
+      );
+    } else {
+      console.error(error);
+    }
+    process.exitCode = 1;
+  }
 }

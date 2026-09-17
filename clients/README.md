@@ -6,16 +6,29 @@
 
 O cliente atual fica em [`clients/tui/`](./tui/) e usa Rust.
 
+Instale o comando `atlas` a partir da raiz do projeto:
+
+```bash
+cargo install --locked --path clients/tui
+```
+
 Inicie o Runtime:
 
 ```bash
-npm run runtime
+atlas server run
+```
+
+Para reiniciar ou desligar o servidor:
+
+```bash
+atlas server restart
+atlas server stop
 ```
 
 Depois execute o TUI:
 
 ```bash
-cargo run --manifest-path clients/tui/Cargo.toml -- --conversation-id minha-conversa
+atlas --conversation-id minha-conversa
 ```
 
 Atalhos principais:
