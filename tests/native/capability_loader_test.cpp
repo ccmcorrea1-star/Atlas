@@ -79,6 +79,16 @@ void testLoader(const std::filesystem::path& directory) {
       discovery.discover({.query = "repete", .limit = std::nullopt}).size() == 1 &&
           discovery.discover({.query = "repete", .limit = std::nullopt}).front().id == "tests.echo",
       "loaded capability should appear in Discovery search");
+  const auto catalog = discovery.listTools();
+  require(
+      catalog.size() == 2 && catalog[0].id == "tests" && catalog[0].type == "group" &&
+          catalog[1].id == "tests.echo" && catalog[1].type == "tool",
+      "listTools should return groups and tools from the Registry");
+  const auto groupTools = discovery.listTools("tests");
+  require(
+      groupTools.size() == 1 && groupTools.front().id == "tests.echo" &&
+          groupTools.front().group == "tests",
+      "listTools should filter tools by group");
 
   const std::filesystem::path invalidPath = directory / "invalid" / "capability.json";
   std::filesystem::create_directories(invalidPath.parent_path());

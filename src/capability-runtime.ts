@@ -12,6 +12,14 @@ export type CapabilityDiscoveryResult = {
   summary: string;
 };
 
+export type CapabilityToolListRequest = {
+  group?: string;
+};
+
+export type CapabilityToolListResult = CapabilityDiscoveryResult & {
+  group?: string;
+};
+
 export type CapabilityDefinition = CapabilityDiscoveryResult & {
   description: string;
   schema: Record<string, unknown>;
@@ -31,6 +39,7 @@ export type CapabilityExecutionOptions = {
 
 export interface CapabilityRuntime {
   discover(request?: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult[]>;
+  listTools(request?: CapabilityToolListRequest): Promise<CapabilityToolListResult[]>;
   getDefinition(id: string): Promise<CapabilityDefinition | undefined>;
   execute(
     id: string,
@@ -73,6 +82,18 @@ function discoveryResult(value: unknown): CapabilityDiscoveryResult {
   };
 }
 
+function toolListResult(value: unknown): CapabilityToolListResult {
+  const result = discoveryResult(value);
+  const record = asObject(value, 'Tool list result');
+  if (record.group !== undefined && (typeof record.group !== 'string' || !record.group)) {
+    throw new Error('Tool list result field "group" must be a non-empty string when present.');
+  }
+  return {
+    ...result,
+    ...(record.group === undefined ? {} : { group: record.group }),
+  };
+}
+
 function jsonSchema(value: unknown): Record<string, unknown> {
   return asObject(value, 'Capability schema');
 }
@@ -101,6 +122,21 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     }
 
     return results.map(discoveryResult).filter(({ type }) => isUsableType(type));
+  }
+
+  public async listTools(
+    request: CapabilityToolListRequest = {},
+  ): Promise<CapabilityToolListResult[]> {
+    const response = await this.request({
+      operation: 'list_tools',
+      ...(request.group === undefined ? {} : { group: request.group }),
+    });
+    const tools = response.tools;
+    if (!Array.isArray(tools)) {
+      throw new Error('Capability runtime response field "tools" must be an array.');
+    }
+
+    return tools.map(toolListResult);
   }
 
   public async getDefinition(id: string): Promise<CapabilityDefinition | undefined> {

@@ -26,6 +26,22 @@ std::vector<DiscoveryResult> Discovery::discover(const DiscoveryRequest& request
   return project(capabilities);
 }
 
+std::vector<ToolListResult> Discovery::listTools(std::optional<std::string_view> group) const {
+  std::vector<Capability> capabilities = group.has_value()
+      ? registry_.children(group.value())
+      : registry_.list();
+  capabilities.erase(
+      std::remove_if(
+          capabilities.begin(),
+          capabilities.end(),
+          [group](const Capability& capability) {
+            return group.has_value() ? capability.type != "tool"
+                                     : capability.type != "group" && capability.type != "tool";
+          }),
+      capabilities.end());
+  return projectTools(capabilities);
+}
+
 std::optional<Capability> Discovery::getDefinition(std::string_view id) const {
   const auto capability = registry_.getDefinition(id);
   if (!capability.has_value() || !isUsableType(capability->type)) {
@@ -39,6 +55,15 @@ std::vector<DiscoveryResult> Discovery::project(const std::vector<Capability>& c
   result.reserve(capabilities.size());
   for (const Capability& capability : capabilities) {
     result.push_back({capability.id, capability.type, capability.summary});
+  }
+  return result;
+}
+
+std::vector<ToolListResult> Discovery::projectTools(const std::vector<Capability>& capabilities) {
+  std::vector<ToolListResult> result;
+  result.reserve(capabilities.size());
+  for (const Capability& capability : capabilities) {
+    result.push_back({capability.id, capability.type, capability.summary, capability.parent});
   }
   return result;
 }

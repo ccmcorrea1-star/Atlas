@@ -10,6 +10,8 @@ export type {
   CapabilityDiscoveryResult,
   CapabilityExecutionResult,
   CapabilityRuntime,
+  CapabilityToolListRequest,
+  CapabilityToolListResult,
   NativeCapabilityRuntimeOptions,
 } from './capability-runtime.js';
 

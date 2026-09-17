@@ -43,14 +43,17 @@ Tasks e Workers entram nesse fluxo apenas quando o trabalho precisa ser persiste
 
 ## Discovery, Tools e Skills
 
-O Agent busca diretamente por linguagem natural usando Discovery:
+O Agent consulta o catálogo com `list_tools` e busca por intenção usando Discovery:
 
 ```text
+list_tools()
+list_tools({ group: "process" })
 discover({ query: "logs de container" })
 ```
 
-Discovery retorna somente Tools e Skills utilizáveis. Grupos podem organizar o
-Registry internamente, mas não são resultados expostos ao Agent. Somente a
+`list_tools` lista grupos e Tools registrados, ou somente as Tools de um grupo.
+Discovery retorna somente Tools e Skills utilizáveis encontradas por intenção.
+Grupos organizam o Registry e não são resultados de Discovery. Somente a
 capacidade relevante deve ser materializada por completo.
 
 Uma **Tool** representa uma ação executável. Depois de descoberta, deve ser chamada diretamente e executada de forma determinística sempre que possível.

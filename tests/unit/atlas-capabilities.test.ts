@@ -149,21 +149,26 @@ test('discovers, describes, and executes process.exec through base tools', async
     const firstRequest = server.requests[0] as RequestBody;
     assert.deepEqual(
       tools(firstRequest).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     const discoverTool = tools(firstRequest).find((tool) => tool.name === 'discover');
     assert.ok(discoverTool);
     const discoverParameters = discoverTool.parameters as RequestBody;
+    const listTools = tools(firstRequest).find((tool) => tool.name === 'list_tools');
+    assert.ok(listTools);
+    const listToolsParameters = listTools.parameters as RequestBody;
+    assert.deepEqual(Object.keys(listToolsParameters.properties as RequestBody), ['group']);
     assert.deepEqual(Object.keys(discoverParameters.properties as RequestBody).sort(), [
       'limit',
       'query',
     ]);
-    assert.doesNotMatch(JSON.stringify(tools(firstRequest)), /path|group/);
+    assert.deepEqual(discoverParameters.required, ['query']);
+    assert.doesNotMatch(JSON.stringify(discoverTool), /path|group/);
 
     const secondRequest = server.requests[1] as RequestBody;
     assert.deepEqual(
       tools(secondRequest).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar programa\\"/);
     assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
@@ -175,7 +180,7 @@ test('discovers, describes, and executes process.exec through base tools', async
     const thirdRequest = server.requests[2] as RequestBody;
     assert.deepEqual(
       tools(thirdRequest).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     const executeTool = tools(thirdRequest).find((tool) => tool.name === 'execute');
     assert.ok(executeTool);
@@ -197,7 +202,69 @@ test('discovers, describes, and executes process.exec through base tools', async
     );
     assert.deepEqual(
       tools(fourthRequest).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test('lists the complete tool catalog and filters tools by group', async () => {
+  const calls: Array<{ group?: string }> = [];
+  const capabilityRuntime: CapabilityRuntime = {
+    discover: async () => [],
+    listTools: async (request = {}) => {
+      calls.push(request);
+      return request.group === undefined
+        ? [
+            { id: 'process', type: 'group', summary: 'process tools' },
+            { id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' },
+          ]
+        : [{ id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' }];
+    },
+    getDefinition: async () => undefined,
+    execute: async () => ({ target: 'local', status: 'ok', error: '' }),
+  };
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber === 1 || requestNumber === 2
+        ? [
+            {
+              id: `function-call-list-tools-${requestNumber}`,
+              type: 'function_call',
+              status: 'completed',
+              call_id: `list-tools-call-${requestNumber}`,
+              name: 'list_tools',
+              arguments: JSON.stringify(requestNumber === 1 ? {} : { group: 'process' }),
+            },
+          ]
+        : [
+            {
+              id: 'final-list-tools-message',
+              type: 'message',
+              status: 'completed',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Catalog listed.', annotations: [] }],
+            },
+          ];
+    return responseEnvelope(requestNumber, input, output);
+  });
+
+  try {
+    const result = await runAtlas('Quais tools tem?', {
+      apiKey: 'atlas...ey',
+      baseURL: server.baseURL,
+      conversationId: 'list-tools-conversation',
+      capabilityRuntime,
+    });
+
+    assert.equal(result.finalOutput, 'Catalog listed.');
+    assert.deepEqual(calls, [{}, { group: 'process' }]);
+    assert.match(JSON.stringify(server.requests[1]?.input), /process\.exec/);
+    assert.match(JSON.stringify(server.requests[2]?.input), /process\.exec/);
+    assert.deepEqual(
+      tools(server.requests[0] as RequestBody).map((tool) => tool.name),
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
   } finally {
     await server.close();
@@ -254,6 +321,10 @@ test('keeps capability schemas out of tools across conversation turns', async ()
   const capabilityRuntime: CapabilityRuntime = {
     discover: async () => [
       { id: definition.id, type: definition.type, summary: definition.summary },
+    ],
+    listTools: async () => [
+      { id: 'process', type: 'group', summary: 'ferramentas de processo' },
+      { id: definition.id, type: definition.type, summary: definition.summary, group: 'process' },
     ],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
     execute: async (id, target, arguments_) => {
@@ -327,11 +398,11 @@ test('keeps capability schemas out of tools across conversation turns', async ()
     assert.equal(server.requests.length, 4);
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.deepEqual(
       tools(server.requests[2] as RequestBody).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.doesNotMatch(JSON.stringify(tools(server.requests[2] as RequestBody)), /process\.exec/);
     assert.deepEqual(executed, [
@@ -385,6 +456,8 @@ test('dispatches different capability IDs through the generic execute tool', asy
   const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
   const capabilityRuntime: CapabilityRuntime = {
     discover: async () => definitions.map(({ id, type, summary }) => ({ id, type, summary })),
+    listTools: async () =>
+      definitions.map(({ id, type, summary }) => ({ id, type, summary, group: 'foo' })),
     getDefinition: async (id) => definitionsById.get(id),
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
@@ -455,15 +528,15 @@ test('dispatches different capability IDs through the generic execute tool', asy
     assert.equal(result.finalOutput, 'Capabilities executadas.');
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.deepEqual(
       tools(server.requests[2] as RequestBody).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.deepEqual(
       tools(server.requests[4] as RequestBody).map((tool) => tool.name),
-      ['discover', 'describe', 'execute'],
+      ['list_tools', 'discover', 'describe', 'execute'],
     );
     assert.match(JSON.stringify(server.requests[2]?.input), /description/);
     assert.deepEqual(

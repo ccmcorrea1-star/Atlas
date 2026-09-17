@@ -24,7 +24,7 @@ import {
 } from './capability-runtime.js';
 
 const ATLAS_INSTRUCTIONS =
-  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. Capabilities are accessed only through discover, describe, and execute. Use discover with a natural-language query, describe for a known capability definition, and execute with the capability id and arguments. A known capability does not need to be exposed as an individual Function Tool.';
+  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. Use list_tools to inspect the complete catalog or the tools in a group. Use discover only with a natural-language query to find usable capabilities by intent. Use describe for a known capability definition and execute with the capability id and arguments. A known capability does not need to be exposed as an individual Function Tool.';
 
 // O Agent base define a identidade; cada turno recebe as tools base do Atlas.
 export const Atlas = new Agent({
@@ -238,7 +238,7 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
       query: { type: 'string', description: 'consulta textual' },
       limit: { type: 'integer', minimum: 0, description: 'quantidade maxima de resultados' },
     },
-    required: [],
+    required: ['query'],
     additionalProperties: false,
   } as FunctionTool['parameters'];
 
@@ -256,7 +256,7 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
         throw new Error('discover accepts only query and limit.');
       }
       const query = request.query;
-      if (query !== undefined && typeof query !== 'string') {
+      if (typeof query !== 'string' || !query) {
         throw new Error('discover query must be a string.');
       }
       const limit = request.limit;
@@ -277,6 +277,37 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
         .filter(({ type }) => type === 'tool' || type === 'skill')
         .map(({ id, type, summary }) => ({ id, type, summary }));
       return JSON.stringify(summaries satisfies CapabilityDiscoveryResult[]);
+    },
+  };
+}
+
+function listToolsTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
+  return {
+    type: 'function',
+    name: 'list_tools',
+    description: 'lista grupos e tools registradas, opcionalmente filtradas por grupo',
+    parameters: {
+      type: 'object',
+      properties: {
+        group: { type: 'string', description: 'grupo organizacional opcional' },
+      },
+      required: [],
+      additionalProperties: false,
+    } as FunctionTool['parameters'],
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input) => {
+      const request = parseObjectInput(input, 'list_tools');
+      if (Object.keys(request).some((key) => key !== 'group')) {
+        throw new Error('list_tools accepts only group.');
+      }
+      const group = request.group;
+      if (group !== undefined && (typeof group !== 'string' || !group)) {
+        throw new Error('list_tools group must be a non-empty string.');
+      }
+      const results = await capabilityRuntime.listTools(group === undefined ? {} : { group });
+      return JSON.stringify(results);
     },
   };
 }
@@ -326,6 +357,7 @@ function createAtlasAgent(
     instructions: ATLAS_INSTRUCTIONS,
     model: Atlas.model,
     tools: [
+      listToolsTool(capabilityRuntime),
       discoveryTool(capabilityRuntime),
       describeTool(capabilityRuntime),
       executionTool(capabilityRuntime, onOutput),

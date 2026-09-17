@@ -13,12 +13,17 @@ type WireMessage = Record<string, unknown>;
 
 const capabilityRuntime: CapabilityRuntime = {
   discover: async () => [],
+  listTools: async () => [],
   getDefinition: async () => undefined,
   execute: async () => ({ target: 'local', status: 'ok', error: '' }),
 };
 
 const processCapabilityRuntime: CapabilityRuntime = {
   discover: async () => [{ id: 'process.exec', type: 'tool', summary: 'execute a process' }],
+  listTools: async () => [
+    { id: 'process', type: 'group', summary: 'process tools' },
+    { id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' },
+  ],
   getDefinition: async (id) =>
     id === 'process.exec'
       ? {

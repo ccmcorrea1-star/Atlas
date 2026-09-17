@@ -25,6 +25,7 @@ using atlas::capabilities::Executor;
 using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
 using atlas::capabilities::StructuredValue;
+using atlas::capabilities::ToolListResult;
 
 const StructuredValue* field(
     const StructuredValue::Object& object,
@@ -129,6 +130,28 @@ StructuredValue discoveryValue(const Discovery& discovery, const StructuredValue
   return StructuredValue(StructuredValue::Object{{"results", std::move(results)}});
 }
 
+StructuredValue listToolsValue(const Discovery& discovery, const StructuredValue::Object& request) {
+  const std::optional<std::string> group = optionalString(request, "group");
+  if (group.has_value() && group->empty()) {
+    throw std::runtime_error("field 'group' must be a non-empty string");
+  }
+
+  StructuredValue::Array tools;
+  for (const ToolListResult& result : discovery.listTools(
+           group.has_value() ? std::optional<std::string_view>(*group) : std::nullopt)) {
+    StructuredValue::Object tool{
+        {"id", result.id},
+        {"type", result.type},
+        {"summary", result.summary},
+    };
+    if (result.group.has_value()) {
+      tool["group"] = result.group.value();
+    }
+    tools.emplace_back(std::move(tool));
+  }
+  return StructuredValue(StructuredValue::Object{{"tools", std::move(tools)}});
+}
+
 StructuredValue definitionValue(const Capability& capability) {
   StructuredValue::Object definition{
       {"id", capability.id},
@@ -217,7 +240,9 @@ int main(int argc, char* argv[]) {
     loadRegistry(argv[0], registry);
     const std::string operation = requiredString(*request, "operation");
     StructuredValue response;
-    if (operation == "discover") {
+    if (operation == "list_tools") {
+      response = listToolsValue(Discovery(registry), *request);
+    } else if (operation == "discover") {
       response = discoveryValue(Discovery(registry), *request);
     } else if (operation == "get_definition") {
       response = getDefinitionValue(Discovery(registry), *request);
