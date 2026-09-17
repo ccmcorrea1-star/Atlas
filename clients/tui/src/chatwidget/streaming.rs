@@ -223,6 +223,29 @@ mod tests {
     }
 
     #[test]
+    fn completion_compacts_stable_and_tail_even_without_a_closing_delta() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message-2".to_owned(),
+            delta: "intro\n```rust\nlet answer = 42;\n".to_owned(),
+        });
+        widget.tick();
+        assert_eq!(widget.active_cells().len(), 2);
+
+        widget.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message-2".to_owned(),
+            content: "intro\n```rust\nlet answer = 42;\n```".to_owned(),
+        });
+        assert!(widget.active_cells().is_empty());
+        assert_eq!(widget.cells().len(), 1);
+        assert!(widget.cells()[0].display_lines(80).iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("answer"))
+        }));
+    }
+
+    #[test]
     fn commit_tick_drains_only_new_stable_text() {
         let mut state = MarkdownStreamState::default();
         state.push("one\ntwo");

@@ -296,22 +296,28 @@ impl ChatWidget {
     }
 
     fn commit_active_agent(&mut self, id: &str) {
-        if let Some(index) = self.active_cells.iter().rposition(|cell| {
-            cell.as_any()
-                .downcast_ref::<AgentMessageCell>()
-                .is_some_and(|message| message.message_id == id)
-        }) {
-            let cell = self.active_cells.remove(index);
-            if let Some(message) = cell.as_any().downcast_ref::<AgentMessageCell>() {
-                self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
-                    Some(id.to_owned()),
-                    message.markdown_source.clone(),
-                )));
-            } else {
-                self.cells.push(cell);
-            }
-            self.bump_active_revision();
+        let positions = self
+            .active_cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                cell.as_any()
+                    .downcast_ref::<AgentMessageCell>()
+                    .filter(|message| message.message_id == id)
+                    .map(|message| (index, message.markdown_source.clone()))
+            })
+            .collect::<Vec<_>>();
+        let Some((_, content)) = positions.last() else {
+            return;
+        };
+        for (index, _) in positions.iter().rev() {
+            self.active_cells.remove(*index);
         }
+        self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
+            Some(id.to_owned()),
+            content.clone(),
+        )));
+        self.bump_active_revision();
     }
 
     fn commit_active_exec(&mut self, id: &str) {
