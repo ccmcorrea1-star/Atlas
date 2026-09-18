@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readFile, stat, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,23 +27,22 @@ async function tempConfig(
 
 test('resolves ATLAS_CONFIG before the other standard paths', () => {
   assert.equal(
-    resolveAtlasConfigPath({ ATLAS_CONFIG: ' /tmp/custom-atlas.json ' }, '/home/user'),
+    resolveAtlasConfigPath({ ATLAS_CONFIG: ' /tmp/custom-atlas.json ' }),
     '/tmp/custom-atlas.json',
   );
 });
 
 test('resolves XDG_CONFIG_HOME/atlas/config.json when XDG_CONFIG_HOME is set', () => {
   assert.equal(
-    resolveAtlasConfigPath({ XDG_CONFIG_HOME: '/home/user/.local/config' }, '/home/user'),
+    resolveAtlasConfigPath({ XDG_CONFIG_HOME: '/home/user/.local/config' }),
     join('/home/user/.local/config', 'atlas', 'config.json'),
   );
 });
 
-test('falls back to ~/.config/atlas/config.json without environment overrides', () => {
-  assert.equal(
-    resolveAtlasConfigPath({}, '/home/user'),
-    join('/home/user', '.config', 'atlas', 'config.json'),
-  );
+test('falls back to config/atlas/config.json inside the project', () => {
+  const resolved = resolveAtlasConfigPath({});
+  assert.ok(resolved.endsWith(join('config', 'atlas', 'config.json')));
+  assert.ok(existsSync(join(resolved, '..', '..', '..', 'package.json')));
 });
 
 test('returns the current defaults when the config file is absent', async () => {

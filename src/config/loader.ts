@@ -1,7 +1,8 @@
 // Carrega a configuração global do Atlas: caminho, defaults e validação.
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const ATLAS_CONFIG_VERSION = 1;
 export const ATLAS_DEFAULT_PROVIDER = 'opencode-go';
@@ -32,11 +33,23 @@ export class AtlasConfigError extends Error {
   }
 }
 
-// ORDEM fixa: ATLAS_CONFIG, XDG_CONFIG_HOME/atlas/config.json, ~/.config/atlas/config.json.
-export function resolveAtlasConfigPath(
-  env: NodeJS.ProcessEnv = process.env,
-  userHome: string = homedir(),
-): string {
+// Localiza a raiz do projeto subindo até o package.json, a partir deste modulo.
+// Funciona tanto do código-fonte quanto do build transpilado para dist/.
+function atlasProjectDirectory(): string {
+  let directory = dirname(fileURLToPath(import.meta.url));
+  while (!existsSync(join(directory, 'package.json'))) {
+    const parent = dirname(directory);
+    if (parent === directory) {
+      return directory;
+    }
+    directory = parent;
+  }
+  return directory;
+}
+
+// ORDEM fixa: ATLAS_CONFIG, XDG_CONFIG_HOME/atlas/config.json,
+// <projeto>/config/atlas/config.json. A config do projeto é global desta máquina.
+export function resolveAtlasConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.ATLAS_CONFIG?.trim();
   if (override) {
     return override;
@@ -47,7 +60,8 @@ export function resolveAtlasConfigPath(
     return join(xdgConfigHome, 'atlas', 'config.json');
   }
 
-  return join(userHome, '.config', 'atlas', 'config.json');
+  // O arquivo vive no projeto, junto de todos os clientes deste checkout.
+  return join(atlasProjectDirectory(), 'config', 'atlas', 'config.json');
 }
 
 // Aceita o modelo puro ou na forma "opencode-go/<modelo>".

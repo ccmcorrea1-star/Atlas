@@ -44,8 +44,9 @@ atlas server stop
 
 O Runtime lê uma configuração global única em JSON. O caminho é resolvido nesta
 ordem: `ATLAS_CONFIG`, `$XDG_CONFIG_HOME/atlas/config.json`,
-`~/.config/atlas/config.json`. Sem o arquivo, os defaults atuais são usados; o
-arquivo nunca é criado automaticamente.
+`config/atlas/config.json` **dentro do projeto**. Sem o arquivo, os defaults
+atuais são usados; o arquivo nunca é criado automaticamente e `config/atlas/`
+está fora do controle de versão.
 
 ```json
 {
