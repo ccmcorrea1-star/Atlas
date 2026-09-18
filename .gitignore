@@ -23,6 +23,8 @@ coverage/
 /src/capabilities/tools/filesystem/list/runtime
 /src/capabilities/tools/filesystem/search/runtime
 /src/capabilities/runtime/bridge/runtime
+/src/capabilities/tools/git/status/runtime
+/src/capabilities/tools/git/diff/runtime
 
 # Logs
 *.log

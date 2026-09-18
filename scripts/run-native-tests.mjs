@@ -14,6 +14,7 @@ const filesystemTestSource = resolve(projectRoot, 'tests/native/filesystem_test.
 const bridgeExecutable = resolve(projectRoot, 'src/capabilities/runtime/bridge/runtime');
 const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const discoveryExecutable = resolve(outputDirectory, 'discovery-test');
+const gitExecutable = resolve(outputDirectory, 'git-test');
 const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const coreDirectory = resolve(capabilitiesDirectory, 'core');
@@ -34,9 +35,11 @@ const filesystemRuntimeSource = resolve(filesystemDirectory, 'filesystem.cpp');
 const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 const shellTestSource = resolve(projectRoot, 'tests/native/shell_exec_test.cpp');
 const shellTestExecutable = resolve(outputDirectory, 'shell-exec-test');
+const gitDirectory = resolve(capabilitiesDirectory, 'tools/git');
 const systemTestSource = resolve(projectRoot, 'tests/native/system_info_test.cpp');
 const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
 const discoveryTestSource = resolve(projectRoot, 'tests/native/discovery_test.cpp');
+const gitTestSource = resolve(projectRoot, 'tests/native/git_test.cpp');
 const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
 
 function collectTestFiles(directory) {
@@ -232,6 +235,20 @@ try {
     '-Werror',
     '-pedantic',
     '-pthread',
+    resolve(coreDirectory, 'spawn.cpp'),
+    resolve(gitDirectory, 'status/status.cpp'),
+    resolve(gitDirectory, 'diff/diff.cpp'),
+    gitTestSource,
+    '-o',
+    gitExecutable,
+  ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
     resolve(coreDirectory, 'registry.cpp'),
     resolve(coreDirectory, 'executor.cpp'),
     resolve(executableRuntimeDirectory, 'protocol.cpp'),
@@ -299,6 +316,7 @@ try {
   run(filesystemExecutable, []);
   run(loaderExecutable, []);
   run(discoveryExecutable, []);
+  run(gitExecutable, []);
   run(executorExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });

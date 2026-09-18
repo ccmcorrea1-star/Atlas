@@ -1,0 +1,27 @@
+{
+  "id": "git.diff",
+  "type": "tool",
+  "summary": "retorna diff unificado do repositorio, do working tree ou do staged",
+  "description": "executa git diff na maquina local sem alterar o repositorio; trunca saida longa",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "diretorio do repositorio"
+      },
+      "staged": {
+        "type": "boolean",
+        "description": "true usa --staged; ausente ou false usa working tree"
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "parent": "git",
+  "aliases": ["ver diff", "git diff", "mudancas do repositorio"],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

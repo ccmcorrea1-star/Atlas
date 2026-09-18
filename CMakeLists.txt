@@ -42,6 +42,28 @@ set_target_properties(atlas-shell-exec-runtime PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/shell/exec"
 )
 
+add_executable(atlas-git-status-runtime
+  src/capabilities/runtime/executable/main.cpp
+  src/capabilities/tools/git/status/status.cpp
+  src/capabilities/tools/git/status/shim.cpp
+)
+target_link_libraries(atlas-git-status-runtime PRIVATE atlas-capabilities-core)
+set_target_properties(atlas-git-status-runtime PROPERTIES
+  OUTPUT_NAME runtime
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/git/status"
+)
+
+add_executable(atlas-git-diff-runtime
+  src/capabilities/runtime/executable/main.cpp
+  src/capabilities/tools/git/diff/diff.cpp
+  src/capabilities/tools/git/diff/shim.cpp
+)
+target_link_libraries(atlas-git-diff-runtime PRIVATE atlas-capabilities-core)
+set_target_properties(atlas-git-diff-runtime PROPERTIES
+  OUTPUT_NAME runtime
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/git/diff"
+)
+
 # Núcleo Rust da tool lsp.diagnostics: compila via cargo e entrega o
 # binário no mesmo layout dos runtimes C++ (entrypoint "runtime").
 find_program(ATLAS_LSP_CARGO cargo)
