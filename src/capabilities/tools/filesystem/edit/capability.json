@@ -1,0 +1,42 @@
+{
+  "id": "filesystem.edit",
+  "type": "tool",
+  "summary": "substituir trechos especificos de um arquivo",
+  "description": "aplicar substituicoes literais de trechos existentes no arquivo, em ordem",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho explicito do arquivo"
+      },
+      "replacements": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "old_string": {
+              "type": "string",
+              "description": "trecho literal a ser substituido"
+            },
+            "new_string": {
+              "type": "string",
+              "description": "trecho literal de substituicao"
+            }
+          },
+          "required": ["old_string", "new_string"],
+          "additionalProperties": false
+        },
+        "description": "substituicoes aplicadas na ordem informada"
+      }
+    },
+    "required": ["path", "replacements"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

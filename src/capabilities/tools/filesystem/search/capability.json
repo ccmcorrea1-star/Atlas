@@ -1,0 +1,32 @@
+{
+  "id": "filesystem.search",
+  "type": "tool",
+  "summary": "buscar texto em nomes de arquivos e conteudo",
+  "description": "buscar uma substring literal em nomes de arquivos e linhas de conteudo de forma recursiva",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho explicito do diretorio raiz da busca"
+      },
+      "query": {
+        "type": "string",
+        "description": "substring literal buscada, sensivel a maiusculas"
+      },
+      "max_results": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "limite de resultados; padrao 200"
+      }
+    },
+    "required": ["path", "query"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

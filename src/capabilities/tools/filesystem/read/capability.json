@@ -1,0 +1,33 @@
+{
+  "id": "filesystem.read",
+  "type": "tool",
+  "summary": "ler um arquivo com intervalo de linhas opcional",
+  "description": "ler o conteudo de um arquivo completo ou por intervalo de linhas",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho explicito do arquivo"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "primeira linha lida, iniciando em 1"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "quantidade maxima de linhas; ausente significa ate o fim"
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

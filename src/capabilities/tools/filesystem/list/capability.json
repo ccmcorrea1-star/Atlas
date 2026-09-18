@@ -1,0 +1,23 @@
+{
+  "id": "filesystem.list",
+  "type": "tool",
+  "summary": "listar arquivos e diretorios de um caminho",
+  "description": "listar as entradas imediatas de um diretorio, ordenadas por nome",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho explicito do diretorio"
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}
