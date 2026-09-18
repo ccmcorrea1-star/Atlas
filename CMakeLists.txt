@@ -63,6 +63,42 @@ if(ATLAS_LSP_CARGO)
   set_tests_properties(atlas-lsp PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+# Núcleo Rust da tool web.fetch: mesmo layout do lsp (entrypoint "runtime").
+find_program(ATLAS_WEB_FETCH_CARGO cargo)
+if(ATLAS_WEB_FETCH_CARGO)
+  set(ATLAS_WEB_FETCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/web/fetch")
+  set(ATLAS_WEB_FETCH_BINARY "${ATLAS_WEB_FETCH_DIR}/runtime")
+  file(GLOB ATLAS_WEB_FETCH_SOURCES "${ATLAS_WEB_FETCH_DIR}/src/*.rs" "${ATLAS_WEB_FETCH_DIR}/Cargo.toml" "${ATLAS_WEB_FETCH_DIR}/Cargo.lock")
+  add_custom_command(
+    OUTPUT "${ATLAS_WEB_FETCH_BINARY}"
+    COMMAND "${ATLAS_WEB_FETCH_CARGO}" build --locked --release --manifest-path "${ATLAS_WEB_FETCH_DIR}/Cargo.toml"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f "${ATLAS_WEB_FETCH_BINARY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${ATLAS_WEB_FETCH_DIR}/target/release/atlas-web-fetch-runtime" "${ATLAS_WEB_FETCH_BINARY}"
+    DEPENDS ${ATLAS_WEB_FETCH_SOURCES}
+    COMMENT "Building atlas-web-fetch-runtime (Rust)"
+  )
+  add_custom_target(atlas-web-fetch-runtime ALL DEPENDS "${ATLAS_WEB_FETCH_BINARY}")
+  install(PROGRAMS "${ATLAS_WEB_FETCH_BINARY}" DESTINATION capabilities/tools/web/fetch)
+  add_test(NAME atlas-web-fetch COMMAND "${ATLAS_WEB_FETCH_CARGO}" test --locked --manifest-path "${ATLAS_WEB_FETCH_DIR}/Cargo.toml")
+  set_tests_properties(atlas-web-fetch PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+# Entrypoint TypeScript da tool web.search: compila para JS com shebang.
+find_program(ATLAS_WEB_SEARCH_NPM npm)
+if(ATLAS_WEB_SEARCH_NPM)
+  set(ATLAS_WEB_SEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/web/search")
+  set(ATLAS_WEB_SEARCH_BINARY "${ATLAS_WEB_SEARCH_DIR}/runtime")
+  add_custom_command(
+    OUTPUT "${ATLAS_WEB_SEARCH_BINARY}"
+    COMMAND "${ATLAS_WEB_SEARCH_NPM}" run build:web-search
+    DEPENDS "${ATLAS_WEB_SEARCH_DIR}/search.ts"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Building web-search runtime (TypeScript)"
+  )
+  add_custom_target(atlas-web-search-runtime ALL DEPENDS "${ATLAS_WEB_SEARCH_BINARY}")
+  install(PROGRAMS "${ATLAS_WEB_SEARCH_BINARY}" DESTINATION capabilities/tools/web/search)
+endif()
+
 add_executable(atlas-system-info-runtime
   src/capabilities/runtime/executable/main.cpp
   src/capabilities/tools/system/info/info.cpp
@@ -232,6 +268,15 @@ install(FILES src/capabilities/tools/lsp/diagnostics/capability.json
 )
 install(FILES src/capabilities/tools/lsp/group.json
   DESTINATION capabilities/tools/lsp
+)
+install(FILES src/capabilities/tools/web/search/capability.json
+  DESTINATION capabilities/tools/web/search
+)
+install(FILES src/capabilities/tools/web/fetch/capability.json
+  DESTINATION capabilities/tools/web/fetch
+)
+install(FILES src/capabilities/tools/web/group.json
+  DESTINATION capabilities/tools/web
 )
 install(FILES src/capabilities/tools/process/group.json
   DESTINATION capabilities/tools/process

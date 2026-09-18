@@ -14,6 +14,9 @@ coverage/
 /src/capabilities/tools/shell/exec/runtime
 /src/capabilities/tools/lsp/diagnostics/runtime
 /src/capabilities/tools/lsp/target/
+/src/capabilities/tools/web/search/runtime
+/src/capabilities/tools/web/fetch/runtime
+/src/capabilities/tools/web/fetch/target/
 /src/capabilities/tools/filesystem/read/runtime
 /src/capabilities/tools/filesystem/write/runtime
 /src/capabilities/tools/filesystem/edit/runtime

@@ -1,0 +1,28 @@
+{
+  "id": "web.search",
+  "type": "tool",
+  "summary": "busca na web através de um provider configurável",
+  "description": "executa uma consulta no provider de busca configurado via ATLAS_WEB_SEARCH_COMMAND e retorna título, URL e trecho dos resultados; sem provider configurado retorna unavailable; nunca inventa resultados",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "consulta de busca"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "número máximo de resultados (padrão 5, máximo 20)"
+      }
+    },
+    "required": ["query"],
+    "additionalProperties": false
+  },
+  "parent": "web",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

@@ -21,6 +21,10 @@ const bridgeRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/bridge');
 const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
 const lspDirectory = resolve(capabilitiesDirectory, 'tools/lsp');
 const lspRuntime = resolve(lspDirectory, 'diagnostics/runtime');
+const webFetchDirectory = resolve(capabilitiesDirectory, 'tools/web/fetch');
+const webFetchRuntime = resolve(webFetchDirectory, 'runtime');
+const webSearchDirectory = resolve(capabilitiesDirectory, 'tools/web/search');
+const webSearchRuntime = resolve(webSearchDirectory, 'runtime');
 const shellDirectory = resolve(capabilitiesDirectory, 'tools/shell/exec');
 const shellRuntime = resolve(shellDirectory, 'runtime');
 const systemInfoDirectory = resolve(capabilitiesDirectory, 'tools/system/info');
@@ -94,6 +98,30 @@ try {
   rmSync(lspRuntime, { force: true });
   copyFileSync(resolve(lspDirectory, 'target/debug/atlas-lsp-runtime'), lspRuntime);
   chmodSync(lspRuntime, 0o755);
+  run('cargo', ['build', '--locked', '--manifest-path', resolve(webFetchDirectory, 'Cargo.toml')]);
+  rmSync(webFetchRuntime, { force: true });
+  copyFileSync(resolve(webFetchDirectory, 'target/debug/atlas-web-fetch-runtime'), webFetchRuntime);
+  chmodSync(webFetchRuntime, 0o755);
+  run('npx', [
+    'tsc',
+    resolve(webSearchDirectory, 'search.ts'),
+    '--target',
+    'es2022',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    '--strict',
+    '--skipLibCheck',
+    '--noEmitOnError',
+    '--rootDir',
+    webSearchDirectory,
+    '--outDir',
+    resolve(webSearchDirectory, '.web-search-build'),
+  ]);
+  copyFileSync(resolve(webSearchDirectory, '.web-search-build/search.js'), webSearchRuntime);
+  rmSync(resolve(webSearchDirectory, '.web-search-build'), { recursive: true, force: true });
+  chmodSync(webSearchRuntime, 0o755);
   run('g++', [
     '-std=c++23',
     '-Wall',

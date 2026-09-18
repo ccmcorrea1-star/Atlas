@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "runtime": "tsx src/runtime/server.ts",
-    "build": "tsc && cmake -S . -B .native-cmake && cmake --build .native-cmake && npm run build:lsp",
+    "build": "tsc && cmake -S . -B .native-cmake && cmake --build .native-cmake && npm run build:lsp && npm run build:web-search && npm run build:web-fetch",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.tests.json --noEmit",
     "lint": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\"",
@@ -18,10 +18,14 @@
     "build:client": "cargo build --locked --manifest-path clients/tui/Cargo.toml",
     "build:lsp": "cargo build --locked --release --manifest-path src/capabilities/tools/lsp/Cargo.toml && node -e \"const fs=require('node:fs');const d='src/capabilities/tools/lsp/diagnostics/runtime';fs.rmSync(d,{force:true});fs.copyFileSync('src/capabilities/tools/lsp/target/release/atlas-lsp-runtime',d);fs.chmodSync(d,0o755)\"",
     "test:client": "cargo test --locked --manifest-path clients/tui/Cargo.toml",
+    "build:web-search": "tsc src/capabilities/tools/web/search/search.ts --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --noEmitOnError --rootDir src/capabilities/tools/web/search --outDir .web-search-build && node -e \"const fs=require('node:fs');fs.copyFileSync('.web-search-build/search.js','src/capabilities/tools/web/search/runtime');fs.rmSync('.web-search-build',{recursive:true,force:true});fs.chmodSync('src/capabilities/tools/web/search/runtime',0o755)\"",
+    "build:web-fetch": "cargo build --locked --release --manifest-path src/capabilities/tools/web/fetch/Cargo.toml && node -e \"const fs=require('node:fs');const d='src/capabilities/tools/web/fetch/runtime';fs.rmSync(d,{force:true});fs.copyFileSync('src/capabilities/tools/web/fetch/target/release/atlas-web-fetch-runtime',d);fs.chmodSync(d,0o755)\"",
     "test:lsp": "cargo test --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml",
+    "test:web-fetch": "cargo test --locked --manifest-path src/capabilities/tools/web/fetch/Cargo.toml",
+    "lint:web-fetch": "cargo clippy --locked --manifest-path src/capabilities/tools/web/fetch/Cargo.toml --all-targets -- -D warnings",
     "lint:lsp": "cargo clippy --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml --all-targets -- -D warnings",
     "smoke": "tsx src/smoke.ts",
-    "test": "node scripts/run-native-tests.mjs && npm run test:lsp"
+    "test": "node scripts/run-native-tests.mjs && npm run test:lsp && npm run test:web-fetch"
   },
   "repository": {
     "type": "git",

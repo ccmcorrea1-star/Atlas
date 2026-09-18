@@ -40,6 +40,9 @@ jobs:
       - name: Run LSP core lint
         run: npm run lint:lsp
 
+      - name: Run web core lint
+        run: npm run lint:web-fetch
+
       - name: Run typecheck
         run: npm run typecheck
 

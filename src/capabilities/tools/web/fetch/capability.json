@@ -1,0 +1,23 @@
+{
+  "id": "web.fetch",
+  "type": "tool",
+  "summary": "obtém o conteúdo de uma URL via HTTP/HTTPS",
+  "description": "busca uma página via HTTP/HTTPS com redirects limitados, timeout e limite de tamanho; extrai texto útil de HTML e preserva texto puro e JSON; rejeita esquemas não suportados; nunca executa JavaScript",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL HTTP ou HTTPS a buscar"
+      }
+    },
+    "required": ["url"],
+    "additionalProperties": false
+  },
+  "parent": "web",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}
