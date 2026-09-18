@@ -37,6 +37,9 @@ jobs:
       - name: Run client lint
         run: npm run lint:client
 
+      - name: Run LSP core lint
+        run: npm run lint:lsp
+
       - name: Run typecheck
         run: npm run typecheck
 

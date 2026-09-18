@@ -42,6 +42,27 @@ set_target_properties(atlas-shell-exec-runtime PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/shell/exec"
 )
 
+# Núcleo Rust da tool lsp.diagnostics: compila via cargo e entrega o
+# binário no mesmo layout dos runtimes C++ (entrypoint "runtime").
+find_program(ATLAS_LSP_CARGO cargo)
+if(ATLAS_LSP_CARGO)
+  set(ATLAS_LSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/lsp")
+  set(ATLAS_LSP_BINARY "${ATLAS_LSP_DIR}/diagnostics/runtime")
+  file(GLOB ATLAS_LSP_SOURCES "${ATLAS_LSP_DIR}/src/*.rs" "${ATLAS_LSP_DIR}/Cargo.toml" "${ATLAS_LSP_DIR}/Cargo.lock")
+  add_custom_command(
+    OUTPUT "${ATLAS_LSP_BINARY}"
+    COMMAND "${ATLAS_LSP_CARGO}" build --locked --release --manifest-path "${ATLAS_LSP_DIR}/Cargo.toml"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f "${ATLAS_LSP_BINARY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${ATLAS_LSP_DIR}/target/release/atlas-lsp-runtime" "${ATLAS_LSP_BINARY}"
+    DEPENDS ${ATLAS_LSP_SOURCES}
+    COMMENT "Building atlas-lsp-runtime (Rust)"
+  )
+  add_custom_target(atlas-lsp-runtime ALL DEPENDS "${ATLAS_LSP_BINARY}")
+  install(PROGRAMS "${ATLAS_LSP_BINARY}" DESTINATION capabilities/tools/lsp/diagnostics)
+  add_test(NAME atlas-lsp COMMAND "${ATLAS_LSP_CARGO}" test --locked --manifest-path "${ATLAS_LSP_DIR}/Cargo.toml")
+  set_tests_properties(atlas-lsp PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 add_executable(atlas-system-info-runtime
   src/capabilities/runtime/executable/main.cpp
   src/capabilities/tools/system/info/info.cpp
@@ -205,6 +226,12 @@ install(FILES src/capabilities/tools/shell/exec/capability.json
 )
 install(FILES src/capabilities/tools/shell/group.json
   DESTINATION capabilities/tools/shell
+)
+install(FILES src/capabilities/tools/lsp/diagnostics/capability.json
+  DESTINATION capabilities/tools/lsp/diagnostics
+)
+install(FILES src/capabilities/tools/lsp/group.json
+  DESTINATION capabilities/tools/lsp
 )
 install(FILES src/capabilities/tools/process/group.json
   DESTINATION capabilities/tools/process

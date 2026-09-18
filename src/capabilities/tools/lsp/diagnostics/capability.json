@@ -1,0 +1,23 @@
+{
+  "id": "lsp.diagnostics",
+  "type": "tool",
+  "summary": "obtém diagnósticos de código via language server",
+  "description": "analisa um arquivo através do language server adequado (LSP via JSON-RPC por stdio) e retorna erros, warnings e informações semânticas; nunca executa build, lint ou typecheck como substituto",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho do arquivo a analisar"
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "parent": "lsp",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

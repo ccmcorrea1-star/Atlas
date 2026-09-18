@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, copyFileSync, chmodSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +19,8 @@ const coreDirectory = resolve(capabilitiesDirectory, 'core');
 const executableRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/executable');
 const bridgeRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/bridge');
 const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
+const lspDirectory = resolve(capabilitiesDirectory, 'tools/lsp');
+const lspRuntime = resolve(lspDirectory, 'diagnostics/runtime');
 const shellDirectory = resolve(capabilitiesDirectory, 'tools/shell/exec');
 const shellRuntime = resolve(shellDirectory, 'runtime');
 const systemInfoDirectory = resolve(capabilitiesDirectory, 'tools/system/info');
@@ -87,6 +89,11 @@ try {
     '-o',
     shellRuntime,
   ]);
+  run('cargo', ['build', '--locked', '--manifest-path', resolve(lspDirectory, 'Cargo.toml')]);
+  // rm+copy em vez de sobrescrever: o daemon pode estar executando o binario.
+  rmSync(lspRuntime, { force: true });
+  copyFileSync(resolve(lspDirectory, 'target/debug/atlas-lsp-runtime'), lspRuntime);
+  chmodSync(lspRuntime, 0o755);
   run('g++', [
     '-std=c++23',
     '-Wall',

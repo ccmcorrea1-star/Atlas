@@ -1,0 +1,17 @@
+[package]
+name = "atlas-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "Atlas lsp.diagnostics: núcleo Rust para diagnósticos via Language Server Protocol"
+license = "Apache-2.0"
+
+[[bin]]
+name = "atlas-lsp-runtime"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.clippy]
+all = "deny"
