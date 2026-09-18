@@ -5,6 +5,7 @@
 #include "../../src/capabilities/core/loader.hpp"
 #include "../../src/capabilities/core/registry.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -168,6 +169,31 @@ int main() {
   expectTop(discovery, {"por favor me mostre o arquivo", "filesystem.read"});
   expectTop(discovery, {"informações do sistema", "system.info"});
   expectTop(discovery, {"informacoes do sistema", "system.info"});
+
+  // Regressao D07/D18: termos tecnicos/literais (nome de arquivo,
+  // identificador) nao podem esconder a capability que a intencao aponta.
+  expectTop(discovery, {"leia o arquivo README.md", "filesystem.read"});
+  expectTop(discovery, {"grep por conversationId", "filesystem.search"});
+  expectTop(discovery, {"cat README.md", "filesystem.read"});
+  expectTop(discovery, {"ripgrep padrao", "filesystem.search"});
+
+  // Regressao D42 - multi-intencao: preserva todas as capabilities relevantes,
+  // sem exigir que o primeiro resultado resolva a solicitacao inteira.
+  {
+    DiscoveryRequest request;
+    request.query = std::string("liste o conteudo e leia o arquivo");
+    const auto results = discovery.discover(request);
+    const auto present = [&results](std::string_view id) {
+      return std::any_of(results.begin(), results.end(), [id](const auto& item) {
+        return item.id == id;
+      });
+    };
+    require(present("filesystem.list"), "multi-intencao deve preservar filesystem.list");
+    require(present("filesystem.read"), "multi-intencao deve preservar filesystem.read");
+    require(
+        results.front().id == "filesystem.read" || results.front().id == "filesystem.list",
+        "multi-intencao deve ranquear uma capability relevante no topo");
+  }
 
   // Sem sinal suficiente: vazio deliberado, sem confianca artificial.
   for (const std::string_view query : {"xyzq banana", "node --version", "servidor banana"}) {

@@ -72,36 +72,83 @@ std::string foldChar(std::string_view value, std::size_t& index) {
   return "?";
 }
 
-/// Normaliza para busca por intencao: minusculas, sem acento, tokenizado em
-/// palavras. Palavra inteira, nao substring: "ver" nao casa "server".
-std::vector<std::string> normalizeWords(std::string_view value) {
-  std::vector<std::string> words;
+// Token de consulta com a marca de termo tecnico/literal (arquivo, caminho,
+// flag ou identificador). Termos tecnicos nao exigem cobertura por sinonimo.
+struct QueryToken {
+  std::string word;
+  bool technical = false;
+};
+
+bool isPathBoundary(char character) {
+  switch (character) {
+    case '.': case '_': case '/': case '\\': case ':': case '@': case '-': case '~':
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::vector<QueryToken> normalizeQueryTokens(std::string_view value) {
+  std::vector<QueryToken> tokens;
   std::string current;
+  bool uppercase = false;
+  bool digit = false;
+  char leadingBoundary = ' ';
+  char previousBoundary = ' ';
   const std::size_t size = value.size();
+  const auto flush = [&](char trailingBoundary) {
+    if (current.empty()) {
+      return;
+    }
+    const bool technical = uppercase || digit || isPathBoundary(leadingBoundary) ||
+        isPathBoundary(trailingBoundary);
+    tokens.push_back({std::move(current), technical});
+    current.clear();
+    uppercase = false;
+    digit = false;
+  };
   for (std::size_t index = 0; index < size;) {
     const auto character = static_cast<unsigned char>(value[index]);
     if (character < 0x80) {
       const bool isAlnum = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
           (character >= '0' && character <= '9');
       if (isAlnum) {
-        current.push_back(character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a') : static_cast<char>(character));
-      } else if (!current.empty()) {
-        words.push_back(std::move(current));
-        current.clear();
+        if (current.empty()) {
+          leadingBoundary = previousBoundary;
+        }
+        if (character >= 'A' && character <= 'Z') {
+          uppercase = true;
+          current.push_back(static_cast<char>(character - 'A' + 'a'));
+        } else {
+          digit = digit || (character >= '0' && character <= '9');
+          current.push_back(static_cast<char>(character));
+        }
+      } else {
+        flush(static_cast<char>(character));
+        previousBoundary = static_cast<char>(character);
       }
       ++index;
     } else if (character == 0xC3 && index + 1 < size) {
+      if (current.empty()) {
+        leadingBoundary = previousBoundary;
+      }
       current += foldChar(value, index);
     } else {
-      if (!current.empty()) {
-        words.push_back(std::move(current));
-        current.clear();
-      }
+      flush(' ');
+      previousBoundary = ' ';
       ++index;
     }
   }
-  if (!current.empty()) {
-    words.push_back(std::move(current));
+  flush(' ');
+  return tokens;
+}
+
+/// Normaliza para busca por intencao: minusculas, sem acento, tokenizado em
+/// palavras. Palavra inteira, nao substring: "ver" nao casa "server".
+std::vector<std::string> normalizeWords(std::string_view value) {
+  std::vector<std::string> words;
+  for (QueryToken& token : normalizeQueryTokens(value)) {
+    words.push_back(std::move(token.word));
   }
   return words;
 }
@@ -188,85 +235,111 @@ bool wordsMatch(std::string_view queryWord, std::string_view fieldWord) {
 }
 
 std::vector<std::string> queryTokens(std::string_view query) {
-  std::vector<std::string> tokens;
-  for (std::string& word : normalizeWords(query)) {
-    if (!isStopword(word) && std::find(tokens.begin(), tokens.end(), word) == tokens.end()) {
-      tokens.push_back(std::move(word));
+  std::vector<std::string> intent;
+  std::vector<std::string> literals;
+  for (QueryToken& token : normalizeQueryTokens(query)) {
+    if (isStopword(token.word)) {
+      continue;
+    }
+    std::vector<std::string>& target = token.technical ? literals : intent;
+    if (std::find(target.begin(), target.end(), token.word) == target.end()) {
+      target.push_back(std::move(token.word));
     }
   }
-  return tokens;
+  // Sem intencao natural, o literal ainda direciona a busca.
+  if (intent.empty()) {
+    return literals;
+  }
+  return intent;
 }
 
-int fieldRank(const Capability& capability, std::string_view token) {
+int fieldCount(int fields) {
+  int count = 0;
+  while (fields != 0) {
+    count += fields & 1;
+    fields >>= 1;
+  }
+  return count;
+}
+
+struct FieldMatch {
   int rank = 0;
+  int fields = 0;
+};
+
+/// Campos casados pelo token: id(8) > alias(4) > summary(2) > description(1).
+FieldMatch fieldMatch(const Capability& capability, std::string_view token) {
+  FieldMatch match;
   for (const std::string& word : normalizeWords(capability.id)) {
     if (wordsMatch(token, word)) {
-      rank = std::max(rank, 4);
+      match.rank = std::max(match.rank, 4);
+      match.fields |= 8;
+      break;
     }
   }
   for (const std::string& alias : capability.aliases) {
-    for (const std::string& word : normalizeWords(alias)) {
-      if (wordsMatch(token, word)) {
-        rank = std::max(rank, 3);
-      }
+    const std::vector<std::string> words = normalizeWords(alias);
+    const bool matched = std::any_of(
+        words.begin(),
+        words.end(),
+        [token](const std::string& word) { return wordsMatch(token, word); });
+    if (matched) {
+      match.rank = std::max(match.rank, 3);
+      match.fields |= 4;
     }
   }
   for (const std::string& word : normalizeWords(capability.summary)) {
     if (wordsMatch(token, word)) {
-      rank = std::max(rank, 2);
+      match.rank = std::max(match.rank, 2);
+      match.fields |= 2;
+      break;
     }
   }
   for (const std::string& word : normalizeWords(capability.description)) {
     if (wordsMatch(token, word)) {
-      rank = std::max(rank, 1);
+      match.rank = std::max(match.rank, 1);
+      match.fields |= 1;
+      break;
     }
   }
-  return rank;
+  return match;
 }
 
-int scoreStrict(const Capability& capability, const std::vector<std::string>& tokens, int& matched) {
-  int highestRank = 0;
-  int rankTotal = 0;
-  matched = 0;
-  for (const std::string& token : tokens) {
-    const int rank = fieldRank(capability, token);
-    if (rank > 0) {
-      ++matched;
-      highestRank = std::max(highestRank, rank);
-      rankTotal += rank;
-    }
-  }
-  if (matched != static_cast<int>(tokens.size())) {
-    return -1;
-  }
-  // Uma correspondencia mais especifica domina os campos de menor prioridade.
-  return highestRank * 10000 + rankTotal * 100 + matched;
-}
-
-int searchScore(const Capability& capability, const std::vector<std::string>& tokens) {
+/// Pontua por cobertura de tokens e forca do campo; exige todos os tokens de
+/// intencao (ou todos-menos-um em consultas longas) para evitar ruido.
+int searchScore(const Capability& capability, const std::vector<std::string>& tokens, bool& full) {
+  full = false;
   if (tokens.empty()) {
+    full = true;
     return 0;
   }
   int matched = 0;
-  const int strict = scoreStrict(capability, tokens, matched);
-  if (strict >= 0) {
-    return strict;
-  }
-  // Reserva para consultas longas: aceita todos-menos-um token, penalizado,
-  // para nunca devolver vazio quando ha relacao clara com a intencao.
-  if (tokens.size() >= 3 && matched == static_cast<int>(tokens.size()) - 1) {
-    int highestRank = 0;
-    int rankTotal = 0;
-    for (const std::string& token : tokens) {
-      const int rank = fieldRank(capability, token);
-      if (rank > 0) {
-        highestRank = std::max(highestRank, rank);
-        rankTotal += rank;
-      }
+  int highestRank = 0;
+  int rankTotal = 0;
+  int fields = 0;
+  for (const std::string& token : tokens) {
+    const FieldMatch match = fieldMatch(capability, token);
+    if (match.rank > 0) {
+      ++matched;
+      highestRank = std::max(highestRank, match.rank);
+      rankTotal += match.rank;
+      fields |= match.fields;
     }
-    return highestRank * 1000 + rankTotal * 10 + matched;
   }
-  return -1;
+  if (matched == 0) {
+    return -1;
+  }
+  full = matched == static_cast<int>(tokens.size());
+  if (!full) {
+    // Reserva para consultas longas: aceita todos-menos-um token, penalizado,
+    // para nunca devolver vazio quando ha relacao clara com a intencao.
+    const bool partialAllowed = tokens.size() >= 3 && matched == static_cast<int>(tokens.size()) - 1;
+    if (!partialAllowed) {
+      return -1;
+    }
+  }
+  // Cobertura domina; depois forca do campo, amplitude de campos e soma.
+  return matched * 1000000 + highestRank * 100000 + fieldCount(fields) * 1000 + rankTotal;
 }
 
 }  // namespace
@@ -431,27 +504,29 @@ std::vector<Capability> Registry::search(
   struct ScoredCapability {
     Capability capability;
     int score;
+    bool full;
   };
   std::vector<ScoredCapability> scored;
   for (const auto& entry : capabilities_) {
     const Capability& capability = entry.second;
-    const int score = searchScore(capability, tokens);
+    bool full = false;
+    const int score = searchScore(capability, tokens, full);
     if (score >= 0) {
-      scored.push_back({capability, score});
+      scored.push_back({capability, score, full});
     }
   }
   // Reserva (todos-menos-um) so vale quando a intencao estrita nao casa nada:
   // havendo correspondencia total, parciais nao poluem o resultado.
   const bool hasStrict = tokens.empty() ||
       std::any_of(scored.begin(), scored.end(), [](const ScoredCapability& entry) {
-        return entry.score >= 10000;
+        return entry.full;
       });
   if (hasStrict && !tokens.empty()) {
     scored.erase(
         std::remove_if(
             scored.begin(),
             scored.end(),
-            [](const ScoredCapability& entry) { return entry.score < 10000; }),
+            [](const ScoredCapability& entry) { return !entry.full; }),
         scored.end());
   }
 

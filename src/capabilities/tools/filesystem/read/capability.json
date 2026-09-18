@@ -25,7 +25,17 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": ["ler arquivo", "ver arquivo", "mostrar arquivo", "abrir arquivo", "cat"],
+  "aliases": [
+    "ler arquivo",
+    "ver arquivo",
+    "mostrar arquivo",
+    "abrir arquivo",
+    "exibir arquivo",
+    "visualizar arquivo",
+    "ler conteudo",
+    "abrir leitura",
+    "cat"
+  ],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"
