@@ -24,6 +24,10 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # O teste de integracao lsp usa o RA real; sem o componente, a
+          # imagem decide (ausente = skip, quebrado = falha espuria).
+          components: rust-analyzer
 
       - name: Install dependencies
         run: npm ci
