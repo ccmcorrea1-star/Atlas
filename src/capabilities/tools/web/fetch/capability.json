@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "web",
-  "aliases": [],
+  "aliases": ["abrir url", "baixar pagina", "ler url", "curl", "conteudo da pagina"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

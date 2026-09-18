@@ -20,7 +20,14 @@
     "additionalProperties": false
   },
   "parent": "web",
-  "aliases": [],
+  "aliases": [
+    "pesquisar na web",
+    "buscar na internet",
+    "pesquisa online",
+    "googlar",
+    "buscar documentação",
+    "buscar tutoriais"
+  ],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

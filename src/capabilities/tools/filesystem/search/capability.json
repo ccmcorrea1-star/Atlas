@@ -24,7 +24,14 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [],
+  "aliases": [
+    "buscar texto",
+    "procurar codigo",
+    "grep",
+    "localizar arquivo",
+    "pesquisar no projeto",
+    "localizar funcao"
+  ],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

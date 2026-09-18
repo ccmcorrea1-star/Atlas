@@ -34,7 +34,13 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [],
+  "aliases": [
+    "editar arquivo",
+    "alterar arquivo",
+    "modificar arquivo",
+    "substituir trecho",
+    "corrigir codigo"
+  ],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

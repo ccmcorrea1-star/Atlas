@@ -15,7 +15,13 @@
     "additionalProperties": false
   },
   "parent": "lsp",
-  "aliases": [],
+  "aliases": [
+    "ver erros",
+    "diagnosticar codigo",
+    "analisar codigo",
+    "verificar tipos",
+    "typecheck"
+  ],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

@@ -24,7 +24,7 @@
     "additionalProperties": false
   },
   "parent": "shell",
-  "aliases": [],
+  "aliases": ["comando shell", "terminal", "pipe", "script shell", "encadear comandos"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

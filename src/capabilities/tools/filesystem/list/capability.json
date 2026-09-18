@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [],
+  "aliases": ["listar arquivos", "listar diretorio", "ls", "conteudo da pasta"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"
