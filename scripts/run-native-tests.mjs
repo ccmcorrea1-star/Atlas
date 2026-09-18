@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
 const processExecutable = resolve(outputDirectory, 'process-exec-test');
+const systemExecutable = resolve(outputDirectory, 'system-info-test');
 const capabilityExecutable = resolve(projectRoot, 'src/capabilities/tools/process/exec/runtime');
+const systemInfoExecutable = resolve(projectRoot, 'src/capabilities/tools/system/info/runtime');
 const bridgeExecutable = resolve(projectRoot, 'src/capabilities/runtime/bridge/runtime');
 const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
@@ -15,7 +17,9 @@ const coreDirectory = resolve(capabilitiesDirectory, 'core');
 const executableRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/executable');
 const bridgeRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/bridge');
 const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
+const systemInfoDirectory = resolve(capabilitiesDirectory, 'tools/system/info');
 const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
+const systemTestSource = resolve(projectRoot, 'tests/native/system_info_test.cpp');
 const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_test.cpp');
 const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
 
@@ -58,6 +62,20 @@ try {
     resolve(sourceDirectory, 'exec.cpp'),
     '-o',
     capabilityExecutable,
+  ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(executableRuntimeDirectory, 'protocol.cpp'),
+    resolve(executableRuntimeDirectory, 'adapter.cpp'),
+    resolve(executableRuntimeDirectory, 'main.cpp'),
+    resolve(systemInfoDirectory, 'info.cpp'),
+    '-o',
+    systemInfoExecutable,
   ]);
   run('g++', [
     '-std=c++23',
@@ -124,7 +142,25 @@ try {
     '-o',
     executorExecutable,
   ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(coreDirectory, 'registry.cpp'),
+    resolve(coreDirectory, 'discovery.cpp'),
+    resolve(coreDirectory, 'executor.cpp'),
+    resolve(coreDirectory, 'loader.cpp'),
+    resolve(executableRuntimeDirectory, 'protocol.cpp'),
+    resolve(systemInfoDirectory, 'info.cpp'),
+    systemTestSource,
+    '-o',
+    systemExecutable,
+  ]);
   run(processExecutable, []);
+  run(systemExecutable, []);
   run(loaderExecutable, []);
   run(executorExecutable, []);
 } finally {

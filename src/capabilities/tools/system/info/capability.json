@@ -1,0 +1,18 @@
+{
+  "id": "system.info",
+  "type": "tool",
+  "summary": "retorna informações do sistema local",
+  "description": "retorna plataforma, sistema operacional, arquitetura e ambiente sem executar comandos",
+  "schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "parent": "system",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}
