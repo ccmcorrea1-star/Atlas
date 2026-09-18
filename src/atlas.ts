@@ -16,6 +16,7 @@ import {
   withOpenCodeGoAbortSignal,
   withOpenCodeGoSession,
 } from './opencode-go.js';
+import { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
 import {
   createCapabilityRuntime,
   type CapabilityDiscoveryRequest,
@@ -116,27 +117,6 @@ function createRunner(options: OpenCodeGoProviderOptions): Runner {
     modelProvider: provider,
     tracingDisabled: true,
   });
-}
-
-function stableSerialize(value: unknown): string {
-  // Serializacao ordenada impede que a ordem das chaves gere runtimes duplicados.
-  if (value === undefined) {
-    return 'undefined';
-  }
-
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
-  }
-
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`)
-    .join(',')}}`;
 }
 
 function getRuntimeKey(options: OpenCodeGoProviderOptions): string {
@@ -623,8 +603,10 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const runtime = getAtlasRuntime(providerOptions);
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
+  // Cada turno recebe um RetryGuard novo para permitir a mesma chamada apos falha.
+  const turnRuntime = new HookableCapabilityRuntime(capabilityRuntime, new RetryGuard());
   const agent = createAtlasAgent(
-    capabilityRuntime,
+    turnRuntime,
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {

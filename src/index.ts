@@ -15,6 +15,16 @@ export type {
   NativeCapabilityRuntimeOptions,
 } from './capability-runtime.js';
 
+// Os hooks genericos permitem auditar ou bloquear execucoes sem alterar as capabilities.
+export { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
+export type {
+  AfterExecuteHook,
+  BeforeExecuteHook,
+  CapabilityExecutionHookContext,
+  CapabilityExecutionHooks,
+  RetryGuardStatus,
+} from './capability-hooks.js';
+
 // O provider e a sessao ficam publicos para configuracao e integracao com o OpenCode Go.
 export {
   ATLAS_USER_AGENT,
