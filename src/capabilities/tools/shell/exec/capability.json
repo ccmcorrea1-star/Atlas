@@ -1,0 +1,32 @@
+{
+  "id": "shell.exec",
+  "type": "tool",
+  "summary": "executa um comando usando o shell do sistema",
+  "description": "executar um comando com semântica de shell: pipes, redirecionamentos, encadeamento, globbing e expansão de variáveis",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "comando interpretado pelo shell do sistema"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "diretorio de trabalho opcional"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "limite de tempo em milissegundos"
+      }
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  },
+  "parent": "shell",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

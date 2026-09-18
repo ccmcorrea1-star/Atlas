@@ -11,6 +11,7 @@ coverage/
 .native-cmake/
 /clients/tui/target/
 /src/capabilities/tools/process/exec/runtime
+/src/capabilities/tools/shell/exec/runtime
 /src/capabilities/tools/filesystem/read/runtime
 /src/capabilities/tools/filesystem/write/runtime
 /src/capabilities/tools/filesystem/edit/runtime
