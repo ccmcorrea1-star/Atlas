@@ -27,6 +27,9 @@ struct ServerKey {
 struct OpenDoc {
     version: i64,
     text: String,
+    /// Diagnosticos crus do ultimo retorno: baseline para detectar eco apos
+    /// edicao (o servidor republica o anterior antes de reanalisar).
+    last_diags: Vec<Value>,
 }
 
 type Spawner = Box<dyn Fn(&ServerSpec, &Path) -> std::io::Result<Arc<ServerConn>> + Send>;
@@ -35,6 +38,9 @@ type Spawner = Box<dyn Fn(&ServerSpec, &Path) -> std::io::Result<Arc<ServerConn>
 const FRESH_GRACE: Duration = Duration::from_secs(4);
 /// Quietude em servidor reutilizado (quente, publica rapido).
 const REUSE_GRACE: Duration = Duration::from_millis(1500);
+/// Quietude com so ecos apos edicao: a edicao nao alterou os diagnosticos e
+/// o ultimo eco ja e a resposta correta.
+const CHANGED_GRACE: Duration = Duration::from_secs(8);
 
 /// Resultado de uma analise no vocabulario do contrato Atlas.
 pub struct Outcome {
@@ -69,6 +75,7 @@ pub struct Client {
     diag_timeout: Duration,
     fresh_grace: Duration,
     reuse_grace: Duration,
+    changed_grace: Duration,
 }
 
 impl Client {
@@ -80,6 +87,7 @@ impl Client {
             diag_timeout: server::DIAG_TIMEOUT,
             fresh_grace: FRESH_GRACE,
             reuse_grace: REUSE_GRACE,
+            changed_grace: CHANGED_GRACE,
         }
     }
 
@@ -92,6 +100,7 @@ impl Client {
             diag_timeout: Duration::from_secs(2),
             fresh_grace: Duration::from_millis(300),
             reuse_grace: Duration::from_millis(200),
+            changed_grace: Duration::from_millis(500),
         }
     }
 
@@ -177,6 +186,14 @@ impl Client {
         // Servidores deduplicam didChange de conteudo identico e nada
         // republicam: texto igual reabre o documento (quente, rapido).
         let reopen = matches!(self.docs.get(&uri), Some(doc) if doc.text == text);
+        // Texto alterado desde o ultimo retorno: reconcilia com o disco via
+        // didChange e aguarda conteudo genuinamente novo (baseline = ultimo).
+        let changed = !reopen && self.docs.contains_key(&uri);
+        let baseline: Option<Vec<Value>> = if changed {
+            self.docs.get(&uri).map(|doc| doc.last_diags.clone())
+        } else {
+            None
+        };
         if reopen && conn.notify(&lsp::did_close(&uri)).is_err() {
             return self.restart_and_retry(path, &key, &uri, attempts);
         }
@@ -188,11 +205,15 @@ impl Client {
         if conn.notify(&sync).is_err() {
             return self.restart_and_retry(path, &key, &uri, attempts);
         }
+        if changed && conn.notify(&lsp::did_save(&uri)).is_err() {
+            return self.restart_and_retry(path, &key, &uri, attempts);
+        }
         self.docs.insert(
             uri.clone(),
             OpenDoc {
                 version,
                 text: text.clone(),
+                last_diags: Vec::new(),
             },
         );
         let grace = if fresh {
@@ -200,8 +221,24 @@ impl Client {
         } else {
             self.reuse_grace
         };
-        match conn.wait_diagnostics(&uri, Some(version), since, self.diag_timeout, grace) {
+        // Reopen envia o mesmo texto: qualquer publicacao posterior reflete o
+        // estado atual, com ou sem versao nova — dispensa o filtro de versao
+        // (senao a analise tardia da versao anterior seria descartada para
+        // sempre a cada nova chamada).
+        let min_version = if reopen { None } else { Some(version) };
+        match conn.wait_diagnostics(
+            &uri,
+            min_version,
+            since,
+            self.diag_timeout,
+            grace,
+            baseline.as_deref(),
+            self.changed_grace,
+        ) {
             Ok(raw) => {
+                if let Some(doc) = self.docs.get_mut(&uri) {
+                    doc.last_diags = raw.clone();
+                }
                 let diagnostics = raw.iter().filter_map(lsp::to_contract_diagnostic).collect();
                 Outcome {
                     status: "success",
@@ -581,6 +618,14 @@ mod tests {
     }
 
     fn spawn_fake(spawns: Arc<Mutex<usize>>) -> Spawner {
+        spawn_with(spawns, fake_rs_server)
+    }
+
+    /// Spawner com servidor injetavel; o loop atende syncs ate EOF.
+    fn spawn_with(
+        spawns: Arc<Mutex<usize>>,
+        server: fn(BufReader<StdUnixStream>, StdUnixStream),
+    ) -> Spawner {
         Box::new(move |_, _| {
             *spawns.lock().unwrap() += 1;
             let (client_reader, server_writer) = StdUnixStream::pair().unwrap();
@@ -594,9 +639,417 @@ mod tests {
                     let _ = unblock.shutdown(std::net::Shutdown::Both);
                 }),
             );
-            thread::spawn(move || fake_rs_server(BufReader::new(server_reader), server_writer));
+            thread::spawn(move || server(BufReader::new(server_reader), server_writer));
             Ok(conn)
         })
+    }
+
+    /// Extrai o texto do didOpen/didChange (didClose nao tem texto).
+    fn sync_text(sync: &Value) -> Option<String> {
+        if sync["method"] == "textDocument/didOpen" {
+            return sync["params"]["textDocument"]["text"]
+                .as_str()
+                .map(str::to_string);
+        }
+        if sync["method"] == "textDocument/didChange" {
+            return sync["params"]["contentChanges"][0]["text"]
+                .as_str()
+                .map(str::to_string);
+        }
+        None
+    }
+
+    fn erro_falso() -> Value {
+        json!([{
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "severity": 1,
+            "message": "falso",
+            "source": "falso",
+        }])
+    }
+
+    /// Imita o rust-analyzer real apos edicao: republica o anterior com a
+    /// versao nova (eco) e so depois a reanalise derivada do texto — texto com
+    /// CORRIGIDO esta limpo, sem a marca tem um erro.
+    fn fake_echo_server(mut reader: BufReader<StdUnixStream>, mut writer: StdUnixStream) {
+        let init = match lsp::read_message(&mut reader) {
+            Ok(message) => message,
+            Err(_) => return,
+        };
+        let id = init["id"].as_u64().unwrap_or(0);
+        if lsp::write_message(
+            &mut writer,
+            &json!({"jsonrpc": "2.0", "id": id, "result": {"capabilities": {}}}),
+        )
+        .is_err()
+        {
+            return;
+        }
+        let _ = lsp::read_message(&mut reader); // initialized
+        let mut previous: Value = Value::Array(vec![]);
+        loop {
+            let sync = match lsp::read_message(&mut reader) {
+                Ok(message) => message,
+                Err(_) => return,
+            };
+            let Some(text) = sync_text(&sync) else {
+                continue; // didClose: nada a publicar
+            };
+            let document = &sync["params"]["textDocument"];
+            let (Some(uri), Some(version)) =
+                (document["uri"].as_str(), document["version"].as_i64())
+            else {
+                continue;
+            };
+            // Eco imediato do estado anterior com a versao nova.
+            let echo = json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "version": version, "diagnostics": previous},
+            });
+            if lsp::write_message(&mut writer, &echo).is_err() {
+                return;
+            }
+            // Reanalise genuina derivada do texto atual.
+            let current = if text.contains("CORRIGIDO") {
+                Value::Array(vec![])
+            } else {
+                erro_falso()
+            };
+            thread::sleep(std::time::Duration::from_millis(20));
+            let reply = json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "version": version, "diagnostics": current},
+            });
+            if lsp::write_message(&mut writer, &reply).is_err() {
+                return;
+            }
+            previous = current;
+        }
+    }
+
+    /// Fake com estado isolado por documento: eco do anterior + reanalise
+    /// derivada do texto, com registro de metodos e versoes por uri para
+    /// auditoria de incremento e isolamento.
+    struct SyncLog {
+        methods: Mutex<Vec<String>>,
+        versions: Mutex<HashMap<String, Vec<i64>>>,
+    }
+
+    fn spawn_isolated(spawns: Arc<Mutex<usize>>, log: Arc<SyncLog>) -> Spawner {
+        Box::new(move |_, _| {
+            *spawns.lock().unwrap() += 1;
+            let (client_reader, server_writer) = StdUnixStream::pair().unwrap();
+            let (server_reader, client_writer) = StdUnixStream::pair().unwrap();
+            let unblock = client_reader.try_clone().unwrap();
+            let conn = ServerConn::from_streams(
+                BufReader::new(client_reader),
+                client_writer,
+                None,
+                Box::new(move || {
+                    let _ = unblock.shutdown(std::net::Shutdown::Both);
+                }),
+            );
+            let log = Arc::clone(&log);
+            thread::spawn(move || {
+                let mut reader = BufReader::new(server_reader);
+                let mut writer = server_writer;
+                let init = match lsp::read_message(&mut reader) {
+                    Ok(message) => message,
+                    Err(_) => return,
+                };
+                let id = init["id"].as_u64().unwrap_or(0);
+                if lsp::write_message(
+                    &mut writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": {"capabilities": {}}}),
+                )
+                .is_err()
+                {
+                    return;
+                }
+                let _ = lsp::read_message(&mut reader); // initialized
+                let mut previous: HashMap<String, Value> = HashMap::new();
+                loop {
+                    let sync = match lsp::read_message(&mut reader) {
+                        Ok(message) => message,
+                        Err(_) => return,
+                    };
+                    let method = sync["method"].as_str().unwrap_or("?").to_string();
+                    let uri = sync["params"]["textDocument"]["uri"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    log.methods.lock().unwrap().push(format!("{method} {uri}"));
+                    let Some(text) = sync_text(&sync) else {
+                        continue;
+                    };
+                    let version = sync["params"]["textDocument"]["version"]
+                        .as_i64()
+                        .unwrap_or(-1);
+                    log.versions
+                        .lock()
+                        .unwrap()
+                        .entry(uri.clone())
+                        .or_default()
+                        .push(version);
+                    let publish = |writer: &mut StdUnixStream, diags: &Value| {
+                        lsp::write_message(
+                            writer,
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "method": "textDocument/publishDiagnostics",
+                                "params": {"uri": uri, "version": version, "diagnostics": diags},
+                            }),
+                        )
+                        .is_ok()
+                    };
+                    if let Some(prev) = previous.get(&uri) {
+                        let prev = prev.clone();
+                        if !publish(&mut writer, &prev) {
+                            return;
+                        }
+                        thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    let current = if text.contains("CORRIGIDO") {
+                        Value::Array(vec![])
+                    } else {
+                        erro_falso()
+                    };
+                    if !publish(&mut writer, &current) {
+                        return;
+                    }
+                    previous.insert(uri, current);
+                }
+            });
+            Ok(conn)
+        })
+    }
+
+    /// Restart (daemon/estado recriado) nao precisa de baseline, versao ou
+    /// settle anterior: didOpen com o texto atual em disco basta.
+    #[test]
+    fn restart_nao_precisa_de_estado_anterior() {
+        let spawns = Arc::new(Mutex::new(0));
+        let path = fixture("restart", "fn ruim() {}\\n")
+            .to_str()
+            .unwrap()
+            .to_string();
+        {
+            let mut client = Client {
+                changed_grace: Duration::from_secs(5),
+                ..Client::with_spawner(spawn_with(Arc::clone(&spawns), fake_echo_server))
+            };
+            assert_eq!(client.diagnose(&path).diagnostics.len(), 1);
+            std::fs::write(&path, "fn ok() {}\\n// CORRIGIDO\\n").unwrap();
+            assert!(client.diagnose(&path).diagnostics.is_empty());
+        } // estado descartado: baseline, versoes e servidores morrem aqui
+        let mut fresh = Client {
+            changed_grace: Duration::from_secs(5),
+            ..Client::with_spawner(spawn_with(Arc::clone(&spawns), fake_echo_server))
+        };
+        let outcome = fresh.diagnose(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(outcome.status, "success", "erro: {}", outcome.error);
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "pos-restart divergiu: {:?}",
+            outcome.diagnostics
+        );
+        assert_eq!(
+            *spawns.lock().unwrap(),
+            2,
+            "restart deve subir servidor novo"
+        );
+    }
+
+    /// Concorrencia como no daemon (Arc<Mutex<Client>>): mesmo documento em
+    /// varias threads, documentos distintos e edicao no meio — sem deadlock,
+    /// sem race em baseline, sem incremento descontrolado de versao e com
+    /// convergencia em chamada unica ao final.
+    #[test]
+    fn concorrencia_isola_documentos_sem_race() {
+        let spawns = Arc::new(Mutex::new(0));
+        let log = Arc::new(SyncLog {
+            methods: Mutex::new(Vec::new()),
+            versions: Mutex::new(HashMap::new()),
+        });
+        let client = Arc::new(Mutex::new(Client {
+            changed_grace: Duration::from_secs(2),
+            ..Client::with_spawner(spawn_isolated(Arc::clone(&spawns), Arc::clone(&log)))
+        }));
+        let file_a = fixture("conc-a", "fn a() { ERRO }\\n")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file_b = fixture("conc-b", "fn b() {}\\n// CORRIGIDO\\n")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let (tx, rx) = std::sync::mpsc::channel::<(String, usize)>();
+        let barrier = Arc::new(std::sync::Barrier::new(6)); // 5 workers + main
+        let file_a_main = file_a.clone();
+        let mut handles = Vec::new();
+        for worker in 0..5 {
+            let client = Arc::clone(&client);
+            let tx = tx.clone();
+            let barrier = Arc::clone(&barrier);
+            let file = if worker < 3 {
+                file_a.clone()
+            } else {
+                file_b.clone()
+            };
+            let file_a_w = file_a.clone();
+            let tag = if worker < 3 { "a" } else { "b" }.to_string();
+            handles.push(thread::spawn(move || {
+                barrier.wait(); // fase 1: sem edicao, resultado deterministico
+                for _ in 0..3 {
+                    let outcome = client.lock().unwrap().diagnose(&file);
+                    assert_eq!(outcome.status, "success", "erro: {}", outcome.error);
+                    tx.send((tag.clone(), outcome.diagnostics.len())).unwrap();
+                }
+                barrier.wait(); // main edita A aqui
+                barrier.wait(); // fase 2: edicao proxima as consultas
+                for _ in 0..4 {
+                    let outcome = client.lock().unwrap().diagnose(&file_a_w);
+                    assert_eq!(outcome.status, "success", "erro: {}", outcome.error);
+                    tx.send(("a2".to_string(), outcome.diagnostics.len()))
+                        .unwrap();
+                }
+            }));
+        }
+        drop(tx);
+        barrier.wait();
+        barrier.wait();
+        // Edicao externa concorrente as consultas da fase 2.
+        std::fs::write(&file_a_main, "fn a() {}\\n// CORRIGIDO\\n").unwrap();
+        barrier.wait();
+        let mut phase1_a = 0;
+        let mut phase1_b = 0;
+        let mut phase2 = Vec::new();
+        for _ in 0..35 {
+            match rx.recv_timeout(Duration::from_secs(90)) {
+                Ok((tag, len)) => match tag.as_str() {
+                    "a" => {
+                        phase1_a += 1;
+                        assert_eq!(len, 1, "A com erro deve ter 1 diag");
+                    }
+                    "b" => {
+                        phase1_b += 1;
+                        assert_eq!(len, 0, "B limpo deve ter 0 diag");
+                    }
+                    _ => phase2.push(len),
+                },
+                Err(_) => panic!("deadlock ou worker travado na concorrencia"),
+            }
+        }
+        for handle in handles {
+            handle.join().expect("worker em panico = race observavel");
+        }
+        assert_eq!((phase1_a, phase1_b), (9, 6));
+        assert_eq!(phase2.len(), 20);
+        assert!(
+            phase2.iter().all(|len| *len <= 1),
+            "resultado corrompido no meio da edicao: {phase2:?}"
+        );
+        // Convergencia em chamada unica, sem repetir diagnose.
+        let last = client.lock().unwrap().diagnose(&file_a_main);
+        std::fs::remove_file(&file_a_main).unwrap();
+        std::fs::remove_file(&file_b).unwrap();
+        assert!(
+            last.diagnostics.is_empty(),
+            "nao convergiu: {:?}",
+            last.diagnostics
+        );
+        // Versoes por documento: estritamente +1, sem salto nem reutilizacao.
+        for (uri, versions) in log.versions.lock().unwrap().iter() {
+            assert!(
+                versions.len() <= 30,
+                "{uri} incrementou demais: {versions:?}"
+            );
+            for pair in versions.windows(2) {
+                assert_eq!(
+                    pair[1],
+                    pair[0] + 1,
+                    "{uri} versao nao sequencial: {versions:?}"
+                );
+            }
+        }
+    }
+
+    /// didSave respeita o protocolo: so no sync com texto alterado, somente
+    /// identificador (sem "text", pois includeText nao foi negociado) e com a
+    /// uri correta. Trava o comportamento para qualquer language server.
+    #[test]
+    fn didsave_so_com_texto_alterado_e_sem_texto() {
+        let spawns = Arc::new(Mutex::new(0));
+        let log = Arc::new(SyncLog {
+            methods: Mutex::new(Vec::new()),
+            versions: Mutex::new(HashMap::new()),
+        });
+        let mut client = Client {
+            changed_grace: Duration::from_secs(5),
+            ..Client::with_spawner(spawn_isolated(Arc::clone(&spawns), Arc::clone(&log)))
+        };
+        let file = fixture("didsave", "fn ruim() {}\\n");
+        let uri = format!("file://{}", file.to_str().unwrap());
+        client.diagnose(file.to_str().unwrap()); // didOpen, sem didSave
+        client.diagnose(file.to_str().unwrap()); // reopen: didClose+didOpen, sem didSave
+        std::fs::write(&file, "fn ok() {}\\n// CORRIGIDO\\n").unwrap();
+        let outcome = client.diagnose(file.to_str().unwrap()); // didChange+didSave
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "stale: {:?}",
+            outcome.diagnostics
+        );
+        let methods = log.methods.lock().unwrap().clone();
+        assert_eq!(
+            methods,
+            vec![
+                format!("textDocument/didOpen {uri}"),
+                format!("textDocument/didClose {uri}"),
+                format!("textDocument/didOpen {uri}"),
+                format!("textDocument/didChange {uri}"),
+                format!("textDocument/didSave {uri}"),
+            ],
+            "didSave so apos mudanca de texto: {methods:?}"
+        );
+        // Forma do didSave: so identificador, sem "text" (includeText nao
+        // negociado) — seguro para qualquer language server.
+        let save = lsp::did_save("file:///x.rs");
+        assert_eq!(save["method"], "textDocument/didSave");
+        assert_eq!(save["params"]["textDocument"]["uri"], "file:///x.rs");
+        assert!(
+            save["params"]["textDocument"].get("text").is_none(),
+            "didSave nao deve levar texto sem includeText negociado"
+        );
+    }
+
+    /// Edicao externa (fora do Atlas) invalida o ultimo retorno: o segundo
+    /// diagnose, em chamada unica, ja devolve o estado novo — sem o fix, o
+    /// eco assentaria e o erro antigo persistiria.
+    #[test]
+    fn edit_externo_atualiza_diagnostics() {
+        let spawns = Arc::new(Mutex::new(0));
+        let mut client = Client {
+            changed_grace: Duration::from_secs(5),
+            ..Client::with_spawner(spawn_with(Arc::clone(&spawns), fake_echo_server))
+        };
+        let file = fixture("editprove", "fn ruim() {}\n");
+        let first = client.diagnose(file.to_str().unwrap());
+        assert_eq!(first.status, "success", "erro: {}", first.error);
+        assert_eq!(first.diagnostics.len(), 1);
+        // Alteracao feita fora do Atlas (filesystem.edit, editor, git...).
+        std::fs::write(&file, "fn ok() {}\n// CORRIGIDO\n").unwrap();
+        let second = client.diagnose(file.to_str().unwrap());
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(second.status, "success", "erro: {}", second.error);
+        assert!(
+            second.diagnostics.is_empty(),
+            "stale persistiu: {:?}",
+            second.diagnostics
+        );
     }
 
     fn fixture(name: &str, content: &str) -> PathBuf {
@@ -762,7 +1215,25 @@ mod tests {
                 break;
             }
         }
-        std::fs::remove_dir_all(&base).unwrap();
         assert!(found_error, "rust-analyzer nao reportou o erro de tipo");
+        // Edicao externa corrigindo o tipo: os diagnostics antigos devem
+        // desaparecer (com retry limitado: a reanalise real leva segundos).
+        std::fs::write(
+            &main,
+            "fn main() {\n    let numero: i32 = 42;\n    println!(\"{numero}\");\n}\n",
+        )
+        .unwrap();
+        let mut clean = false;
+        for _ in 0..8 {
+            let outcome = client.diagnose(main.to_str().unwrap());
+            assert_eq!(outcome.status, "success", "erro: {}", outcome.error);
+            if outcome.diagnostics.is_empty() {
+                clean = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(clean, "diagnostics stale persistiram apos a correcao");
     }
 }

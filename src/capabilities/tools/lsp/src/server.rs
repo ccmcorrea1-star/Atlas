@@ -191,10 +191,12 @@ impl ServerConn {
         self.notify(&lsp::initialized_notification())
     }
 
-    /// Aguarda publishDiagnostics do uri com seq posterior e versao compativel.
-    /// Retorna a publicacao mais recente apos `grace` sem novidades (servidores
-    /// publicam vazio durante o carregamento e o real em seguida); com dados
-    /// em maos, mesmo o estouro do timeout devolve sucesso parcial.
+    /// Aguarda publishDiagnostics do uri com seq posterior a `since_seq`.
+    /// Com `baseline` (diagnosticos do ultimo retorno e texto alterado desde
+    /// entao), ecos — republicacao do conteudo anterior antes da reanalise —
+    /// nao assentam a espera: o retorno so sai no conteudo genuinamente novo
+    /// (inclusive analise tardia de versao anterior), ou no ultimo eco apos
+    /// `changed_grace` de quietude. Sem baseline, comportamento original.
     #[allow(clippy::too_many_arguments)]
     pub fn wait_diagnostics(
         &self,
@@ -203,30 +205,67 @@ impl ServerConn {
         since_seq: u64,
         timeout: Duration,
         grace: Duration,
+        baseline: Option<&[Value]>,
+        changed_grace: Duration,
     ) -> Result<Vec<Value>, String> {
         let deadline = std::time::Instant::now() + timeout;
         let mut guard = self.state.lock().unwrap();
         let mut latest_seq = since_seq;
         let mut latest_diags: Option<Vec<Value>> = None;
         let mut settle_from: Option<std::time::Instant> = None;
+        let mut same_since: Option<std::time::Instant> = None;
         loop {
-            if let Some(item) = guard
+            let mut fresh: Option<(u64, Vec<Value>)> = None;
+            let mut echo: Option<(u64, Vec<Value>)> = None;
+            for item in guard
                 .published
                 .iter()
-                .filter(|item| {
-                    item.seq > latest_seq
-                        && item.uri == uri
-                        && item
-                            .version
-                            .is_none_or(|v| min_version.is_none_or(|min| v >= min))
-                })
-                .max_by_key(|item| item.seq)
+                .filter(|item| item.seq > latest_seq && item.uri == uri)
             {
-                latest_seq = item.seq;
-                latest_diags = Some(item.diagnostics.clone());
-                settle_from = Some(std::time::Instant::now());
+                let echoes = baseline.is_some_and(|base| base == item.diagnostics.as_slice());
+                let version_ok = item
+                    .version
+                    .is_none_or(|v| min_version.is_none_or(|min| v >= min));
+                // Versao antiga com conteudo novo e analise tardia: vale como
+                // fresh, senao o filtro de versao a descartaria para sempre a
+                // cada novo sync.
+                let slot = if echoes {
+                    &mut echo
+                } else if version_ok || item.version.is_some() {
+                    &mut fresh
+                } else {
+                    continue;
+                };
+                let replace = match slot {
+                    None => true,
+                    Some((seq, _)) => item.seq > *seq,
+                };
+                if replace {
+                    *slot = Some((item.seq, item.diagnostics.clone()));
+                }
+            }
+            let now = std::time::Instant::now();
+            if let Some((seq, diags)) = fresh {
+                latest_seq = seq;
+                latest_diags = Some(diags);
+                settle_from = Some(now);
+            } else if let Some((seq, diags)) = echo {
+                latest_seq = seq;
+                if settle_from.is_none() {
+                    // Eco antes do conteudo novo: registra sem assentar.
+                    latest_diags = Some(diags);
+                    same_since = Some(now);
+                }
             }
             if settle_from.is_some_and(|since| since.elapsed() >= grace) {
+                guard.published.clear();
+                return Ok(latest_diags.unwrap_or_default());
+            }
+            if baseline.is_some()
+                && settle_from.is_none()
+                && same_since.is_some_and(|since| since.elapsed() >= changed_grace)
+            {
+                // So ecos e quietude: a edicao nao alterou os diagnosticos.
                 guard.published.clear();
                 return Ok(latest_diags.unwrap_or_default());
             }
@@ -424,6 +463,8 @@ mod tests {
                 since,
                 Duration::from_secs(5),
                 Duration::from_millis(200),
+                None,
+                Duration::from_secs(1),
             )
             .unwrap();
         assert_eq!(diags.len(), 1);
@@ -491,6 +532,8 @@ mod tests {
                     since,
                     Duration::from_secs(5),
                     Duration::from_millis(200),
+                    None,
+                    Duration::from_secs(1),
                 )
                 .unwrap();
             assert_eq!(diags.len(), 1);
@@ -550,5 +593,162 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    /// Servidor que modela o rust-analyzer real apos edicao externa: primeiro
+    /// republica o conteudo anterior carimbado com a versao nova (eco) e so
+    /// depois publica a reanalise.
+    fn echo_then_fresh_server(
+        mut reader: BufReader<UnixStream>,
+        mut writer: UnixStream,
+        uri: &str,
+        stale: Vec<Value>,
+        fresh: Vec<Value>,
+        done: mpsc::Receiver<()>,
+    ) {
+        handshake(&mut reader, &mut writer);
+        let open = read_server_message(&mut reader); // didOpen v1
+        assert_eq!(open["params"]["textDocument"]["version"], 1);
+        publish_raw(&mut writer, uri, 1, &stale);
+        let change = read_server_message(&mut reader); // didChange v2
+        assert_eq!(change["method"], "textDocument/didChange");
+        publish_raw(&mut writer, uri, 2, &stale); // eco com versao nova
+        thread::sleep(Duration::from_millis(50));
+        publish_raw(&mut writer, uri, 2, &fresh); // reanalise genuina
+        // Aguarda o teste liberar: sair aqui derrubaria o writer (EOF) e o
+        // ramo morto-devolucao mascararia a espera. kill() nao da EOF no lado
+        // do servidor, entao o desbloqueio e por canal, antes do join.
+        let _ = done.recv();
+    }
+
+    fn publish_raw(writer: &mut UnixStream, uri: &str, version: i64, diagnostics: &[Value]) {
+        lsp::write_message(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "version": version, "diagnostics": diagnostics},
+            }),
+        )
+        .unwrap();
+    }
+
+    fn diag(message: &str) -> Vec<Value> {
+        vec![json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "severity": 1,
+            "message": message,
+        })]
+    }
+
+    #[test]
+    fn espera_conteudo_novo_em_vez_do_eco() {
+        let (conn, server_reader, server_writer) = mock_pair();
+        let uri = "file:///projeto/a.rs";
+        let stale = diag("antigo");
+        let fresh = diag("novo");
+        let stale_clone = stale.clone();
+        let fresh_clone = fresh.clone();
+        let (done_tx, done_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) = mpsc::channel();
+        let server = thread::spawn(move || {
+            echo_then_fresh_server(
+                server_reader,
+                server_writer,
+                uri,
+                stale_clone,
+                fresh_clone,
+                done_rx,
+            );
+        });
+        conn.initialize("file:///projeto", INIT_TIMEOUT).unwrap();
+        let since = conn.current_seq();
+        conn.notify(&lsp::did_open(uri, "rust", 1, "um\n")).unwrap();
+        let first = conn
+            .wait_diagnostics(
+                uri,
+                Some(1),
+                since,
+                Duration::from_secs(5),
+                Duration::from_millis(200),
+                None,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(first, stale);
+        let since = conn.current_seq();
+        conn.notify(&lsp::did_change(uri, 2, "dois\n")).unwrap();
+        // Sem baseline o eco assentaria aqui; com baseline, o retorno e o fresco.
+        let second = conn
+            .wait_diagnostics(
+                uri,
+                Some(2),
+                since,
+                Duration::from_secs(5),
+                Duration::from_millis(200),
+                Some(&stale),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        assert_eq!(second, fresh);
+        drop(done_tx);
+        server.join().unwrap();
+        conn.kill();
+    }
+
+    #[test]
+    fn eco_solitario_retorna_apos_quietude_sem_assentar_errado() {
+        let (conn, mut server_reader, mut server_writer) = mock_pair();
+        let uri = "file:///projeto/a.rs";
+        let stale = diag("mesmo");
+        let stale_clone = stale.clone();
+        let (done_tx, done_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) = mpsc::channel();
+        let server = thread::spawn(move || {
+            handshake(&mut server_reader, &mut server_writer);
+            let _ = read_server_message(&mut server_reader); // didOpen
+            publish_raw(&mut server_writer, uri, 1, &stale_clone);
+            let _ = read_server_message(&mut server_reader); // didChange
+            publish_raw(&mut server_writer, uri, 2, &stale_clone); // so eco
+            // Aguarda o teste liberar (kill() nao da EOF no lado do servidor).
+            let _ = done_rx.recv();
+        });
+        conn.initialize("file:///projeto", INIT_TIMEOUT).unwrap();
+        let since = conn.current_seq();
+        conn.notify(&lsp::did_open(uri, "rust", 1, "um\n")).unwrap();
+        let first = conn
+            .wait_diagnostics(
+                uri,
+                Some(1),
+                since,
+                Duration::from_secs(5),
+                Duration::from_millis(200),
+                None,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(first, stale);
+        let since = conn.current_seq();
+        conn.notify(&lsp::did_change(uri, 2, "dois\n")).unwrap();
+        let start = std::time::Instant::now();
+        let second = conn
+            .wait_diagnostics(
+                uri,
+                Some(2),
+                since,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+                Some(&stale),
+                Duration::from_millis(400),
+            )
+            .unwrap();
+        // Conteudo correto (a edicao nao mudou nada), sem assentar no eco imediato.
+        assert_eq!(second, stale);
+        assert!(
+            start.elapsed() >= Duration::from_millis(400),
+            "assentou no eco em {:?}",
+            start.elapsed()
+        );
+        drop(done_tx);
+        server.join().unwrap();
+        conn.kill();
     }
 }

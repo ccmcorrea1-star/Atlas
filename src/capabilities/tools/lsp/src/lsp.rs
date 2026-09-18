@@ -92,6 +92,16 @@ pub fn did_change(uri: &str, version: i64, text: &str) -> Value {
     })
 }
 
+/// Editores sempre salvam apos editar: sem didSave, servidores como o
+/// rust-analyzer republicam o anterior (eco) e nunca reanalisam.
+pub fn did_save(uri: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didSave",
+        "params": { "textDocument": { "uri": uri } },
+    })
+}
+
 /// Nome do contrato para cada DiagnosticSeverity do LSP.
 pub fn severity_name(severity: Option<i64>) -> &'static str {
     match severity {
