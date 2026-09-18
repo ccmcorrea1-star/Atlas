@@ -7,11 +7,16 @@ export const ATLAS_CONFIG_VERSION = 1;
 export const ATLAS_DEFAULT_PROVIDER = 'opencode-go';
 export const ATLAS_DEFAULT_MODEL = 'gpt-5.6-luna';
 
-// O arquivo global define provider/model; credenciais continuam no ambiente.
+// O arquivo global define provider, model e credenciais por provider.
+export type ProviderCredentials = {
+  apiKey?: string;
+};
+
 export type AtlasConfig = {
   version: typeof ATLAS_CONFIG_VERSION;
   provider: string;
   model: string;
+  providers?: { 'opencode-go'?: ProviderCredentials };
 };
 
 export const DEFAULT_ATLAS_CONFIG: AtlasConfig = {
@@ -62,20 +67,20 @@ function requiredString(value: unknown, field: string, source: string): string {
   return value;
 }
 
-// Campos obrigatórios; campos desconhecidos são recusados para impedir credenciais no arquivo.
+// Campos obrigatórios; credenciais ficam apenas em "providers".
 export function parseAtlasConfig(value: unknown, source: string): AtlasConfig {
   if (!isRecord(value)) {
     throw new AtlasConfigError(`Atlas config at ${source} must be a JSON object.`);
   }
 
-  const knownFields = new Set(['version', 'provider', 'model']);
+  const knownFields = new Set(['version', 'provider', 'model', 'providers']);
   const unknownFields = Object.keys(value)
     .filter((field) => !knownFields.has(field))
     .sort();
   if (unknownFields.length > 0) {
     throw new AtlasConfigError(
       `Atlas config at ${source} has unsupported field(s): ${unknownFields.join(', ')}. ` +
-        'API keys must stay in the environment (OPENCODE_GO_API_KEY).',
+        `API keys belong under "providers".`,
     );
   }
 
@@ -91,10 +96,54 @@ export function parseAtlasConfig(value: unknown, source: string): AtlasConfig {
     );
   }
 
+  let providers: AtlasConfig['providers'];
+  if (Object.hasOwn(value, 'providers')) {
+    if (!isRecord(value.providers)) {
+      throw new AtlasConfigError(`Atlas config at ${source}: "providers" must be an object.`);
+    }
+    const unknownProviders = Object.keys(value.providers).filter(
+      (provider) => provider !== ATLAS_DEFAULT_PROVIDER,
+    );
+    if (unknownProviders.length > 0) {
+      throw new AtlasConfigError(
+        `Atlas config at ${source}: unsupported provider(s) in "providers": ${unknownProviders.join(', ')}. ` +
+          `Only "${ATLAS_DEFAULT_PROVIDER}" is currently supported.`,
+      );
+    }
+    if (Object.hasOwn(value.providers, ATLAS_DEFAULT_PROVIDER)) {
+      const credentials = value.providers[ATLAS_DEFAULT_PROVIDER];
+      if (!isRecord(credentials)) {
+        throw new AtlasConfigError(
+          `Atlas config at ${source}: "providers.${ATLAS_DEFAULT_PROVIDER}" must be an object.`,
+        );
+      }
+      const unknownCredentialFields = Object.keys(credentials).filter(
+        (field) => field !== 'apiKey',
+      );
+      if (unknownCredentialFields.length > 0) {
+        throw new AtlasConfigError(
+          `Atlas config at ${source}: unsupported field(s) in "providers.${ATLAS_DEFAULT_PROVIDER}": ` +
+            `${unknownCredentialFields.join(', ')}.`,
+        );
+      }
+      if (Object.hasOwn(credentials, 'apiKey')) {
+        if (typeof credentials.apiKey !== 'string' || credentials.apiKey.trim().length === 0) {
+          throw new AtlasConfigError(
+            `Atlas config at ${source}: "providers.${ATLAS_DEFAULT_PROVIDER}.apiKey" must be a non-empty string.`,
+          );
+        }
+        providers = {
+          [ATLAS_DEFAULT_PROVIDER]: { apiKey: credentials.apiKey },
+        };
+      }
+    }
+  }
+
   return {
     version: ATLAS_CONFIG_VERSION,
     provider: requiredString(value.provider, 'provider', source),
     model: requiredString(value.model, 'model', source),
+    ...(providers ? { providers } : {}),
   };
 }
 
@@ -126,7 +175,6 @@ export async function loadAtlasConfig(
   return { path, source: 'file', config: parseAtlasConfig(parsed, path) };
 }
 
-// Providers extras ficam para uma fase futura; o erro precisa ser explícito.
 export function atlasRuntimeSessionData(config: AtlasConfig): {
   provider: string;
   model: string;
@@ -142,4 +190,27 @@ export function atlasRuntimeSessionData(config: AtlasConfig): {
   }
 
   return { provider: config.provider, model: normalizeAtlasModel(config.model) };
+}
+
+// Resolve a API key: env tem prioridade, config serve como alternativa e a ausencia falha.
+export function atlasApiKey(
+  config: AtlasConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): { apiKey: string; origin: 'environment' | 'config' } {
+  const prefix = `${ATLAS_DEFAULT_PROVIDER.toUpperCase().replaceAll('-', '_')}_API_KEY`;
+
+  const fromEnvironment = env[prefix]?.trim();
+  if (fromEnvironment) {
+    return { apiKey: fromEnvironment, origin: 'environment' };
+  }
+
+  const apiKey = config.providers?.[ATLAS_DEFAULT_PROVIDER]?.apiKey?.trim();
+  if (apiKey) {
+    return { apiKey, origin: 'config' };
+  }
+
+  throw new AtlasConfigError(
+    `Atlas config: no API key for provider "${ATLAS_DEFAULT_PROVIDER}". ` +
+      `Set ${prefix} in the environment or "providers.${ATLAS_DEFAULT_PROVIDER}.apiKey" in the config file.`,
+  );
 }

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  atlasApiKey,
   atlasRuntimeSessionData,
   DEFAULT_ATLAS_CONFIG,
   type AtlasConfig,
@@ -301,9 +302,16 @@ function isMainModule(): boolean {
 }
 
 async function runServer(): Promise<void> {
-  // O Runtime só inicia com uma configuração global válida.
+  // O Runtime só inicia com uma configuração global válida e com a API key resolvida.
   const { config, path, source } = await loadAtlasConfig();
-  const server = new AtlasRuntimeServer({ atlasConfig: config });
+  // O ambiente é apenas override; a key pode vir exclusivamente do config.json.
+  const { apiKey } = atlasApiKey(config, process.env);
+  const server = new AtlasRuntimeServer({
+    atlasConfig: config,
+    runOptions: {
+      ...{ apiKey },
+    },
+  });
   await server.listen();
   try {
     await writeRuntimePid(server.socketPath);

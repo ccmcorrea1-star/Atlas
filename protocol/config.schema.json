@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ccmcorrea1-star/Atlas/protocol/config.schema.json",
   "title": "Atlas global configuration",
-  "description": "Configuração global do Atlas em ~/.config/atlas/config.json ou no caminho indicado por ATLAS_CONFIG. Credenciais não fazem parte deste arquivo.",
+  "description": "Configuração global do Atlas em ~/.config/atlas/config.json ou no caminho indicado por ATLAS_CONFIG. A chave de API de um provider pode ficar no ambiente (preferencial) ou em providers.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "provider", "model"],
@@ -21,6 +21,24 @@
       "type": "string",
       "minLength": 1,
       "description": "Modelo padrão das conversas do Runtime."
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Credenciais por provider. Nesta fase, apenas \"opencode-go\".",
+      "properties": {
+        "opencode-go": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Chave usada pelo provider opencode-go. Sobrescrita por OPENCODE_GO_API_KEY."
+            }
+          }
+        }
+      }
     }
   }
 }
