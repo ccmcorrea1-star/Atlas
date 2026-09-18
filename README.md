@@ -23,7 +23,6 @@ Requer Node.js 22+, CMake com suporte a C++23 e Rust/Cargo.
 ```bash
 npm ci
 cargo install --locked --path clients/tui
-export OPENCODE_GO_API_KEY="sua-chave"
 atlas server run
 ```
 
@@ -52,10 +51,16 @@ arquivo nunca é criado automaticamente.
 {
   "version": 1,
   "provider": "opencode-go",
-  "model": "gpt-5.6-luna"
+  "model": "gpt-5.6-luna",
+  "providers": {
+    "opencode-go": {
+      "apiKey": "sua-chave"
+    }
+  }
 }
 ```
 
-`version`, `provider` e `model` são obrigatórios; credenciais não fazem parte
-desse arquivo e `OPENCODE_GO_API_KEY` continua sendo lida do ambiente. O
-contrato completo está em [`protocol/config.schema.json`](protocol/config.schema.json).
+`version`, `provider` e `model` são obrigatórios. A credencial pode ficar no
+arquivo em `providers[`_provider_`].apiKey`; se `OPENCODE_GO_API_KEY` existir no
+ambiente, ela sobrescreve o valor do arquivo. O contrato completo está em
+[`protocol/config.schema.json`](protocol/config.schema.json).
