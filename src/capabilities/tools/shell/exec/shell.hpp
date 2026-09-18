@@ -47,7 +47,7 @@ struct ShellResult {
   std::string stdout;
   std::string stderr;
 
-  // 127 indica falha antes da execucao; sinais usam 128 + numero do sinal.
+  // O codigo de saida e preservado; executavel ausente e tratado pelo runner.
   int exit_code{-1};
 
   // Duracao total da chamada, incluindo inicializacao e captura das saidas.

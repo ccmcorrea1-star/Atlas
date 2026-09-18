@@ -1,11 +1,13 @@
 #include "../filesystem.hpp"
 
-namespace atlas::capabilities {
+#include "../../../runtime/executable/adapter.hpp"
 
-extern "C" ExecutionResult atlas_executable_dispatch(
-    const NativeRequest& request,
-    const ExecutionOutputCallback& /* unused */) {
-  return tools::filesystem::readDispatch(request);
+namespace atlas::capabilities::runtime::executable {
+
+Dispatch dispatch() {
+  return [](const NativeRequest& request, const ExecutionOutputCallback&) {
+    return tools::filesystem::readDispatch(request);
+  };
 }
 
-}  // namespace atlas::capabilities
+}  // namespace atlas::capabilities::runtime::executable

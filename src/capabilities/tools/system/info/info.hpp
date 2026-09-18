@@ -41,6 +41,7 @@ SystemInfo systemInfo();
 
 // Adapta os argumentos estruturados do runtime para a coleta das informacoes.
 atlas::capabilities::ExecutionResult dispatch(
-    const atlas::capabilities::NativeRequest& request);
+    const atlas::capabilities::NativeRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback& /* unused */);
 
 }  // namespace atlas::capabilities::tools::system

@@ -9,6 +9,10 @@
 
 namespace atlas::capabilities::runtime::executable {
 
+int run() {
+  return run(dispatch());
+}
+
 int run(Dispatch dispatch) {
   // Cada processo atende uma requisicao JSON completa pela entrada padrao.
   const std::string input{

@@ -16,6 +16,7 @@ const loaderExecutable = resolve(outputDirectory, 'capability-loader-test');
 const discoveryExecutable = resolve(outputDirectory, 'discovery-test');
 const gitExecutable = resolve(outputDirectory, 'git-test');
 const executorExecutable = resolve(outputDirectory, 'capability-executor-test');
+const commandRunnerExecutable = resolve(outputDirectory, 'command-runner-test');
 const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const coreDirectory = resolve(capabilitiesDirectory, 'core');
 const executableRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/executable');
@@ -41,6 +42,7 @@ const loaderTestSource = resolve(projectRoot, 'tests/native/capability_loader_te
 const discoveryTestSource = resolve(projectRoot, 'tests/native/discovery_test.cpp');
 const gitTestSource = resolve(projectRoot, 'tests/native/git_test.cpp');
 const executorTestSource = resolve(projectRoot, 'tests/native/capability_executor_test.cpp');
+const commandRunnerTestSource = resolve(projectRoot, 'tests/native/command_runner_test.cpp');
 
 function collectTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -79,6 +81,8 @@ try {
     resolve(executableRuntimeDirectory, 'adapter.cpp'),
     resolve(executableRuntimeDirectory, 'main.cpp'),
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'arguments.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     '-o',
     capabilityExecutable,
@@ -94,6 +98,8 @@ try {
     resolve(executableRuntimeDirectory, 'adapter.cpp'),
     resolve(executableRuntimeDirectory, 'main.cpp'),
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'arguments.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(shellDirectory, 'shell.cpp'),
     '-o',
     shellRuntime,
@@ -196,6 +202,8 @@ try {
     resolve(coreDirectory, 'discovery.cpp'),
     resolve(coreDirectory, 'loader.cpp'),
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'arguments.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     processTestSource,
     '-o',
@@ -237,6 +245,7 @@ try {
     '-pedantic',
     '-pthread',
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(gitDirectory, 'status/status.cpp'),
     resolve(gitDirectory, 'diff/diff.cpp'),
     gitTestSource,
@@ -256,6 +265,8 @@ try {
     resolve(executableRuntimeDirectory, 'protocol.cpp'),
     resolve(coreDirectory, 'loader.cpp'),
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'arguments.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(sourceDirectory, 'exec.cpp'),
     executorTestSource,
     '-o',
@@ -308,11 +319,26 @@ try {
     resolve(coreDirectory, 'discovery.cpp'),
     resolve(coreDirectory, 'loader.cpp'),
     resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'arguments.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
     resolve(executableRuntimeDirectory, 'protocol.cpp'),
     resolve(shellDirectory, 'shell.cpp'),
     shellTestSource,
     '-o',
     shellTestExecutable,
+  ]);
+  run('g++', [
+    '-std=c++23',
+    '-Wall',
+    '-Wextra',
+    '-Werror',
+    '-pedantic',
+    '-pthread',
+    resolve(coreDirectory, 'spawn.cpp'),
+    resolve(coreDirectory, 'command_runner.cpp'),
+    commandRunnerTestSource,
+    '-o',
+    commandRunnerExecutable,
   ]);
   run(processExecutable, []);
   run(shellTestExecutable, []);
@@ -322,6 +348,7 @@ try {
   run(discoveryExecutable, []);
   run(gitExecutable, []);
   run(executorExecutable, []);
+  run(commandRunnerExecutable, []);
 } finally {
   rmSync(outputDirectory, { recursive: true, force: true });
 }

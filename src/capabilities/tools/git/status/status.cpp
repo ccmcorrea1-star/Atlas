@@ -1,6 +1,6 @@
 #include "status.hpp"
 
-#include "../../../core/spawn.hpp"
+#include "../../../core/command_runner.hpp"
 
 #include <string_view>
 #include <utility>
@@ -15,8 +15,8 @@ const StructuredValue* argument(
   return iterator == request.arguments.end() ? nullptr : &iterator->second;
 }
 
-bool gitMissing(const atlas::capabilities::SpawnResult& spawned) {
-  return spawned.exit_code == 127;
+bool gitMissing(const atlas::capabilities::CommandResult& spawned) {
+  return spawned.status == atlas::capabilities::CommandStatus::executable_not_found;
 }
 
 atlas::capabilities::ExecutionResult resultFromStatus(const StatusResult& statusResult) {
@@ -142,17 +142,17 @@ StatusResult status(const StatusRequest& request) {
   if (request.path.empty()) {
     return failure("field 'path' must be a non-empty string");
   }
-  atlas::capabilities::SpawnRequest spawnRequest;
-  spawnRequest.program = "git";
-  spawnRequest.args = {"status", "--porcelain=v1", "-b"};
-  spawnRequest.cwd = request.path;
-  const atlas::capabilities::SpawnResult spawned = atlas::capabilities::spawn(spawnRequest);
+  atlas::capabilities::CommandRequest commandRequest;
+  commandRequest.program = "git";
+  commandRequest.args = {"status", "--porcelain=v1", "-b"};
+  commandRequest.cwd = request.path;
+  const atlas::capabilities::CommandResult spawned = atlas::capabilities::runCommand(commandRequest);
   if (gitMissing(spawned)) {
     result.status = GitStatus::unavailable;
     result.error = "git executable not found";
     return result;
   }
-  if (spawned.status != atlas::capabilities::SpawnStatus::success) {
+  if (spawned.status != atlas::capabilities::CommandStatus::success) {
     return failure(spawned.stderr.empty() ? spawned.error : spawned.stderr);
   }
   result.status = GitStatus::success;

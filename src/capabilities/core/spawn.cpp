@@ -109,6 +109,7 @@ SpawnResult requestError(
     std::chrono::steady_clock::time_point started) {
   SpawnResult result;
   result.status = SpawnStatus::failed;
+  result.error_kind = SpawnErrorKind::other;
   result.error = std::move(message);
   setDuration(result, started);
   return result;
@@ -508,20 +509,29 @@ SpawnResult spawn(
   result.exit_code = exitCode(wait_status);
   if (child_error.has_value()) {
     result.status = SpawnStatus::failed;
+    result.error_kind = child_error->stage == static_cast<int>(ChildErrorStage::execute) &&
+            (child_error->error_code == ENOENT || child_error->error_code == ENOTDIR)
+        ? SpawnErrorKind::executable_not_found
+        : SpawnErrorKind::other;
     result.error = childErrorMessage(request, child_error.value());
   } else if (timed_out) {
     result.status = SpawnStatus::timed_out;
+    result.error_kind = SpawnErrorKind::none;
     result.error = "process timed out";
   } else if (!capture_error.empty()) {
     result.status = SpawnStatus::failed;
+    result.error_kind = SpawnErrorKind::other;
     result.error = capture_error;
   } else if (result.exit_code == 0) {
     result.status = SpawnStatus::success;
+    result.error_kind = SpawnErrorKind::none;
   } else if (WIFSIGNALED(wait_status)) {
     result.status = SpawnStatus::failed;
+    result.error_kind = SpawnErrorKind::other;
     result.error = "process terminated by signal " + std::to_string(WTERMSIG(wait_status));
   } else {
     result.status = SpawnStatus::failed;
+    result.error_kind = SpawnErrorKind::other;
     result.error = "process exited with code " + std::to_string(result.exit_code);
   }
 

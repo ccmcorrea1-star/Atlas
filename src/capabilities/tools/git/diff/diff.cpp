@@ -1,7 +1,7 @@
 #include "diff.hpp"
 
 #include "../git.hpp"
-#include "../../../core/spawn.hpp"
+#include "../../../core/command_runner.hpp"
 
 #include <string_view>
 #include <utility>
@@ -60,20 +60,20 @@ DiffResult diff(const DiffRequest& request) {
   if (request.path.empty()) {
     return failure("field 'path' must be a non-empty string");
   }
-  atlas::capabilities::SpawnRequest spawnRequest;
-  spawnRequest.program = "git";
-  spawnRequest.args = {"diff", "--no-color", "--no-ext-diff"};
+  atlas::capabilities::CommandRequest commandRequest;
+  commandRequest.program = "git";
+  commandRequest.args = {"diff", "--no-color", "--no-ext-diff"};
   if (request.staged) {
-    spawnRequest.args.push_back("--staged");
+    commandRequest.args.push_back("--staged");
   }
-  spawnRequest.cwd = request.path;
-  const atlas::capabilities::SpawnResult spawned = atlas::capabilities::spawn(spawnRequest);
-  if (spawned.exit_code == 127) {
+  commandRequest.cwd = request.path;
+  const atlas::capabilities::CommandResult spawned = atlas::capabilities::runCommand(commandRequest);
+  if (spawned.status == atlas::capabilities::CommandStatus::executable_not_found) {
     result.status = GitStatus::unavailable;
     result.error = "git executable not found";
     return result;
   }
-  if (spawned.status != atlas::capabilities::SpawnStatus::success) {
+  if (spawned.status != atlas::capabilities::CommandStatus::success) {
     return failure(spawned.stderr.empty() ? spawned.error : spawned.stderr);
   }
   result.status = GitStatus::success;

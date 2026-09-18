@@ -1,5 +1,6 @@
 #include "info.hpp"
 
+#include "../../../runtime/executable/adapter.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -111,7 +112,9 @@ SystemInfo systemInfo() {
 
 namespace atlas::capabilities::tools::system {
 
-atlas::capabilities::ExecutionResult dispatch(const atlas::capabilities::NativeRequest& request) {
+atlas::capabilities::ExecutionResult dispatch(
+    const atlas::capabilities::NativeRequest& request,
+    const atlas::capabilities::ExecutionOutputCallback&) {
   const SystemInfo info = systemInfo();
 
   atlas::capabilities::ExecutionResult result;
@@ -133,12 +136,10 @@ atlas::capabilities::ExecutionResult dispatch(const atlas::capabilities::NativeR
 
 }  // namespace atlas::capabilities::tools::system
 
-namespace atlas::capabilities {
+namespace atlas::capabilities::runtime::executable {
 
-extern "C" ExecutionResult atlas_executable_dispatch(
-    const NativeRequest& request,
-    const ExecutionOutputCallback& /* unused */) {
-  return tools::system::dispatch(request);
+Dispatch dispatch() {
+  return &tools::system::dispatch;
 }
 
-}  // namespace atlas::capabilities
+}  // namespace atlas::capabilities::runtime::executable

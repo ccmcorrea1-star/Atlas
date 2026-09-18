@@ -1,11 +1,11 @@
 #include "diff.hpp"
 
-namespace atlas::capabilities {
+#include "../../../runtime/executable/adapter.hpp"
 
-extern "C" ExecutionResult atlas_executable_dispatch(
-    const NativeRequest& request,
-    const ExecutionOutputCallback& on_output) {
-  return tools::git::dispatchDiff(request, on_output);
+namespace atlas::capabilities::runtime::executable {
+
+Dispatch dispatch() {
+  return &tools::git::dispatchDiff;
 }
 
-}  // namespace atlas::capabilities
+}  // namespace atlas::capabilities::runtime::executable

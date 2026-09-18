@@ -1,8 +1,9 @@
 #include "exec.hpp"
 
-#include "../../../core/spawn.hpp"
+#include "../../../core/arguments.hpp"
+#include "../../../core/command_runner.hpp"
+#include "../../../runtime/executable/adapter.hpp"
 
-#include <string_view>
 #include <utility>
 
 namespace atlas::capabilities::tools::process {
@@ -27,22 +28,22 @@ ExecResult exec(
   }
 
   // Os argumentos seguem para execve sem interpretacao ou expansao.
-  atlas::capabilities::SpawnRequest spawn_request;
-  spawn_request.program = request.program;
-  spawn_request.args = request.args;
-  spawn_request.cwd = request.cwd;
-  spawn_request.timeout = request.timeout;
+  atlas::capabilities::CommandRequest command_request;
+  command_request.program = request.program;
+  command_request.args = request.args;
+  command_request.cwd = request.cwd;
+  command_request.timeout = request.timeout;
 
-  const atlas::capabilities::SpawnResult spawned =
-      atlas::capabilities::spawn(spawn_request, on_output);
+  const atlas::capabilities::CommandResult spawned =
+      atlas::capabilities::runCommand(command_request, on_output);
 
   result.stdout = spawned.stdout;
   result.stderr = spawned.stderr;
   result.exit_code = spawned.exit_code;
   result.duration = spawned.duration;
-  result.status = spawned.status == atlas::capabilities::SpawnStatus::success
+  result.status = spawned.status == atlas::capabilities::CommandStatus::success
       ? ExecStatus::success
-      : spawned.status == atlas::capabilities::SpawnStatus::timed_out
+      : spawned.status == atlas::capabilities::CommandStatus::timed_out
       ? ExecStatus::timed_out
       : ExecStatus::failed;
   result.error = spawned.error;
@@ -62,13 +63,6 @@ const char* statusName(ExecStatus status) noexcept {
 }
 
 namespace {
-
-const StructuredValue* argument(
-    const atlas::capabilities::NativeRequest& request,
-    std::string_view name) {
-  const auto iterator = request.arguments.find(name);
-  return iterator == request.arguments.end() ? nullptr : &iterator->second;
-}
 
 atlas::capabilities::ExecutionResult resultFromExec(const ExecResult& processResult) {
   atlas::capabilities::ExecutionResult result;
@@ -102,65 +96,30 @@ atlas::capabilities::ExecutionResult requestFailure(
 atlas::capabilities::ExecutionResult dispatch(
     const atlas::capabilities::NativeRequest& request,
     const atlas::capabilities::ExecutionOutputCallback& on_output) {
-  // O runtime ja validou o JSON; esta camada valida somente o contrato do processo.
-  const StructuredValue* programValue = argument(request, "program");
-  const auto* program = programValue == nullptr
-      ? nullptr
-      : std::get_if<std::string>(&programValue->value);
-  if (program == nullptr || program->empty()) {
-    return requestFailure(request.target, "field 'program' must be a non-empty string");
-  }
-
-  ExecRequest processRequest;
-  processRequest.target = request.target;
-  processRequest.program = *program;
-
-  if (const StructuredValue* argsValue = argument(request, "args"); argsValue != nullptr) {
-    const auto* args = std::get_if<StructuredValue::Array>(&argsValue->value);
-    if (args == nullptr) {
-      return requestFailure(request.target, "field 'args' must be an array of strings");
+  try {
+    const atlas::capabilities::ArgumentReader reader(request.arguments);
+    ExecRequest processRequest;
+    processRequest.target = request.target;
+    processRequest.program = reader.string("program");
+    processRequest.args = reader.optionalStringArray("args").value_or(std::vector<std::string>{});
+    processRequest.cwd = reader.optionalString("cwd");
+    if (const auto timeout = reader.optionalInteger("timeout_ms"); timeout.has_value()) {
+      processRequest.timeout = std::chrono::milliseconds(*timeout);
+    } else if (const auto legacyTimeout = reader.optionalInteger("timeout"); legacyTimeout.has_value()) {
+      processRequest.timeout = std::chrono::milliseconds(*legacyTimeout);
     }
-    processRequest.args.reserve(args->size());
-    for (const StructuredValue& value : *args) {
-      const auto* argumentValue = std::get_if<std::string>(&value.value);
-      if (argumentValue == nullptr) {
-        return requestFailure(request.target, "field 'args' must be an array of strings");
-      }
-      processRequest.args.push_back(*argumentValue);
-    }
+    return resultFromExec(exec(processRequest, on_output));
+  } catch (const atlas::capabilities::ArgumentError& error) {
+    return requestFailure(request.target, error.what());
   }
-
-  if (const StructuredValue* cwdValue = argument(request, "cwd"); cwdValue != nullptr) {
-    const auto* cwd = std::get_if<std::string>(&cwdValue->value);
-    if (cwd == nullptr) {
-      return requestFailure(request.target, "field 'cwd' must be a string");
-    }
-    processRequest.cwd = *cwd;
-  }
-
-  const StructuredValue* timeoutValue = argument(request, "timeout_ms");
-  if (timeoutValue == nullptr) {
-    timeoutValue = argument(request, "timeout");
-  }
-  if (timeoutValue != nullptr) {
-    const auto* timeout = std::get_if<std::int64_t>(&timeoutValue->value);
-    if (timeout == nullptr || *timeout < 0) {
-      return requestFailure(request.target, "field 'timeout_ms' must be a non-negative integer");
-    }
-    processRequest.timeout = std::chrono::milliseconds(*timeout);
-  }
-
-  return resultFromExec(exec(processRequest, on_output));
 }
 
 }  // namespace atlas::capabilities::tools::process
 
-namespace atlas::capabilities {
+namespace atlas::capabilities::runtime::executable {
 
-extern "C" ExecutionResult atlas_executable_dispatch(
-    const NativeRequest& request,
-    const ExecutionOutputCallback& on_output) {
-  return tools::process::dispatch(request, on_output);
+Dispatch dispatch() {
+  return &tools::process::dispatch;
 }
 
-}  // namespace atlas::capabilities
+}  // namespace atlas::capabilities::runtime::executable

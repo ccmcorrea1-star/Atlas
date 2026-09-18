@@ -13,6 +13,8 @@ add_library(atlas-capabilities-executable-runtime STATIC
 target_include_directories(atlas-capabilities-executable-runtime PUBLIC src/capabilities)
 
 add_library(atlas-capabilities-core STATIC
+  src/capabilities/core/arguments.cpp
+  src/capabilities/core/command_runner.cpp
   src/capabilities/core/discovery.cpp
   src/capabilities/core/executor.cpp
   src/capabilities/core/loader.cpp
@@ -191,15 +193,28 @@ add_dependencies(atlas-filesystem-test
   atlas-filesystem-search-runtime
 )
 
+add_executable(atlas-git-test tests/native/git_test.cpp)
+target_sources(atlas-git-test PRIVATE
+  src/capabilities/tools/git/status/status.cpp
+  src/capabilities/tools/git/diff/diff.cpp
+)
+target_link_libraries(atlas-git-test PRIVATE atlas-capabilities-core)
+add_dependencies(atlas-git-test atlas-git-status-runtime atlas-git-diff-runtime)
+
 add_executable(atlas-capability-executor-test tests/native/capability_executor_test.cpp)
 target_link_libraries(atlas-capability-executor-test PRIVATE atlas-capabilities-core)
 add_dependencies(atlas-capability-executor-test atlas-process-exec-runtime)
+
+add_executable(atlas-command-runner-test tests/native/command_runner_test.cpp)
+target_link_libraries(atlas-command-runner-test PRIVATE atlas-capabilities-core)
 
 foreach(target
     atlas-capabilities-executable-runtime
     atlas-capabilities-core
     atlas-process-exec-runtime
     atlas-shell-exec-runtime
+    atlas-git-status-runtime
+    atlas-git-diff-runtime
     atlas-system-info-runtime
     atlas-capability-bridge-runtime
     atlas-filesystem-read-runtime
@@ -211,8 +226,10 @@ foreach(target
     atlas-shell-exec-test
     atlas-system-info-test
     atlas-filesystem-test
+    atlas-git-test
     atlas-capability-loader-test
-    atlas-capability-executor-test)
+    atlas-capability-executor-test
+    atlas-command-runner-test)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -pedantic)
 endforeach()
 
@@ -220,15 +237,19 @@ add_test(NAME atlas-process-exec COMMAND atlas-process-exec-test)
 add_test(NAME atlas-shell-exec COMMAND atlas-shell-exec-test)
 add_test(NAME atlas-system-info COMMAND atlas-system-info-test)
 add_test(NAME atlas-filesystem COMMAND atlas-filesystem-test)
+add_test(NAME atlas-git COMMAND atlas-git-test)
 add_test(NAME atlas-capability-loader COMMAND atlas-capability-loader-test)
 add_test(NAME atlas-capability-executor COMMAND atlas-capability-executor-test)
+add_test(NAME atlas-command-runner COMMAND atlas-command-runner-test)
 set_tests_properties(
   atlas-process-exec
   atlas-shell-exec
   atlas-system-info
   atlas-filesystem
+  atlas-git
   atlas-capability-loader
   atlas-capability-executor
+  atlas-command-runner
   PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
@@ -237,6 +258,12 @@ install(TARGETS atlas-process-exec-runtime
 )
 install(TARGETS atlas-shell-exec-runtime
   RUNTIME DESTINATION capabilities/tools/shell/exec
+)
+install(TARGETS atlas-git-status-runtime
+  RUNTIME DESTINATION capabilities/tools/git/status
+)
+install(TARGETS atlas-git-diff-runtime
+  RUNTIME DESTINATION capabilities/tools/git/diff
 )
 install(TARGETS atlas-system-info-runtime
   RUNTIME DESTINATION capabilities/tools/system/info
