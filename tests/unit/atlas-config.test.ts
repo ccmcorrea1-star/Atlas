@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
+  atlasApiKey,
   atlasRuntimeSessionData,
   AtlasConfigError,
   DEFAULT_ATLAS_CONFIG,
@@ -161,7 +162,7 @@ test('rejects unsupported providers before the Runtime starts a session', () => 
   );
 });
 
-test('rejects unknown fields so credentials never live in the config file', async () => {
+test('rejects unknown top-level fields instead of accepting bare credentials', async () => {
   const config = {
     version: 1,
     provider: 'opencode-go',
@@ -173,7 +174,125 @@ test('rejects unknown fields so credentials never live in the config file', asyn
     await assert.rejects(loadAtlasConfig(path), (error: unknown) => {
       assert.ok(error instanceof AtlasConfigError);
       assert.match(error.message, /unsupported field\(s\): apiKey/);
-      assert.match(error.message, /API keys must stay in the environment/);
+      assert.match(error.message, /API keys belong under "providers"/);
+      return true;
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('resolves the API key from the config file without environment overrides', async () => {
+  const { path, cleanup } = await tempConfig(
+    JSON.stringify({
+      version: 1,
+      provider: 'opencode-go',
+      model: 'model-test',
+      providers: { 'opencode-go': { apiKey: 'atlas-config-key' } },
+    }),
+  );
+  try {
+    const { config } = await loadAtlasConfig(path);
+    assert.deepEqual(atlasApiKey(config, {}), {
+      apiKey: 'atlas-config-key',
+      origin: 'config',
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('the environment override beats the key from the config file', async () => {
+  const { path, cleanup } = await tempConfig(
+    JSON.stringify({
+      version: 1,
+      provider: 'opencode-go',
+      model: 'model-test',
+      providers: { 'opencode-go': { apiKey: 'atlas-config-key' } },
+    }),
+  );
+  try {
+    const { config } = await loadAtlasConfig(path);
+    assert.deepEqual(atlasApiKey(config, { OPENCODE_GO_API_KEY: 'atlas-env-key' }), {
+      apiKey: 'atlas-env-key',
+      origin: 'environment',
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('requires an API key when the environment and the config provide none', async () => {
+  const { path, cleanup } = await tempConfig(
+    JSON.stringify({ version: 1, provider: 'opencode-go', model: 'model-test' }),
+  );
+  try {
+    const { config } = await loadAtlasConfig(path);
+    await assert.throws(
+      () => atlasApiKey(config, {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AtlasConfigError);
+        assert.match(error.message, /no API key for provider "opencode-go"/);
+        assert.match(error.message, /OPENCODE_GO_API_KEY/);
+        assert.match(error.message, /providers\.opencode-go\.apiKey/);
+        return true;
+      },
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test('accepts a config without "providers" for the credential release', async () => {
+  const { path, cleanup } = await tempConfig(
+    JSON.stringify({ version: 1, provider: 'opencode-go', model: 'model-test' }),
+  );
+  try {
+    const loaded = await loadAtlasConfig(path);
+    assert.equal(loaded.config.providers, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('rejects invalid "providers" shapes with clear errors', async () => {
+  const cases: unknown[] = [
+    { providers: 'not-an-object' },
+    { providers: { anthropic: { apiKey: 'other-provider' } } },
+    { providers: { 'opencode-go': 'not-an-object' } },
+    { providers: { 'opencode-go': { apiKey: 1 } } },
+    { providers: { 'opencode-go': { apiKey: '' } } },
+    { providers: { 'opencode-go': { apiKey: '  ' } } },
+    { providers: { 'opencode-go': { extra: 'field' } } },
+  ];
+
+  for (const providers of cases) {
+    const parsed = providers as { providers: unknown };
+    assert.throws(
+      () =>
+        parseAtlasConfig(
+          { version: 1, provider: 'opencode-go', model: 'model-test', providers: parsed.providers },
+          'inline',
+        ),
+      AtlasConfigError,
+    );
+  }
+});
+
+test('error messages for invalid credentials never expose key values', async () => {
+  const { path, cleanup } = await tempConfig(
+    JSON.stringify({
+      version: 1,
+      provider: 'opencode-go',
+      model: 'model-test',
+      providers: { 'opencode-go': { apiKey: 42 } },
+    }),
+  );
+  try {
+    await assert.rejects(loadAtlasConfig(path), (error: unknown) => {
+      assert.ok(error instanceof AtlasConfigError);
+      assert.match(error.message, /\.apiKey" must be a non-empty string/);
+      assert.doesNotMatch(error.message, /42/);
       return true;
     });
   } finally {
@@ -218,4 +337,10 @@ test('keeps the public JSON schema aligned with the canonical loader', async () 
   assert.equal(properties.version?.const, 1);
   assert.equal(properties.provider?.minLength, 1);
   assert.equal(properties.model?.minLength, 1);
+
+  const providers = properties.providers as Record<string, unknown>;
+  assert.equal(providers.type, 'object');
+  assert.equal(providers.additionalProperties, false);
+  const opencodeGo = providers.properties as Record<string, unknown>;
+  assert.ok(Object.hasOwn(opencodeGo, 'opencode-go'));
 });
