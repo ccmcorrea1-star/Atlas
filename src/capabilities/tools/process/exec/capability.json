@@ -25,6 +25,11 @@
         "type": "integer",
         "minimum": 0,
         "description": "limite de tempo em milissegundos"
+      },
+      "timeout": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "alias legado de timeout_ms"
       }
     },
     "required": ["program"],

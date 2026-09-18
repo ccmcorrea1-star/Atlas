@@ -17,6 +17,7 @@ add_library(atlas-capabilities-core STATIC
   src/capabilities/core/executor.cpp
   src/capabilities/core/loader.cpp
   src/capabilities/core/registry.cpp
+  src/capabilities/core/schema.cpp
   src/capabilities/core/spawn.cpp
 )
 target_include_directories(atlas-capabilities-core PUBLIC src/capabilities/core)

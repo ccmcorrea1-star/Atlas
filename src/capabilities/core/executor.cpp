@@ -1,6 +1,7 @@
 #include "executor.hpp"
 
 #include "../runtime/executable/protocol.hpp"
+#include "schema.hpp"
 
 #include <array>
 #include <cerrno>
@@ -473,6 +474,13 @@ ExecutionResult Executor::execute(
     return failure(
         request.target,
         "capability '" + request.capability_id + "' of type '" + capability->type + "' is not executable");
+  }
+
+  if (const auto validationError = validateArguments(request.arguments, capability->schema);
+      validationError.has_value()) {
+    return failure(
+        request.target,
+        "invalid arguments for capability '" + request.capability_id + "': " + validationError.value());
   }
 
   const CapabilityImplementation& implementation = capability->implementation;

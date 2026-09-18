@@ -99,6 +99,17 @@ void testProcessExecution() {
   };
   const ExecutionResult timeout = executor.execute("process.exec", "local", std::move(timeoutArguments));
   require(timeout.status == ExecutionStatus::timed_out, "process.exec should preserve executable timeouts");
+
+  StructuredArguments legacyTimeoutArguments{
+      {"program", "/bin/sleep"},
+      {"args", StructuredValue::Array{"2"}},
+      {"timeout", 100},
+  };
+  const ExecutionResult legacyTimeout = executor.execute(
+      "process.exec", "local", std::move(legacyTimeoutArguments));
+  require(
+      legacyTimeout.status == ExecutionStatus::timed_out,
+      "process.exec should preserve the legacy timeout alias");
 }
 
 void testGroupIsNotExecutable() {
@@ -179,6 +190,54 @@ void testExecutableFailure() {
       "failed executable should expose its exit code");
 }
 
+void testCentralSchemaValidation() {
+  Registry registry;
+  bool called = false;
+  Capability capability = descriptor("tests.schema", "native", "tests/schema");
+  capability.schema = StructuredValue::Object{
+      {"type", "object"},
+      {"properties", StructuredValue::Object{
+          {"name", StructuredValue::Object{{"type", "string"}}},
+          {"count", StructuredValue::Object{{"type", "integer"}, {"minimum", 1}, {"maximum", 3}}},
+          {"tags", StructuredValue::Object{{"type", "array"}, {"items", StructuredValue::Object{{"type", "string"}}}}},
+      }},
+      {"required", StructuredValue::Array{"name", "count", "tags"}},
+      {"additionalProperties", false},
+  };
+  require(
+      registry.registerNativeEntrypoint(
+          "tests/schema",
+          [&called](const NativeRequest& request) {
+            called = true;
+            ExecutionResult result;
+            result.target = request.target;
+            result.status = ExecutionStatus::success;
+            return result;
+          }),
+      "schema test entrypoint should be registered");
+  require(registry.registerCapability(std::move(capability)), "schema capability should be registered");
+
+  const auto checkRejected = [&](StructuredArguments arguments, std::string_view detail) {
+    called = false;
+    const ExecutionResult result = Executor(registry).execute("tests.schema", "local", std::move(arguments));
+    require(result.status == ExecutionStatus::failed, "invalid schema arguments should fail");
+    require(result.error.find(detail) != std::string::npos, "schema error should identify the violation");
+    require(!called, "schema validation should happen before the native runtime");
+  };
+  checkRejected({{"count", 2}, {"tags", StructuredValue::Array{"ok"}}}, "name is required");
+  checkRejected({{"name", 7}, {"count", 2}, {"tags", StructuredValue::Array{"ok"}}}, "name must be a string");
+  checkRejected({{"name", "ok"}, {"count", 0}, {"tags", StructuredValue::Array{"ok"}}}, "violates minimum");
+  checkRejected({{"name", "ok"}, {"count", 4}, {"tags", StructuredValue::Array{"ok"}}}, "violates maximum");
+  checkRejected({{"name", "ok"}, {"count", 2}, {"tags", StructuredValue::Array{7}}}, "tags[0] must be a string");
+  checkRejected({{"name", "ok"}, {"count", 2}, {"tags", StructuredValue::Array{"ok"}}, {"extra", true}}, "extra is not allowed");
+
+  const ExecutionResult valid = Executor(registry).execute(
+      "tests.schema",
+      "local",
+      {{"name", "ok"}, {"count", 2}, {"tags", StructuredValue::Array{"ok"}}});
+  require(valid.status == ExecutionStatus::success && called, "valid schema arguments should reach the runtime");
+}
+
 void testCapabilityError() {
   Registry registry;
   require(
@@ -221,6 +280,7 @@ int main() {
   testUnsupportedKinds();
   testInvalidEntrypoint();
   testExecutableFailure();
+  testCentralSchemaValidation();
   testCapabilityError();
   testInvalidImplementationIsNotRunnable();
   return EXIT_SUCCESS;
