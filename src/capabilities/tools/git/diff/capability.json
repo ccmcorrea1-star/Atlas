@@ -1,8 +1,8 @@
 {
   "id": "git.diff",
   "type": "tool",
-  "summary": "retorna diff unificado do repositorio, do working tree ou do staged",
-  "description": "executa git diff na maquina local sem alterar o repositorio; trunca saida longa",
+  "summary": "mostrar o diff do repositorio, do working tree ou do staged",
+  "description": "executa git diff para mostrar as mudancas locais sem alterar o repositorio; trunca saida longa",
   "schema": {
     "type": "object",
     "properties": {
@@ -19,7 +19,7 @@
     "additionalProperties": false
   },
   "parent": "git",
-  "aliases": ["ver diff", "git diff", "mudancas do repositorio"],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

@@ -10,14 +10,7 @@
     "additionalProperties": false
   },
   "parent": "system",
-  "aliases": [
-    "info do sistema",
-    "versao do sistema",
-    "uname",
-    "sysinfo",
-    "qual sistema operacional",
-    "info da maquina"
-  ],
+  "aliases": ["uname", "sysinfo"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

@@ -36,7 +36,7 @@
     "additionalProperties": false
   },
   "parent": "process",
-  "aliases": ["executar programa", "rodar comando", "executar binario", "run"],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

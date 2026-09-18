@@ -1,8 +1,8 @@
 {
   "id": "filesystem.edit",
   "type": "tool",
-  "summary": "substituir trechos especificos de um arquivo",
-  "description": "aplicar substituicoes literais de trechos existentes no arquivo, em ordem",
+  "summary": "editar ou substituir trechos de um arquivo",
+  "description": "aplicar substituicoes literais em um arquivo de codigo para corrigir trechos ou funcoes existentes",
   "schema": {
     "type": "object",
     "properties": {
@@ -34,13 +34,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [
-    "editar arquivo",
-    "alterar arquivo",
-    "modificar arquivo",
-    "substituir trecho",
-    "corrigir codigo"
-  ],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

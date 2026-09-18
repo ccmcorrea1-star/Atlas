@@ -2,7 +2,7 @@
   "id": "git.status",
   "type": "tool",
   "summary": "retorna estado estruturado do working tree e staging",
-  "description": "executa git status na maquina local e devolve branch, arquivos do staging, nao staged e nao rastreados, sem alterar o repositorio",
+  "description": "executa git status e devolve a branch, arquivos modificados, staged e nao rastreados, sem alterar o repositorio",
   "schema": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "git",
-  "aliases": ["estado do repositorio", "git status", "arquivos modificados"],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

@@ -1,8 +1,8 @@
 {
   "id": "filesystem.list",
   "type": "tool",
-  "summary": "listar arquivos e diretorios de um caminho",
-  "description": "listar as entradas imediatas de um diretorio, ordenadas por nome",
+  "summary": "listar cada arquivo e o conteudo de um diretorio",
+  "description": "listar as entradas de um diretorio, em ordem alfabetica",
   "schema": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": ["listar arquivos", "listar diretorio", "ls", "conteudo da pasta"],
+  "aliases": ["ls"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

@@ -1,8 +1,8 @@
 {
   "id": "lsp.diagnostics",
   "type": "tool",
-  "summary": "obtém diagnósticos de código via language server",
-  "description": "analisa um arquivo através do language server adequado (LSP via JSON-RPC por stdio) e retorna erros, warnings e informações semânticas; nunca executa build, lint ou typecheck como substituto",
+  "summary": "ver erros e avisos de codigo via language server",
+  "description": "analisa um arquivo com o language server e retorna diagnosticos, erros e avisos sem executar build ou lint como substituto",
   "schema": {
     "type": "object",
     "properties": {
@@ -15,13 +15,7 @@
     "additionalProperties": false
   },
   "parent": "lsp",
-  "aliases": [
-    "ver erros",
-    "diagnosticar codigo",
-    "analisar codigo",
-    "verificar tipos",
-    "typecheck"
-  ],
+  "aliases": ["typecheck"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

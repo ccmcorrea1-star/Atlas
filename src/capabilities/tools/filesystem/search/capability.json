@@ -1,8 +1,8 @@
 {
   "id": "filesystem.search",
   "type": "tool",
-  "summary": "buscar texto em nomes de arquivos e conteudo",
-  "description": "buscar uma substring literal em nomes de arquivos e linhas de conteudo de forma recursiva",
+  "summary": "buscar texto ou codigo em arquivos de um projeto",
+  "description": "procurar funcoes, trechos ou texto no conteudo dos arquivos do projeto",
   "schema": {
     "type": "object",
     "properties": {
@@ -24,17 +24,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [
-    "buscar texto",
-    "procurar codigo",
-    "grep",
-    "ripgrep",
-    "procurar texto",
-    "pesquisar texto",
-    "localizar arquivo",
-    "pesquisar no projeto",
-    "localizar funcao"
-  ],
+  "aliases": ["grep", "ripgrep"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

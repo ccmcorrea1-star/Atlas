@@ -1,8 +1,8 @@
 {
   "id": "web.search",
   "type": "tool",
-  "summary": "busca na web através de um provider configurável",
-  "description": "executa uma consulta no provider de busca configurado via ATLAS_WEB_SEARCH_COMMAND e retorna título, URL e trecho dos resultados; sem provider configurado retorna unavailable; nunca inventa resultados",
+  "summary": "pesquisar na web por tutoriais, documentacao ou respostas",
+  "description": "consultar a internet por documentacao, tutoriais e resultados atualizados; sem provider configurado retorna unavailable",
   "schema": {
     "type": "object",
     "properties": {
@@ -20,14 +20,7 @@
     "additionalProperties": false
   },
   "parent": "web",
-  "aliases": [
-    "pesquisar na web",
-    "buscar na internet",
-    "pesquisa online",
-    "googlar",
-    "buscar documentação",
-    "buscar tutoriais"
-  ],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

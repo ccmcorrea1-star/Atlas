@@ -121,6 +121,7 @@ int main() {
       {"diagnostics", "lsp.diagnostics"},
       {"pesquisar na internet", "web.search"},
       {"buscar tutoriais de rust", "web.search"},
+      {"procurar tutoriais na web", "web.search"},
       {"procure documentacao", "web.search"},
       {"abrir essa url", "web.fetch"},
       {"baixar a pagina", "web.fetch"},

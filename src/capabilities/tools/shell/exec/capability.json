@@ -29,7 +29,7 @@
     "additionalProperties": false
   },
   "parent": "shell",
-  "aliases": ["comando shell", "terminal", "pipe", "script shell", "encadear comandos"],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

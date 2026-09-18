@@ -19,7 +19,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": ["criar arquivo", "escrever arquivo", "novo arquivo", "salvar arquivo"],
+  "aliases": [],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

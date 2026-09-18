@@ -1,8 +1,8 @@
 {
   "id": "web.fetch",
   "type": "tool",
-  "summary": "obtém o conteúdo de uma URL via HTTP/HTTPS",
-  "description": "busca uma página via HTTP/HTTPS com redirects limitados, timeout e limite de tamanho; extrai texto útil de HTML e preserva texto puro e JSON; rejeita esquemas não suportados; nunca executa JavaScript",
+  "summary": "obter, abrir ou ler o conteudo de uma pagina, link ou URL via HTTP/HTTPS",
+  "description": "busca uma pagina com redirects limitados, timeout e limite de tamanho; extrai texto util de HTML e preserva texto puro e JSON; rejeita esquemas nao suportados; nunca executa JavaScript",
   "schema": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "web",
-  "aliases": ["abrir url", "baixar pagina", "ler url", "curl", "conteudo da pagina"],
+  "aliases": ["curl"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"
