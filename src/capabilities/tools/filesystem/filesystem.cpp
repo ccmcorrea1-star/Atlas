@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -166,6 +167,156 @@ bool writeFile(const std::string& path, const std::string& content, std::string&
   return true;
 }
 
+std::string workspacePath(const std::filesystem::path& path) {
+  std::error_code code;
+  const std::filesystem::path absolute = std::filesystem::absolute(path, code).lexically_normal();
+  if (code) {
+    return path.lexically_normal().generic_string();
+  }
+
+  const std::filesystem::path workspace = std::filesystem::current_path(code).lexically_normal();
+  if (code) {
+    return absolute.generic_string();
+  }
+
+  const std::filesystem::path relative = absolute.lexically_relative(workspace);
+  return relative.empty() ? absolute.generic_string() : relative.generic_string();
+}
+
+std::vector<std::string> diffLines(const std::string& content) {
+  std::vector<std::string> lines;
+  std::size_t position = 0;
+  while (position < content.size()) {
+    const std::size_t newline = content.find('\n', position);
+    if (newline == std::string::npos) {
+      std::string line = content.substr(position);
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      lines.push_back(std::move(line));
+      break;
+    }
+    std::string line = content.substr(position, newline - position);
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    lines.push_back(std::move(line));
+    position = newline + 1;
+  }
+  return lines;
+}
+
+struct DiffLine {
+  char marker = ' ';
+  std::string text;
+};
+
+std::vector<DiffLine> allChangedLines(
+    const std::vector<std::string>& before,
+    const std::vector<std::string>& after) {
+  std::vector<DiffLine> lines;
+  lines.reserve(before.size() + after.size());
+  for (const std::string& line : before) {
+    lines.push_back(DiffLine{'-', line});
+  }
+  for (const std::string& line : after) {
+    lines.push_back(DiffLine{'+', line});
+  }
+  return lines;
+}
+
+std::vector<DiffLine> changedLines(
+    const std::vector<std::string>& before,
+    const std::vector<std::string>& after) {
+  constexpr std::size_t kMaxLcsCells = 2'000'000;
+  if (!before.empty() && after.size() > kMaxLcsCells / before.size()) {
+    return allChangedLines(before, after);
+  }
+
+  const std::size_t columns = after.size() + 1;
+  std::vector<std::uint32_t> lcs((before.size() + 1) * columns, 0);
+  for (std::size_t beforeIndex = before.size(); beforeIndex-- > 0;) {
+    for (std::size_t afterIndex = after.size(); afterIndex-- > 0;) {
+      const std::size_t index = beforeIndex * columns + afterIndex;
+      if (before[beforeIndex] == after[afterIndex]) {
+        lcs[index] = lcs[(beforeIndex + 1) * columns + afterIndex + 1] + 1;
+      } else {
+        lcs[index] = std::max(
+            lcs[(beforeIndex + 1) * columns + afterIndex],
+            lcs[beforeIndex * columns + afterIndex + 1]);
+      }
+    }
+  }
+
+  std::vector<DiffLine> lines;
+  std::size_t beforeIndex = 0;
+  std::size_t afterIndex = 0;
+  while (beforeIndex < before.size() || afterIndex < after.size()) {
+    if (beforeIndex < before.size() && afterIndex < after.size() &&
+        before[beforeIndex] == after[afterIndex]) {
+      lines.push_back(DiffLine{' ', before[beforeIndex]});
+      ++beforeIndex;
+      ++afterIndex;
+      continue;
+    }
+    if (beforeIndex < before.size() &&
+        (afterIndex == after.size() ||
+         lcs[(beforeIndex + 1) * columns + afterIndex] >=
+             lcs[beforeIndex * columns + afterIndex + 1])) {
+      lines.push_back(DiffLine{'-', before[beforeIndex]});
+      ++beforeIndex;
+      continue;
+    }
+    lines.push_back(DiffLine{'+', after[afterIndex]});
+    ++afterIndex;
+  }
+  return lines;
+}
+
+std::string operationDiff(const std::string& before, const std::string& after) {
+  if (before == after) {
+    return std::string();
+  }
+
+  const std::vector<DiffLine> lines = changedLines(diffLines(before), diffLines(after));
+  std::vector<std::size_t> changes;
+  for (std::size_t index = 0; index < lines.size(); ++index) {
+    if (lines[index].marker != ' ') {
+      changes.push_back(index);
+    }
+  }
+
+  std::string result;
+  if (changes.empty()) {
+    result = "@@\n";
+    for (const DiffLine& line : lines) {
+      result.push_back(line.marker);
+      result += line.text;
+      result.push_back('\n');
+    }
+  } else {
+    std::size_t changeIndex = 0;
+    while (changeIndex < changes.size()) {
+      const std::size_t firstChange = changes[changeIndex];
+      std::size_t lastChange = firstChange;
+      while (changeIndex + 1 < changes.size() && changes[changeIndex + 1] <= lastChange + 7) {
+        ++changeIndex;
+        lastChange = changes[changeIndex];
+      }
+      const std::size_t firstLine = firstChange > 3 ? firstChange - 3 : 0;
+      const std::size_t lastLine = std::min(lines.size(), lastChange + 4);
+      result += "@@\n";
+      for (std::size_t lineIndex = firstLine; lineIndex < lastLine; ++lineIndex) {
+        result.push_back(lines[lineIndex].marker);
+        result += lines[lineIndex].text;
+        result.push_back('\n');
+      }
+      ++changeIndex;
+    }
+  }
+  return result;
+}
+
 }  // namespace
 
 atlas::capabilities::ExecutionResult readDispatch(const atlas::capabilities::NativeRequest& request) {
@@ -232,6 +383,16 @@ atlas::capabilities::ExecutionResult writeDispatch(const atlas::capabilities::Na
   if (std::filesystem::is_directory(*path, code)) {
     return failure(request.target, "path is a directory: " + *path);
   }
+
+  std::string before;
+  const bool existed = std::filesystem::exists(*path, code);
+  if (existed) {
+    FileLines lines;
+    if (!readLines(*path, lines, error)) {
+      return failure(request.target, std::move(error));
+    }
+    before = std::move(lines.content);
+  }
   if (!writeFile(*path, *content, error)) {
     return failure(request.target, std::move(error));
   }
@@ -240,7 +401,9 @@ atlas::capabilities::ExecutionResult writeDispatch(const atlas::capabilities::Na
   result.target = request.target;
   result.status = atlas::capabilities::ExecutionStatus::success;
   result.output = StructuredValue::Object{
-      {"path", *path},
+      {"path", workspacePath(*path)},
+      {"action", existed ? "edit" : "create"},
+      {"diff", operationDiff(before, *content)},
       {"bytes", static_cast<std::int64_t>(content->size())},
   };
   return result;
@@ -296,6 +459,7 @@ atlas::capabilities::ExecutionResult editDispatch(const atlas::capabilities::Nat
     return failure(request.target, std::move(error));
   }
 
+  const std::string before = lines.content;
   std::string edited = std::move(lines.content);
   for (std::size_t index = 0; index < parsed.size(); ++index) {
     const Replacement& item = parsed[index];
@@ -331,7 +495,9 @@ atlas::capabilities::ExecutionResult editDispatch(const atlas::capabilities::Nat
   result.target = request.target;
   result.status = atlas::capabilities::ExecutionStatus::success;
   result.output = StructuredValue::Object{
-      {"path", *path},
+      {"path", workspacePath(*path)},
+      {"action", "edit"},
+      {"diff", operationDiff(before, edited)},
       {"replacements", applied},
   };
   return result;
@@ -1055,11 +1221,20 @@ bool commitWorkspace(const PatchWorkspace& workspace, std::string& error) {
   return true;
 }
 
-StructuredValue patchChange(std::string path, std::string action) {
-  return StructuredValue(StructuredValue::Object{
+StructuredValue patchChange(
+    std::string path,
+    std::string action,
+    std::string diff,
+    std::string movedTo = {}) {
+  StructuredValue::Object change{
       {"path", std::move(path)},
       {"action", std::move(action)},
-  });
+      {"diff", std::move(diff)},
+  };
+  if (!movedTo.empty()) {
+    change.emplace("moved_to", std::move(movedTo));
+  }
+  return StructuredValue(std::move(change));
 }
 
 }  // namespace
@@ -1108,7 +1283,10 @@ atlas::capabilities::ExecutionResult patchDispatch(
       }
       workspace.removed.erase(path);
       workspace.contents[path] = std::move(created);
-      changes.push_back(patchChange(operation.path, "add"));
+      changes.push_back(patchChange(
+          workspacePath(path),
+          "create",
+          operationDiff(std::string(), workspace.contents[path])));
       ++added;
       continue;
     }
@@ -1119,7 +1297,10 @@ atlas::capabilities::ExecutionResult patchDispatch(
       }
       workspace.contents.erase(path);
       workspace.removed.insert(path);
-      changes.push_back(patchChange(operation.path, "delete"));
+      changes.push_back(patchChange(
+          workspacePath(path),
+          "delete",
+          operationDiff(content, std::string())));
       ++deleted;
       continue;
     }
@@ -1134,7 +1315,10 @@ atlas::capabilities::ExecutionResult patchDispatch(
 
     if (operation.move_to.empty()) {
       workspace.contents[path] = std::move(edited);
-      changes.push_back(patchChange(operation.path, "update"));
+      changes.push_back(patchChange(
+          workspacePath(path),
+          "edit",
+          operationDiff(content, workspace.contents[path])));
       ++updated;
       continue;
     }
@@ -1155,11 +1339,11 @@ atlas::capabilities::ExecutionResult patchDispatch(
     workspace.removed.insert(path);
     workspace.removed.erase(target);
     workspace.contents[target] = std::move(edited);
-    changes.push_back(StructuredValue(StructuredValue::Object{
-        {"path", operation.path},
-        {"action", "move"},
-        {"moved_to", operation.move_to},
-    }));
+    changes.push_back(patchChange(
+        workspacePath(path),
+        "move",
+        operationDiff(content, workspace.contents[target]),
+        workspacePath(target)));
     ++moved;
   }
 

@@ -42,13 +42,13 @@ impl ChatWidget {
                 self.status = Status::Thinking;
                 self.activity = Some("Thinking".to_owned());
                 if let Some(cell) = self.find_active_tool_mut(&tool_id) {
-                    cell.complete(output.map(|text| bounded_output(&text)));
+                    cell.complete(output);
                     self.commit_active_tool(&tool_id);
                 } else if let Some(cell) = self.find_tool_mut(&tool_id) {
-                    cell.complete(output.map(|text| bounded_output(&text)));
+                    cell.complete(output);
                 } else {
                     let mut cell = ToolCell::new(tool_id, bounded_metadata(&tool_name));
-                    cell.complete(output.map(|text| bounded_output(&text)));
+                    cell.complete(output);
                     self.cells.push(Box::new(cell));
                 }
                 self.history_changed();

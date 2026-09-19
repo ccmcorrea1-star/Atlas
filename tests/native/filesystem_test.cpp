@@ -224,6 +224,16 @@ void testWriteAndList(const TempTree& tree) {
   const ExecutionResult write = filesystem::writeDispatch(
       {"local", arguments({{"path", StructuredValue(created.string())}, {"content", std::string("alpha\nbeta")}})});
   require(write.status == ExecutionStatus::success, "filesystem.write should succeed");
+  const auto* writeAction = stringOutput(write, "action");
+  require(writeAction != nullptr && *writeAction == "create", "filesystem.write should report create");
+  const auto* writePath = stringOutput(write, "path");
+  require(
+      writePath != nullptr && writePath->ends_with("created.txt") && writePath->front() != '/',
+      "filesystem.write should report a relative workspace path");
+  const auto* writeDiff = stringOutput(write, "diff");
+  require(
+      writeDiff != nullptr && *writeDiff == "@@\n+alpha\n+beta\n",
+      "filesystem.write should report its own create diff");
   const auto* bytes = integerOutput(write, "bytes");
   require(bytes != nullptr && *bytes == 10, "filesystem.write should report the byte count");
   require(tree.readFile(created) == "alpha\nbeta", "filesystem.write should create the file");
@@ -231,6 +241,12 @@ void testWriteAndList(const TempTree& tree) {
   const ExecutionResult overwrite = filesystem::writeDispatch(
       {"local", arguments({{"path", StructuredValue(created.string())}, {"content", std::string()}})});
   require(overwrite.status == ExecutionStatus::success, "overwriting should succeed");
+  require(
+      stringOutput(overwrite, "action") != nullptr && *stringOutput(overwrite, "action") == "edit",
+      "filesystem.write should report overwrite as edit");
+  require(
+      stringOutput(overwrite, "diff") != nullptr && *stringOutput(overwrite, "diff") == "@@\n-alpha\n-beta\n",
+      "filesystem.write should report its own overwrite diff");
   require(tree.readFile(created).empty(), "overwriting should replace the content");
 
   const ExecutionResult writeDirectory = filesystem::writeDispatch(
@@ -283,6 +299,13 @@ void testEdit(const TempTree& tree) {
                            {"replacements", StructuredValue(StructuredValue::Array{replacement("one", "uno")})}})});
   require(single.status == ExecutionStatus::success, "filesystem.edit should replace an unique occurrence");
   require(tree.readFile(path) == "uno\nshared\nshared end\n", "filesystem.edit should write the edited content");
+  require(
+      stringOutput(single, "action") != nullptr && *stringOutput(single, "action") == "edit",
+      "filesystem.edit should report edit");
+  require(
+      stringOutput(single, "diff") != nullptr &&
+          *stringOutput(single, "diff") == "@@\n-one\n+uno\n shared\n shared end\n",
+      "filesystem.edit should report its own diff");
 
   const ExecutionResult ordered = filesystem::editDispatch(
       {"local", arguments({{"path", StructuredValue(path.string())},
@@ -505,6 +528,15 @@ void testPatch() {
   require(
       std::get<std::int64_t>(outputField(add, "added")->value) == 1,
       "patch should count added files");
+  const StructuredValue::Array* addChanges = arrayOutput(add, "changes");
+  require(addChanges != nullptr && addChanges->size() == 1, "patch add should report one change");
+  require(
+      std::get<std::string>(matchField(addChanges->front(), "action")->value) == "create",
+      "patch should report the create action");
+  require(
+      std::get<std::string>(matchField(addChanges->front(), "diff")->value) ==
+          "@@\n+first\n+second\n",
+      "patch should report the create diff");
 
   // Update File.
   const std::string updatePatch =
@@ -525,6 +557,15 @@ void testPatch() {
   require(
       std::get<std::int64_t>(outputField(update, "updated")->value) == 1,
       "patch should count updated files");
+  const StructuredValue::Array* updateChanges = arrayOutput(update, "changes");
+  require(updateChanges != nullptr && updateChanges->size() == 1, "patch update should report one change");
+  require(
+      std::get<std::string>(matchField(updateChanges->front(), "action")->value) == "edit",
+      "patch should report the edit action");
+  require(
+      std::get<std::string>(matchField(updateChanges->front(), "diff")->value) ==
+          "@@\n first\n-second\n+second-updated\n+third\n",
+      "patch should report the edit diff");
 
   // Move to com edicao.
   const std::string movePatch =
@@ -549,6 +590,16 @@ void testPatch() {
   require(
       std::get<std::string>(matchField(moveChanges->front(), "action")->value) == "move",
       "patch should report the move action");
+  require(
+      std::get<std::string>(matchField(moveChanges->front(), "path")->value).front() != '/',
+      "patch should report a relative source path");
+  require(
+      std::get<std::string>(matchField(moveChanges->front(), "moved_to")->value).front() != '/',
+      "patch should report a relative destination path");
+  require(
+      std::get<std::string>(matchField(moveChanges->front(), "diff")->value) ==
+          "@@\n-hello\n+hi\n world\n",
+      "patch should report the edit made during a move");
 
   // Delete File.
   const std::string deletePatch =
@@ -562,6 +613,15 @@ void testPatch() {
   require(
       std::get<std::int64_t>(outputField(remove, "deleted")->value) == 1,
       "patch should count deleted files");
+  const StructuredValue::Array* removeChanges = arrayOutput(remove, "changes");
+  require(removeChanges != nullptr && removeChanges->size() == 1, "patch delete should report one change");
+  require(
+      std::get<std::string>(matchField(removeChanges->front(), "action")->value) == "delete",
+      "patch should report the delete action");
+  require(
+      std::get<std::string>(matchField(removeChanges->front(), "diff")->value) ==
+          "@@\n-first\n-second-updated\n-third\n",
+      "patch should report the delete diff");
 
   // Parsing invalido.
   const ExecutionResult noBegin = filesystem::patchDispatch(

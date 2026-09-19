@@ -1,6 +1,7 @@
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use serde_json::Value;
+use std::path::Path;
 
 use super::HistoryCell;
 use super::plain_lines;
@@ -12,6 +13,8 @@ use crate::wrapping::wrap_line;
 use crate::wrapping::wrap_text;
 
 const TOOL_SUMMARY_MAX_CHARS: usize = 120;
+const FILESYSTEM_DIFF_PREVIEW_MAX_CHARS: usize = 600;
+const FILESYSTEM_DIFF_PREVIEW_MAX_LINES: usize = 10;
 
 /// Atividade generica de tool do Runtime renderizada com a margem do Codex.
 #[derive(Debug)]
@@ -56,18 +59,41 @@ impl ToolCell {
     }
 
     pub(crate) fn activity(&self) -> String {
-        capability_activity_with_target(&self.tool_name, self.target.as_deref())
+        let target = self.display_target();
+        capability_activity_with_target(&self.tool_name, target.as_deref())
+    }
+
+    fn display_target(&self) -> Option<String> {
+        self.target
+            .as_deref()
+            .filter(|target| !target.trim().is_empty())
+            .map(|target| {
+                if self.tool_name.starts_with("filesystem.") {
+                    display_path(target)
+                } else {
+                    sanitize_terminal_text(target).trim().to_owned()
+                }
+            })
     }
 }
 
 impl HistoryCell for ToolCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.completed
+            && let Some(lines) = filesystem_change_lines(
+                &self.tool_name,
+                self.output.as_deref().unwrap_or_default(),
+                width,
+                false,
+            )
+        {
+            return lines;
+        }
+
         let width = width.max(1);
         let label = capability_label(&self.tool_name);
         let title = self
-            .target
-            .as_deref()
-            .filter(|target| !target.trim().is_empty())
+            .display_target()
             .map_or(label.clone(), |target| format!("{label} {target}"));
         let status = self
             .completed
@@ -88,6 +114,20 @@ impl HistoryCell for ToolCell {
             lines.extend(tool_summary_lines(&self.tool_name, output, width));
         }
         lines
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.completed
+            && let Some(lines) = filesystem_change_lines(
+                &self.tool_name,
+                self.output.as_deref().unwrap_or_default(),
+                width,
+                true,
+            )
+        {
+            return lines;
+        }
+        self.display_lines(width)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -200,7 +240,7 @@ fn system_info_summary(object: &serde_json::Map<String, Value>) -> Option<String
 }
 
 fn filesystem_read_summary(object: &serde_json::Map<String, Value>) -> Option<String> {
-    let path = string_field(object, "path")?;
+    let path = display_path(&string_field(object, "path")?);
     let lines = number_field(object, "total_lines")?;
     Some(format!(
         "{path} · {lines} {}",
@@ -288,10 +328,10 @@ fn generic_summary(
                 return Some(short_summary(&value));
             }
         }
-        return Some("Structured result".to_owned());
+        return None;
     }
     if serde_json::from_str::<Value>(output).is_ok() {
-        return Some("Structured result".to_owned());
+        return None;
     }
     let summary = output
         .lines()
@@ -390,6 +430,120 @@ fn short_summary(value: &str) -> String {
     } else {
         format!("{}…", &value[..end.saturating_sub(1)])
     }
+}
+
+fn filesystem_change_lines(
+    tool_name: &str,
+    output: &str,
+    _width: u16,
+    transcript: bool,
+) -> Option<Vec<Line<'static>>> {
+    if !matches!(
+        tool_name,
+        "filesystem.write" | "filesystem.edit" | "filesystem.patch"
+    ) {
+        return None;
+    }
+    let object = json_object(output)?;
+    if tool_status(Some(output)) == ToolStatus::Error {
+        return None;
+    }
+    let payload = filesystem_payload(&object);
+    let changes = filesystem_changes(tool_name, payload)?;
+    let mut lines = Vec::new();
+    let mut diff_lines_shown = 0;
+    let mut diff_chars_shown: usize = 0;
+    let mut diff_omitted = false;
+
+    for change in changes {
+        let action = change.get("action").and_then(Value::as_str)?;
+        let action = match action {
+            "create" | "add" => "Created",
+            "edit" | "update" => "Edited",
+            "delete" | "remove" => "Deleted",
+            "move" => "Moved",
+            _ => return None,
+        };
+        let path = change.get("path").and_then(Value::as_str)?;
+        let path = display_path(path);
+        let title = if action == "Moved" {
+            let destination = change.get("moved_to").and_then(Value::as_str)?;
+            format!("✓ {action} {path} → {}", display_path(destination))
+        } else {
+            format!("✓ {action} {path}")
+        };
+        lines.push(Line::from(title));
+
+        let Some(diff) = change.get("diff").and_then(Value::as_str) else {
+            continue;
+        };
+        for diff_line in diff.lines() {
+            let rendered = format!("  {diff_line}");
+            if transcript {
+                lines.push(Line::from(rendered));
+                continue;
+            }
+            let line_chars = rendered.chars().count();
+            if diff_lines_shown < FILESYSTEM_DIFF_PREVIEW_MAX_LINES
+                && diff_chars_shown.saturating_add(line_chars) <= FILESYSTEM_DIFF_PREVIEW_MAX_CHARS
+            {
+                lines.push(Line::from(rendered));
+                diff_lines_shown += 1;
+                diff_chars_shown = diff_chars_shown.saturating_add(line_chars);
+            } else {
+                diff_omitted = true;
+            }
+        }
+    }
+
+    if !transcript && diff_omitted {
+        lines.push(Line::from(
+            "  … diff omitted; open transcript for full diff",
+        ));
+    }
+    Some(lines)
+}
+
+fn filesystem_payload(object: &serde_json::Map<String, Value>) -> &serde_json::Map<String, Value> {
+    object
+        .get("output")
+        .and_then(Value::as_object)
+        .filter(|output| output.contains_key("action") || output.contains_key("changes"))
+        .unwrap_or(object)
+}
+
+fn filesystem_changes<'a>(
+    tool_name: &str,
+    object: &'a serde_json::Map<String, Value>,
+) -> Option<Vec<&'a serde_json::Map<String, Value>>> {
+    if tool_name == "filesystem.patch" {
+        return object
+            .get("changes")
+            .and_then(Value::as_array)
+            .filter(|changes| !changes.is_empty())
+            .map(|changes| changes.iter().filter_map(Value::as_object).collect())
+            .filter(|changes: &Vec<&serde_json::Map<String, Value>>| !changes.is_empty());
+    }
+    object
+        .get("action")
+        .and_then(Value::as_str)
+        .map(|_| vec![object])
+}
+
+fn display_path(path: &str) -> String {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return sanitize_terminal_text(path.to_string_lossy().as_ref());
+    }
+    if let Ok(current_dir) = std::env::current_dir()
+        && let Ok(relative) = path.strip_prefix(current_dir)
+    {
+        return sanitize_terminal_text(relative.to_string_lossy().as_ref());
+    }
+    path.file_name().map_or_else(
+        || "<workspace>".to_owned(),
+        |name| sanitize_terminal_text(name.to_string_lossy().as_ref()),
+    )
 }
 
 #[derive(Debug)]
@@ -596,6 +750,112 @@ mod tests {
     }
 
     #[test]
+    fn renders_filesystem_create_edit_delete_and_move_operations() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "status": "success",
+                    "action": "create",
+                    "path": "teste.txt",
+                    "diff": "@@\n+Arquivo de teste.\n"
+                }),
+                vec!["✓ Created teste.txt", "  @@", "  +Arquivo de teste."],
+            ),
+            (
+                serde_json::json!({
+                    "status": "success",
+                    "action": "edit",
+                    "path": "teste.txt",
+                    "diff": "@@\n Arquivo de teste.\n+Segunda edição realizada.\n"
+                }),
+                vec![
+                    "✓ Edited teste.txt",
+                    "  @@",
+                    "   Arquivo de teste.",
+                    "  +Segunda edição realizada.",
+                ],
+            ),
+            (
+                serde_json::json!({
+                    "status": "success",
+                    "action": "delete",
+                    "path": "teste.txt",
+                    "diff": "@@\n-Arquivo de teste.\n-Segunda edição realizada.\n"
+                }),
+                vec![
+                    "✓ Deleted teste.txt",
+                    "  @@",
+                    "  -Arquivo de teste.",
+                    "  -Segunda edição realizada.",
+                ],
+            ),
+            (
+                serde_json::json!({
+                    "status": "success",
+                    "action": "move",
+                    "path": "teste.txt",
+                    "moved_to": "docs/teste.txt",
+                    "diff": ""
+                }),
+                vec!["✓ Moved teste.txt → docs/teste.txt"],
+            ),
+        ];
+
+        for (output, expected) in cases {
+            let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.edit".to_owned());
+            cell.complete(Some(output.to_string()));
+            assert_eq!(rendered(&cell, 100), expected);
+        }
+    }
+
+    #[test]
+    fn keeps_filesystem_paths_relative_in_the_conversation() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.write".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "action": "create",
+                "path": "/workspace/project/teste.txt",
+                "diff": "@@\n+content\n"
+            })
+            .to_string(),
+        ));
+
+        let lines = rendered(&cell, 100);
+        assert!(!lines.join("\n").contains("/workspace/project"));
+        assert!(lines[0].contains("teste.txt"));
+    }
+
+    #[test]
+    fn compacts_large_filesystem_diffs_but_keeps_the_full_transcript() {
+        let diff = format!(
+            "@@\n{}",
+            (0..40).map(|i| format!("+line-{i}\n")).collect::<String>()
+        );
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.write".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "action": "create",
+                "path": "large.txt",
+                "diff": diff
+            })
+            .to_string(),
+        ));
+
+        let preview = rendered(&cell, 100);
+        assert!(preview.iter().any(|line| line.contains("diff omitted")));
+        assert!(!preview.iter().any(|line| line.contains("line-39")));
+
+        let transcript = cell
+            .transcript_lines(100)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(transcript.iter().any(|line| line.contains("line-39")));
+    }
+
+    #[test]
     fn uses_a_short_status_and_summary_for_unknown_tools() {
         let mut success = ToolCell::new("tool-1".to_owned(), "custom.report".to_owned());
         success.complete(Some(
@@ -607,16 +867,13 @@ mod tests {
             .to_string(),
         ));
         let success_lines = rendered(&success, 100);
-        assert_eq!(success_lines, ["• Report ✓", "  └ Structured result"]);
+        assert_eq!(success_lines, ["• Report ✓"]);
         assert!(!success_lines.iter().any(|line| line.contains("secret")));
         assert!(!success_lines.iter().any(|line| line.contains("status")));
 
         let mut array_result = ToolCell::new("tool-3".to_owned(), "custom.report".to_owned());
         array_result.complete(Some("[\"first\",\"second\"]".to_owned()));
-        assert_eq!(
-            rendered(&array_result, 100),
-            ["• Report ✓", "  └ Structured result"]
-        );
+        assert_eq!(rendered(&array_result, 100), ["• Report ✓"]);
 
         let mut failure = ToolCell::new("tool-2".to_owned(), "custom.report".to_owned());
         failure.complete(Some(
