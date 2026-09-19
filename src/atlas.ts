@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   Agent,
@@ -26,8 +29,31 @@ import {
   type CapabilityRuntime,
 } from './capability-runtime.js';
 
-const ATLAS_INSTRUCTIONS =
-  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. The most common capabilities are already exposed as direct Function Tools: call them directly with their arguments instead of discovering or describing them. Use list_tools to inspect the complete catalog or the tools in a group. Use discover only with a natural-language query to find usable capabilities by intent, and use describe or execute with the capability id for the long tail that is not exposed as a direct tool.';
+let instructionsCache: string | undefined;
+
+// Os .txt ficam em src/prompts; no build, o modulo esta em dist e o fonte continua ao lado.
+function promptsDirectory(): string {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(moduleDirectory, 'prompts'),
+    join(moduleDirectory, '..', 'src', 'prompts'),
+  ];
+  const directory = candidates.find((candidate) => existsSync(candidate));
+  if (directory === undefined) {
+    throw new Error('Atlas prompt directory was not found.');
+  }
+  return directory;
+}
+
+// Carrega o prompt padrao do Agent com cache; o conteudo e imutavel durante o processo.
+export function loadInstructions(): string {
+  if (instructionsCache !== undefined) {
+    return instructionsCache;
+  }
+
+  instructionsCache = readFileSync(join(promptsDirectory(), 'default.txt'), 'utf8').trim();
+  return instructionsCache;
+}
 
 // Capabilities com uso frequente que o Agent expoe como Function Tool direta.
 // O nome, a descricao e o schema vem sempre do Registry em tempo de execucao.
@@ -53,7 +79,7 @@ export function materializedToolName(capabilityId: string): string {
 // O Agent base define a identidade; cada turno recebe as tools base do Atlas.
 export const Atlas = new Agent({
   name: 'Atlas',
-  instructions: ATLAS_INSTRUCTIONS,
+  instructions: loadInstructions(),
   model: OPENCODE_GO_MODEL,
 });
 
@@ -439,7 +465,7 @@ function createAtlasAgent(
 ): Agent {
   return new Agent({
     name: Atlas.name,
-    instructions: ATLAS_INSTRUCTIONS,
+    instructions: loadInstructions(),
     model,
     tools: [
       // Core tools materializadas primeiro; o long tail continua nos base tools.

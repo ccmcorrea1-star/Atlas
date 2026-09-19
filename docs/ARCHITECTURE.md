@@ -5,6 +5,7 @@ Este documento define onde cada responsabilidade do Atlas deve ficar.
 ## Estrutura
 
 - [`src/`](../src/) — Runtime e API principal.
+- [`src/prompts/`](../src/prompts/) — prompt padrão do Agent.
 - [`src/capabilities/`](../src/capabilities/) — capabilities nativas.
 - [`clients/`](../clients/) — clientes desacoplados do Runtime.
 - [`protocol/`](../protocol/) — contratos compartilhados.
