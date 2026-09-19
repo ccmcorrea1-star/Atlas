@@ -1,5 +1,6 @@
 mod app;
 mod bottom_pane;
+mod capability_names;
 mod chatwidget;
 #[allow(dead_code)]
 mod custom_terminal;

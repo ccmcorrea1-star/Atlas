@@ -15,11 +15,18 @@ impl ChatWidget {
             } => {
                 self.status = Status::Executing;
                 if self.find_active_exec_mut(&execution_id).is_none() {
-                    self.active_cells.push(Box::new(ExecCell::new(
+                    let exec = ExecCell::new(
                         bounded_metadata(&execution_id),
                         bounded_metadata(&program),
                         args.iter().map(|arg| bounded_metadata(arg)).collect(),
-                    )));
+                    );
+                    // Validacoes concorrentes compartilham um unico grupo compacto.
+                    match self.active_exec_group_mut() {
+                        Some(group) => group.push(exec),
+                        None => self
+                            .active_cells
+                            .push(Box::new(RunningGroupCell::from_exec(exec))),
+                    }
                 }
                 self.bump_active_revision();
                 self.history_changed();
@@ -46,7 +53,6 @@ impl ChatWidget {
                 duration_ms,
                 status,
             } => {
-                self.status = Status::Thinking;
                 if let Some(cell) = self.find_active_exec_mut(&execution_id) {
                     cell.complete(
                         bounded_output(&stdout),
@@ -76,6 +82,11 @@ impl ChatWidget {
                     );
                     self.cells.push(Box::new(cell));
                 }
+                self.status = if self.has_running_exec() {
+                    Status::Executing
+                } else {
+                    Status::Thinking
+                };
                 self.history_changed();
             }
             _ => {}

@@ -44,6 +44,12 @@ export type RuntimeSessionUpdatedData = {
   provider: string;
 };
 
+export type RuntimeToolStartedData = {
+  tool_id: string;
+  name: string;
+  target?: string;
+};
+
 export type RuntimeTurnCompletedData = {
   content: string;
   message_id?: string;

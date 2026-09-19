@@ -113,6 +113,7 @@ export type AtlasRunEvent =
       type: 'tool.started';
       toolId: string;
       toolName: string;
+      target?: string;
     }
   | {
       type: 'tool.completed';
@@ -504,20 +505,40 @@ function decodedJsonValue(value: unknown): unknown {
 }
 
 function decodedToolOutput(value: unknown): unknown {
-  const decoded = decodedJsonValue(value);
-  if (Array.isArray(decoded)) {
-    const text = decoded
-      .map(recordValue)
-      .map((record) => record?.text)
-      .find((text): text is string => typeof text === 'string');
-    return text === undefined ? decoded : decodedJsonValue(text);
-  }
+  let current = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const decoded = decodedJsonValue(current);
+    if (Array.isArray(decoded)) {
+      const textParts = decoded
+        .map(recordValue)
+        .filter(
+          (record): record is Record<string, unknown> =>
+            record !== undefined &&
+            (record.type === undefined ||
+              record.type === 'text' ||
+              record.type === 'output_text') &&
+            typeof record.text === 'string',
+        )
+        .map((record) => record.text as string);
+      if (textParts.length === 0) {
+        return decoded;
+      }
+      current = textParts.join('');
+      continue;
+    }
 
-  const record = recordValue(decoded);
-  if (typeof record?.text === 'string') {
-    return decodedJsonValue(record.text);
+    const record = recordValue(decoded);
+    if (
+      record !== undefined &&
+      (record.type === undefined || record.type === 'text' || record.type === 'output_text') &&
+      typeof record.text === 'string'
+    ) {
+      current = record.text;
+      continue;
+    }
+    return decoded;
   }
-  return decoded;
+  return current;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -562,6 +583,21 @@ function shellExecArguments(item: Record<string, unknown>):
     args: ['-c', command],
     ...(cwd === undefined ? {} : { cwd }),
   };
+}
+
+function toolTarget(toolName: string, item: Record<string, unknown>): string | undefined {
+  const arguments_ = executeCall(item)?.arguments_ ?? recordValue(decodedJsonValue(item.arguments));
+  if (arguments_ === undefined) {
+    return undefined;
+  }
+
+  const target =
+    toolName === 'filesystem.glob'
+      ? arguments_.pattern
+      : toolName === 'filesystem.search'
+        ? (arguments_.query ?? arguments_.path)
+        : (arguments_.path ?? arguments_.target);
+  return stringValue(target);
 }
 
 function shellExecResult(value: unknown): {
@@ -665,7 +701,13 @@ async function publishRunEvent(
           });
         }
       } else {
-        await onEvent({ type: 'tool.started', toolId, toolName });
+        const target = toolTarget(toolName, item);
+        await onEvent({
+          type: 'tool.started',
+          toolId,
+          toolName,
+          ...(target === undefined ? {} : { target }),
+        });
       }
     }
     return;
@@ -673,7 +715,8 @@ async function publishRunEvent(
 
   if (event.name === 'tool_output') {
     if (toolName && toolId) {
-      const output = publicText(item.output);
+      // O output público reutiliza o decoding ja aplicado ao lifecycle do shell.
+      const output = publicText(decodedToolOutput(item.output));
       if (toolName === 'shell.exec') {
         await onEvent({
           type: 'execution.completed',

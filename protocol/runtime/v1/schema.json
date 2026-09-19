@@ -179,7 +179,8 @@
               "type": "object",
               "properties": {
                 "tool_id": { "type": "string", "minLength": 1 },
-                "name": { "type": "string", "minLength": 1 }
+                "name": { "type": "string", "minLength": 1 },
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["tool_id", "name"],
               "additionalProperties": true

@@ -408,7 +408,7 @@ mod tests {
         let mut app = App::new("status".to_owned());
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
-        assert!(rows(&app, 100, 14).contains("• Working ("));
+        assert!(rows(&app, 100, 14).contains("• Thinking ("));
     }
 
     #[test]

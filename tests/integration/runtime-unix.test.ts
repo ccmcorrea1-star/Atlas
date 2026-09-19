@@ -942,6 +942,106 @@ test('publishes provider stream failures as a terminal runtime error', async () 
   }
 });
 
+test('normalizes generic tool output before publishing tool.completed', async () => {
+  const requests: WireMessage[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage);
+
+    const output =
+      requests.length === 1
+        ? {
+            id: 'read-call',
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'read-call',
+            name: 'filesystem_read',
+            arguments: JSON.stringify({ path: 'README.md' }),
+          }
+        : undefined;
+    const events = output ? functionCallStream(output) : messageStream('Arquivo lido.');
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of events) {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+    response.end();
+  });
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Tool output model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  const definition = {
+    id: 'filesystem.read',
+    type: 'tool' as const,
+    summary: 'ler o conteudo de um arquivo',
+    description: 'ler o arquivo completo',
+    schema: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  };
+  const toolOutputRuntime: CapabilityRuntime = {
+    discover: async () => [],
+    listTools: async () => [],
+    getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    execute: async (_id, target, arguments_) => ({
+      target,
+      status: 'success',
+      error: '',
+      output: { path: arguments_.path, content: 'conteudo real' },
+    }),
+  };
+
+  const events: Array<{ type: string; output?: string; target?: string }> = [];
+  try {
+    await runAtlas('Leia o README.md.', {
+      apiKey: 'atlas...ey',
+      baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+      conversationId: 'normalized-tool-output-conversation',
+      capabilityRuntime: toolOutputRuntime,
+      onEvent: (event) => {
+        if (event.type === 'tool.completed') {
+          events.push({ type: event.type, output: event.output });
+        }
+        if (event.type === 'tool.started') {
+          events.push({ type: event.type, target: event.target });
+        }
+      },
+    });
+  } finally {
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+  }
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.target, 'README.md');
+  const output = events[1]?.output;
+  assert.ok(output);
+  // O output publico e o resultado decodificado, sem o wrapper aninhado do SDK.
+  assert.deepEqual(JSON.parse(output), {
+    target: 'local',
+    status: 'success',
+    error: '',
+    output: { path: 'README.md', content: 'conteudo real' },
+  });
+  assert.doesNotMatch(output, /\\"target\\"/);
+});
+
 test('session metadata follows the global Atlas config', async () => {
   const model = await startStreamingModelServer();
   const socketPath = `/tmp/atlas-runtime-config-${randomUUID()}.sock`;

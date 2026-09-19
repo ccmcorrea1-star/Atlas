@@ -167,13 +167,21 @@ pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
 fn status_line(app: &App) -> Option<Line<'static>> {
     match app.status() {
         crate::app::Status::Ready => None,
-        crate::app::Status::Thinking | crate::app::Status::Executing => Some(
-            Line::from(Span::styled(
-                format!("• Working ({}s • esc to interrupt)", app.working_seconds()),
-                Style::default(),
-            ))
-            .dim(),
-        ),
+        crate::app::Status::Thinking | crate::app::Status::Executing => {
+            let activity = app
+                .current_activity()
+                .unwrap_or_else(|| "Thinking".to_owned());
+            Some(
+                Line::from(Span::styled(
+                    format!(
+                        "• {activity} ({} • esc to interrupt)",
+                        format_duration(app.working_seconds())
+                    ),
+                    Style::default(),
+                ))
+                .dim(),
+            )
+        }
         crate::app::Status::Error(message) => Some(
             Line::from(Span::styled(
                 format!("! {message}"),
@@ -181,6 +189,20 @@ fn status_line(app: &App) -> Option<Line<'static>> {
             ))
             .dim(),
         ),
+    }
+}
+
+/// Formata a duração do turno em unidades compactas: `42s`, `1m 13s`, `1h 4m`.
+fn format_duration(total_seconds: u64) -> String {
+    let seconds = total_seconds % 60;
+    let minutes = (total_seconds / 60) % 60;
+    let hours = total_seconds / 3600;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -313,21 +335,70 @@ mod tests {
         );
     }
 
-    #[test]
-    fn renders_working_status_line_from_runtime_turn_state() {
-        let mut app = App::new("footer-status".to_owned());
-        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+    fn status_output(app: &App) -> String {
         let area = Rect::new(0, 0, 80, 1);
         let mut buffer = Buffer::empty(area);
-
-        super::render_status_line(&app, area, &mut buffer);
-        let output = buffer
+        super::render_status_line(app, area, &mut buffer);
+        buffer
             .content
             .iter()
             .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(output.contains("Working ("));
+            .collect::<String>()
+    }
+
+    #[test]
+    fn renders_thinking_status_line_from_runtime_turn_state() {
+        let mut app = App::new("footer-status".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+
+        let output = status_output(&app);
+        assert!(output.contains("• Thinking ("));
         assert!(output.contains("esc to interrupt"));
+        assert!(!output.contains("Working"));
+    }
+
+    #[test]
+    fn renders_tool_activity_in_the_status_line() {
+        let mut app = App::new("footer-activity".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: Some("tsconfig.json".to_owned()),
+        });
+
+        assert!(status_output(&app).contains("• Reading tsconfig.json ("));
+
+        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: None,
+        });
+        assert!(status_output(&app).contains("• Thinking ("));
+    }
+
+    #[test]
+    fn renders_execution_activity_in_the_status_line() {
+        let mut app = App::new("footer-exec-activity".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+            execution_id: "exec-1".to_owned(),
+            capability: "shell.exec".to_owned(),
+            program: "sh".to_owned(),
+            args: vec!["-c".to_owned(), "npm test".to_owned()],
+            cwd: None,
+            target: None,
+        });
+
+        assert!(status_output(&app).contains("• Running npm test ("));
+    }
+
+    #[test]
+    fn formats_turn_duration_in_compact_units() {
+        assert_eq!(super::format_duration(0), "0s");
+        assert_eq!(super::format_duration(42), "42s");
+        assert_eq!(super::format_duration(73), "1m 13s");
+        assert_eq!(super::format_duration(3_840), "1h 4m");
     }
 
     #[test]
@@ -346,7 +417,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(output.contains("! runtime unavailable"));
-        assert!(!output.contains("Working ("));
+        assert!(!output.contains("Thinking ("));
     }
 
     #[test]

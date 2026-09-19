@@ -260,6 +260,7 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
       return runtimeEvent(request, 'tool.started', {
         tool_id: event.toolId,
         name: event.toolName,
+        ...(event.target === undefined ? {} : { target: event.target }),
       });
     case 'tool.completed':
       return runtimeEvent(request, 'tool.completed', {

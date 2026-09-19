@@ -73,12 +73,7 @@ impl ExecCell {
         }
 
         if let Some(output) = self.output() {
-            for raw in output.transcript_lines() {
-                lines.extend(wrap_line(
-                    crate::markdown::render_ansi_line(raw.as_ref(), Style::default()),
-                    usize::from(width),
-                ));
-            }
+            lines.extend(transcript_output_lines(output, width));
 
             if let Some(duration_ms) = self.duration_ms() {
                 let mut result = if self.succeeded() {
@@ -203,6 +198,26 @@ fn output_lines(
         width,
         omitted_hint,
         Some(Line::from("    ")),
+    )
+}
+
+fn transcript_output_lines(output: &CommandOutput, width: u16) -> Vec<Line<'static>> {
+    let (total, retained) = output.line_counts();
+    let rendered = output
+        .transcript_lines()
+        .flat_map(|raw| {
+            wrap_line(
+                crate::markdown::render_ansi_line(raw.as_ref(), Style::default()),
+                usize::from(width.max(1)),
+            )
+        })
+        .collect::<Vec<_>>();
+    ExecCell::truncate_lines_middle(
+        &rendered,
+        OUTPUT_MAX_LINES,
+        width,
+        Some(total.saturating_sub(retained)),
+        None,
     )
 }
 
@@ -434,5 +449,30 @@ mod tests {
         assert!(text.iter().any(|line| line.contains("line-0")));
         assert!(text.iter().any(|line| line.contains("line-19")));
         assert!(text.iter().any(|line| line.contains("+")));
+    }
+
+    #[test]
+    fn transcript_summarizes_large_aggregate_output() {
+        let mut cell = ExecCell::new("execution".to_owned(), "bash".to_owned(), Vec::new());
+        cell.complete(
+            (0..20)
+                .map(|index| format!("line-{index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            String::new(),
+            0,
+            1,
+            "success".to_owned(),
+        );
+
+        let rendered = cell
+            .transcript_lines(80)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(rendered.len() <= OUTPUT_MAX_LINES + 2);
+        assert!(rendered.iter().any(|line| line.contains("line-0")));
+        assert!(rendered.iter().any(|line| line.contains("line-19")));
+        assert!(rendered.iter().any(|line| line.contains("transcript")));
     }
 }

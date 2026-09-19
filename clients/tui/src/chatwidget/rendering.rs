@@ -226,8 +226,68 @@ mod tests {
             .collect::<String>();
 
         assert!(screen.contains("Running node --version"));
-        assert!(screen.contains("Working ("));
+        assert!(screen.contains("Running node --version ("));
         assert!(screen.contains("Ask Atlas to do anything"));
+    }
+
+    #[test]
+    fn groups_concurrent_executions_into_one_compact_card() {
+        let mut app = App::new("render-group".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        for (id, command) in [
+            ("exec-1", "npm test"),
+            ("exec-2", "npm run lint"),
+            ("exec-3", "npm run typecheck"),
+        ] {
+            app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+                execution_id: id.to_owned(),
+                capability: "shell.exec".to_owned(),
+                program: "sh".to_owned(),
+                args: vec!["-c".to_owned(), command.to_owned()],
+                cwd: None,
+                target: None,
+            });
+        }
+
+        let screen = screen_rows(&mut app, 100, 37).join("\n");
+        assert!(screen.contains("• Running 3 commands"));
+        assert!(screen.contains("npm test"));
+        assert!(screen.contains("npm run lint"));
+        assert!(screen.contains("npm run typecheck"));
+        assert!(!screen.contains("• Running npm test"));
+    }
+
+    #[test]
+    fn keeps_completed_parallel_executions_in_one_history_card() {
+        let mut app = App::new("render-group-complete".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        for (id, command) in [("exec-1", "npm test"), ("exec-2", "npm run lint")] {
+            app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
+                execution_id: id.to_owned(),
+                capability: "shell.exec".to_owned(),
+                program: "sh".to_owned(),
+                args: vec!["-c".to_owned(), command.to_owned()],
+                cwd: None,
+                target: None,
+            });
+        }
+        for id in ["exec-1", "exec-2"] {
+            app.handle_runtime_event(RuntimeEvent::ExecutionCompleted {
+                execution_id: id.to_owned(),
+                capability: "shell.exec".to_owned(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: 42,
+                status: "success".to_owned(),
+            });
+        }
+
+        let screen = screen_rows(&mut app, 100, 37).join("\n");
+        assert!(screen.contains("• Ran 2 commands"));
+        assert_eq!(screen.matches("commands").count(), 1);
+        assert!(!screen.contains("Running 2 commands"));
+        assert!(screen.contains("npm run lint"));
     }
 
     #[test]
@@ -240,7 +300,7 @@ mod tests {
 
         let screen = screen_rows(&mut app, 80, 24).join("\n");
         assert!(screen.contains("! provider unavailable"));
-        assert!(!screen.contains("Working ("));
+        assert!(!screen.contains("Thinking ("));
     }
 
     #[test]
@@ -289,7 +349,7 @@ mod tests {
         for (width, height) in [(80, 24), (120, 40), (80, 24)] {
             let rows = screen_rows(&mut app, width, height);
             assert_eq!(rows.len(), usize::from(height));
-            assert!(rows.iter().any(|row| row.contains("Working (")));
+            assert!(rows.iter().any(|row| row.contains("Thinking (")));
             assert!(
                 rows.iter()
                     .any(|row| row.contains("Ask Atlas to do anything"))

@@ -15,6 +15,7 @@ use std::time::Instant;
 use self::streaming::MarkdownStreamState;
 use crate::app::Status;
 use crate::exec_cell::ExecCell;
+use crate::exec_cell::RunningGroupCell;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::ErrorCell;
@@ -32,6 +33,7 @@ pub(crate) struct ChatWidget {
     cells: Vec<Box<dyn HistoryCell>>,
     active_cells: Vec<Box<dyn HistoryCell>>,
     status: Status,
+    activity: Option<String>,
     turn_active: bool,
     context_usage: Option<ContextUsage>,
     active_revision: u64,
@@ -46,6 +48,7 @@ impl ChatWidget {
             cells: Vec::new(),
             active_cells: Vec::new(),
             status: Status::Ready,
+            activity: None,
             turn_active: false,
             context_usage: None,
             active_revision: 0,
@@ -87,6 +90,52 @@ impl ChatWidget {
         self.turn_started_at
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0)
+    }
+
+    // A atividade e derivada do estado do turno; execucoes concorrentes viram
+    // um resumo compacto para nao competir com o restante do footer.
+    pub(crate) fn current_activity(&self) -> Option<String> {
+        let executions = self.active_running_execution_activities();
+        if !executions.is_empty() {
+            return match executions.len() {
+                1 => Some(executions[0].clone()),
+                count => Some(format!("Running {count} commands")),
+            };
+        }
+
+        let tools = self.active_running_tool_activities();
+        match tools.len() {
+            0 => self.activity.clone(),
+            1 => Some(tools[0].clone()),
+            count => Some(format!("Using {count} tools")),
+        }
+    }
+
+    fn active_running_execution_activities(&self) -> Vec<String> {
+        let mut activities = Vec::new();
+        for cell in &self.active_cells {
+            if let Some(group) = cell.as_any().downcast_ref::<RunningGroupCell>() {
+                activities.extend(group.running_activities());
+            } else if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>()
+                && exec.is_running()
+            {
+                activities.push(exec.activity());
+            }
+        }
+        activities
+    }
+
+    fn active_running_tool_activities(&self) -> Vec<String> {
+        self.active_cells
+            .iter()
+            .filter_map(|cell| cell.as_any().downcast_ref::<ToolCell>())
+            .filter(|tool| tool.is_running())
+            .map(ToolCell::activity)
+            .collect()
+    }
+
+    fn has_running_exec(&self) -> bool {
+        !self.active_running_execution_activities().is_empty()
     }
 
     pub(crate) fn tick(&mut self) {
@@ -205,10 +254,26 @@ impl ChatWidget {
 
     fn find_active_exec_mut(&mut self, id: &str) -> Option<&mut ExecCell> {
         self.active_cells.iter_mut().rev().find_map(|cell| {
-            cell.as_any_mut()
-                .downcast_mut::<ExecCell>()
-                .filter(|exec| exec.execution_id() == id)
+            let any = cell.as_any_mut();
+            if any.is::<ExecCell>() {
+                let exec = any.downcast_mut::<ExecCell>().expect("checked ExecCell");
+                return (exec.execution_id() == id).then_some(exec);
+            }
+            if any.is::<RunningGroupCell>() {
+                let group = any
+                    .downcast_mut::<RunningGroupCell>()
+                    .expect("checked RunningGroupCell");
+                return group.exec_mut(id);
+            }
+            None
         })
+    }
+
+    fn active_exec_group_mut(&mut self) -> Option<&mut RunningGroupCell> {
+        self.active_cells
+            .iter_mut()
+            .rev()
+            .find_map(|cell| cell.as_any_mut().downcast_mut::<RunningGroupCell>())
     }
 
     fn find_tool_mut(&mut self, id: &str) -> Option<&mut ToolCell> {
@@ -321,6 +386,21 @@ impl ChatWidget {
     }
 
     fn commit_active_exec(&mut self, id: &str) {
+        // O grupo so vai para o historico quando todas as execucoes terminam.
+        let completed_group = self
+            .active_cells
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, cell)| {
+                let group = cell.as_any_mut().downcast_mut::<RunningGroupCell>()?;
+                group.exec_mut(id)?;
+                group.all_completed().then_some(index)
+            });
+        if let Some(index) = completed_group {
+            self.cells.push(self.active_cells.remove(index));
+            self.bump_active_revision();
+            return;
+        }
         if let Some(index) = self.active_cells.iter().rposition(|cell| {
             cell.as_any()
                 .downcast_ref::<ExecCell>()

@@ -48,6 +48,7 @@ pub enum RuntimeEvent {
     ToolStarted {
         tool_id: String,
         tool_name: String,
+        target: Option<String>,
     },
     ToolCompleted {
         tool_id: String,
@@ -449,6 +450,10 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
         "tool.started" => Ok(Some(RuntimeEvent::ToolStarted {
             tool_id: required_string(&data, "tool_id")?,
             tool_name: required_string(&data, "name")?,
+            target: data
+                .get("target")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
         })),
         "tool.completed" => Ok(Some(RuntimeEvent::ToolCompleted {
             tool_id: required_string(&data, "tool_id")?,
@@ -679,7 +684,7 @@ mod tests {
     fn parses_tool_lifecycle_payload_without_dropping_identity_or_output() {
         let started = parse_runtime_event(envelope(
             "tool.started",
-            json!({"tool_id": "tool-1", "name": "search"}),
+            json!({"tool_id": "tool-1", "name": "search", "target": "src"}),
         ))
         .expect("tool.started should parse")
         .expect("known event");
@@ -688,6 +693,7 @@ mod tests {
             RuntimeEvent::ToolStarted {
                 tool_id: "tool-1".to_owned(),
                 tool_name: "search".to_owned(),
+                target: Some("src".to_owned()),
             }
         );
 

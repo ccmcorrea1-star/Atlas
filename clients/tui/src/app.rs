@@ -182,6 +182,10 @@ impl App {
         self.chatwidget.working_seconds()
     }
 
+    pub(crate) fn current_activity(&self) -> Option<String> {
+        self.chatwidget.current_activity()
+    }
+
     pub fn context_usage(&self) -> Option<ContextUsage> {
         self.chatwidget.context_usage()
     }

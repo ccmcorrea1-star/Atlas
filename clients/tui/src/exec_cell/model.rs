@@ -132,6 +132,10 @@ impl ExecCell {
         self.state
     }
 
+    pub(crate) fn is_running(&self) -> bool {
+        self.state == ExecState::Running
+    }
+
     pub(crate) fn complete(
         &mut self,
         stdout: String,
@@ -179,6 +183,10 @@ impl ExecCell {
 
     pub(crate) fn command(&self) -> String {
         crate::markdown::format_process_command(&self.program, &self.args)
+    }
+
+    pub(crate) fn activity(&self) -> String {
+        crate::capability_names::execution_activity(&self.program, &self.args)
     }
 
     pub(crate) fn succeeded(&self) -> bool {
