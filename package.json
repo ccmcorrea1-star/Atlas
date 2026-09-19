@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "build:client": "cargo build --locked --manifest-path clients/tui/Cargo.toml",
+    "sync:client": "cargo install --locked --path clients/tui --force",
     "build:lsp": "cargo build --locked --release --manifest-path src/capabilities/tools/lsp/Cargo.toml && node -e \"const fs=require('node:fs');const d='src/capabilities/tools/lsp/diagnostics/runtime';fs.rmSync(d,{force:true});fs.copyFileSync('src/capabilities/tools/lsp/target/release/atlas-lsp-runtime',d);fs.chmodSync(d,0o755)\"",
     "test:client": "cargo test --locked --manifest-path clients/tui/Cargo.toml",
     "build:web-search": "tsc src/capabilities/tools/web/search/search.ts --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --noEmitOnError --rootDir src/capabilities/tools/web/search --outDir .web-search-build && node -e \"const fs=require('node:fs');fs.copyFileSync('.web-search-build/search.js','src/capabilities/tools/web/search/runtime');fs.rmSync('.web-search-build',{recursive:true,force:true});fs.chmodSync('src/capabilities/tools/web/search/runtime',0o755)\"",
@@ -51,10 +52,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.2",
-    "eslint": "^9.39.5",
-    "eslint-config-prettier": "^10.1.8",
-    "prettier": "^3.9.6",
-    "tsx": "^4.23.13",
+    "@types/node": "^22.20.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.70.0"
   }
