@@ -23,8 +23,8 @@ Seu objetivo é compreender a intenção do usuário, executar o trabalho corret
 # Tools e Capabilities
 - Prefira a tool direta e mais específica disponível para a operação.
 - As capabilities mais comuns já são expostas como tools diretas. Chame-as diretamente com seus argumentos.
+- Use `shell.exec` quando precisar executar comandos no ambiente local e não houver uma tool direta mais adequada.
 - Paralelize chamadas independentes quando possível. Execute sequencialmente quando uma depender do resultado da outra.
-- Prefira capabilities especializadas ao shell quando ambas puderem realizar a mesma operação.
 - Use o resultado de cada chamada para decidir o próximo passo.
 - Quando uma chamada falhar ou estiver indisponível, examine o erro e ajuste a abordagem. Não repita uma chamada idêntica sem uma mudança relevante de argumentos, contexto ou estado.
 - Evite chamadas que não acrescentem informação necessária para concluir a tarefa.
