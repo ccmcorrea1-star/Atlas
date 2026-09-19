@@ -6,6 +6,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use serde_json::Value;
 use std::path::Path;
+use std::path::PathBuf;
 
 use super::HistoryCell;
 use super::plain_lines;
@@ -19,6 +20,9 @@ use crate::wrapping::wrap_text;
 const TOOL_SUMMARY_MAX_CHARS: usize = 120;
 const FILESYSTEM_DIFF_PREVIEW_MAX_CHARS: usize = 600;
 const FILESYSTEM_DIFF_PREVIEW_MAX_LINES: usize = 10;
+const DIFF_BLOCK_BACKGROUND: Color = Color::Rgb(28, 32, 38);
+const DIFF_ADDED_BACKGROUND: Color = Color::Rgb(26, 60, 38);
+const DIFF_REMOVED_BACKGROUND: Color = Color::Rgb(60, 30, 36);
 
 /// Atividade generica de tool do Runtime renderizada com a margem do Codex.
 #[derive(Debug)]
@@ -132,20 +136,6 @@ impl HistoryCell for ToolCell {
             return lines;
         }
         self.display_lines(width)
-    }
-
-    fn background_style(&self) -> Option<Style> {
-        if !self.completed {
-            return None;
-        }
-        let object = json_object(self.output.as_deref().unwrap_or_default())?;
-        if tool_status(Some(self.output.as_deref().unwrap_or_default())) == ToolStatus::Error {
-            return None;
-        }
-        let payload = filesystem_payload(&object);
-        filesystem_changes(&self.tool_name, payload)
-            .is_some()
-            .then(super::messages::user_message_style)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -354,7 +344,7 @@ fn generic_summary(
     output: &str,
 ) -> Option<String> {
     if let Some(object) = object {
-        for field in ["error", "message", "summary", "result", "output"] {
+        for field in ["error", "message", "summary", "output"] {
             if let Some(value) = string_field(object, field).filter(|value| !value.is_empty()) {
                 return Some(short_summary(&value));
             }
@@ -477,7 +467,7 @@ enum FilesystemDiffItem {
 fn filesystem_change_lines(
     tool_name: &str,
     output: &str,
-    _width: u16,
+    width: u16,
     transcript: bool,
 ) -> Option<Vec<Line<'static>>> {
     if !matches!(tool_name, "filesystem.patch") {
@@ -493,25 +483,38 @@ fn filesystem_change_lines(
     let mut diff_lines_shown = 0;
     let mut diff_chars_shown: usize = 0;
     let mut diff_lines_omitted = 0;
+    let width = width.max(1);
 
     for change in changes {
         let action = change.get("action").and_then(Value::as_str)?;
-        let action = match action {
-            "create" | "add" => "Created",
-            "edit" | "update" => "Edited",
-            "delete" | "remove" => "Deleted",
-            "move" => "Moved",
-            _ => return None,
-        };
+        if !matches!(
+            action,
+            "create" | "add" | "edit" | "update" | "delete" | "remove" | "move"
+        ) {
+            return None;
+        }
         let path = change.get("path").and_then(Value::as_str)?;
         let path = display_path(path);
-        let title = if action == "Moved" {
+        let title = if action == "move" {
             let destination = change.get("moved_to").and_then(Value::as_str)?;
-            format!("✓ {action} {path} → {}", display_path(destination))
+            format!("Patched {path} → {}", display_path(destination))
         } else {
-            format!("✓ {action} {path}")
+            format!("Patched {path}")
         };
-        lines.push(Line::from(title));
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(padded_diff_line(
+            vec![Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(DIFF_BLOCK_BACKGROUND)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            DIFF_BLOCK_BACKGROUND,
+            width,
+        ));
 
         let Some(diff) = change.get("diff").and_then(Value::as_str) else {
             continue;
@@ -520,18 +523,17 @@ fn filesystem_change_lines(
         if diff_items.is_empty() {
             continue;
         }
-        lines.push(Line::default());
+        let number_widths = diff_line_number_widths(&diff_items);
         for diff_item in diff_items {
-            let rendered = filesystem_diff_line(diff_item);
+            if !transcript && matches!(&diff_item, FilesystemDiffItem::Hunk(_)) {
+                continue;
+            }
+            let rendered = filesystem_diff_line(diff_item, number_widths, width);
             if transcript {
                 lines.push(rendered);
                 continue;
             }
-            let line_chars = rendered
-                .spans
-                .iter()
-                .map(|span| span.content.chars().count())
-                .sum::<usize>();
+            let line_chars = rendered_diff_line_width(&rendered);
             if diff_lines_shown < FILESYSTEM_DIFF_PREVIEW_MAX_LINES
                 && diff_chars_shown.saturating_add(line_chars) <= FILESYSTEM_DIFF_PREVIEW_MAX_CHARS
             {
@@ -557,6 +559,12 @@ fn filesystem_diff_items(diff: &str) -> Vec<FilesystemDiffItem> {
     let mut new_number = 1;
     let mut items = Vec::new();
     for source in diff.lines() {
+        if source.starts_with("diff --git ")
+            || source.starts_with("--- ")
+            || source.starts_with("+++ ")
+        {
+            continue;
+        }
         if source.starts_with("@@") {
             if let Some((old_start, new_start)) = diff_hunk_starts(source) {
                 old_number = old_start;
@@ -613,6 +621,33 @@ fn filesystem_diff_items(diff: &str) -> Vec<FilesystemDiffItem> {
     items
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DiffLineNumberWidths {
+    old: usize,
+    new: usize,
+}
+
+fn diff_line_number_widths(items: &[FilesystemDiffItem]) -> DiffLineNumberWidths {
+    let mut widths = DiffLineNumberWidths { old: 3, new: 3 };
+    for item in items {
+        let FilesystemDiffItem::Line {
+            old_number,
+            new_number,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if let Some(number) = old_number {
+            widths.old = widths.old.max(number.to_string().len());
+        }
+        if let Some(number) = new_number {
+            widths.new = widths.new.max(number.to_string().len());
+        }
+    }
+    widths
+}
+
 fn diff_hunk_starts(header: &str) -> Option<(usize, usize)> {
     let ranges = header.strip_prefix("@@")?.split("@@").next()?;
     let mut parts = ranges.split_whitespace();
@@ -626,12 +661,23 @@ fn diff_range_start(range: &str) -> Option<usize> {
     start.parse().ok()
 }
 
-fn filesystem_diff_line(item: FilesystemDiffItem) -> Line<'static> {
+fn filesystem_diff_line(
+    item: FilesystemDiffItem,
+    number_widths: DiffLineNumberWidths,
+    width: u16,
+) -> Line<'static> {
     match item {
-        FilesystemDiffItem::Hunk(header) => Line::from(Span::styled(
-            format!("  {header}"),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-        )),
+        FilesystemDiffItem::Hunk(header) => padded_diff_line(
+            vec![Span::styled(
+                format!("  {header}"),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(DIFF_BLOCK_BACKGROUND)
+                    .add_modifier(Modifier::DIM),
+            )],
+            DIFF_BLOCK_BACKGROUND,
+            width,
+        ),
         FilesystemDiffItem::Line {
             marker,
             old_number,
@@ -640,23 +686,68 @@ fn filesystem_diff_line(item: FilesystemDiffItem) -> Line<'static> {
         } => {
             let old = old_number.map_or_else(String::new, |number| number.to_string());
             let new = new_number.map_or_else(String::new, |number| number.to_string());
-            let gutter = format!("  {old:>3} {new:>3} │ ");
+            let gutter = format!(
+                "  {old:>old_width$} {new:>new_width$} │ ",
+                old_width = number_widths.old,
+                new_width = number_widths.new,
+            );
             let content = if marker == ' ' {
                 text
             } else {
                 format!("{marker}{text}")
             };
-            let content_style = match marker {
-                '+' => Style::default().fg(Color::Green),
-                '-' => Style::default().fg(Color::Red),
-                _ => Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+            let line_background = match marker {
+                '+' => DIFF_ADDED_BACKGROUND,
+                '-' => DIFF_REMOVED_BACKGROUND,
+                _ => DIFF_BLOCK_BACKGROUND,
             };
-            Line::from(vec![
-                Span::styled(gutter, Style::default().fg(Color::Gray).dim()),
-                Span::styled(content, content_style),
-            ])
+            let content_style = match marker {
+                '+' => Style::default().fg(Color::Green).bg(line_background),
+                '-' => Style::default().fg(Color::Red).bg(line_background),
+                _ => Style::default()
+                    .fg(Color::Gray)
+                    .bg(line_background)
+                    .add_modifier(Modifier::DIM),
+            };
+            padded_diff_line(
+                vec![
+                    Span::styled(
+                        gutter,
+                        Style::default().fg(Color::Gray).bg(line_background).dim(),
+                    ),
+                    Span::styled(content, content_style),
+                ],
+                line_background,
+                width,
+            )
         }
     }
+}
+
+fn padded_diff_line(mut spans: Vec<Span<'static>>, background: Color, width: u16) -> Line<'static> {
+    if width < u16::MAX {
+        let used = spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum::<usize>();
+        let padding = usize::from(width).saturating_sub(used);
+        if padding > 0 {
+            spans.push(Span::styled(
+                " ".repeat(padding),
+                Style::default().bg(background),
+            ));
+        }
+    }
+    Line::from(spans).style(Style::default().bg(background))
+}
+
+fn rendered_diff_line_width(line: &Line<'static>) -> usize {
+    let text = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    display_width(text.trim_end())
 }
 
 fn filesystem_payload(object: &serde_json::Map<String, Value>) -> &serde_json::Map<String, Value> {
@@ -690,8 +781,8 @@ fn display_path(path: &str) -> String {
     if !path.is_absolute() {
         return sanitize_terminal_text(path.to_string_lossy().as_ref());
     }
-    if let Ok(current_dir) = std::env::current_dir()
-        && let Ok(relative) = path.strip_prefix(current_dir)
+    if let Some(workspace) = workspace_root()
+        && let Ok(relative) = path.strip_prefix(workspace)
     {
         return sanitize_terminal_text(relative.to_string_lossy().as_ref());
     }
@@ -699,6 +790,13 @@ fn display_path(path: &str) -> String {
         || "<workspace>".to_owned(),
         |name| sanitize_terminal_text(name.to_string_lossy().as_ref()),
     )
+}
+
+fn workspace_root() -> Option<PathBuf> {
+    std::env::var_os("ATLAS_RUNTIME_CWD")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::current_dir().ok())
 }
 
 #[derive(Debug)]
@@ -755,12 +853,18 @@ impl HistoryCell for ErrorCell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Paragraph;
+    use ratatui::widgets::Widget;
 
     fn line_text(line: &Line<'static>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
-            .collect()
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
     }
 
     fn rendered(cell: &ToolCell, width: u16) -> Vec<String> {
@@ -916,12 +1020,7 @@ mod tests {
                         "diff": "@@\n+Arquivo de teste.\n"
                     }]
                 }),
-                vec![
-                    "✓ Created teste.txt",
-                    "",
-                    "  @@",
-                    "        1 │ +Arquivo de teste.",
-                ],
+                vec!["Patched teste.txt", "        1 │ +Arquivo de teste."],
             ),
             (
                 serde_json::json!({
@@ -933,9 +1032,7 @@ mod tests {
                     }]
                 }),
                 vec![
-                    "✓ Edited teste.txt",
-                    "",
-                    "  @@ -1,1 +1,2 @@",
+                    "Patched teste.txt",
                     "    1   1 │ Arquivo de teste.",
                     "        2 │ +Segunda edição realizada.",
                 ],
@@ -950,9 +1047,7 @@ mod tests {
                     }]
                 }),
                 vec![
-                    "✓ Deleted teste.txt",
-                    "",
-                    "  @@",
+                    "Patched teste.txt",
                     "    1     │ -Arquivo de teste.",
                     "    2     │ -Segunda edição realizada.",
                 ],
@@ -967,7 +1062,7 @@ mod tests {
                         "diff": ""
                     }]
                 }),
-                vec!["✓ Moved teste.txt → docs/teste.txt"],
+                vec!["Patched teste.txt → docs/teste.txt"],
             ),
         ];
 
@@ -999,6 +1094,14 @@ mod tests {
     }
 
     #[test]
+    fn renders_workspace_paths_without_the_absolute_prefix() {
+        let workspace = workspace_root().expect("workspace root");
+        let path = workspace.join("src").join("main.rs");
+
+        assert_eq!(display_path(&path.to_string_lossy()), "src/main.rs");
+    }
+
+    #[test]
     fn styles_filesystem_diff_blocks_and_line_kinds() {
         let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
         cell.complete(Some(
@@ -1013,15 +1116,87 @@ mod tests {
             .to_string(),
         ));
 
-        assert_eq!(
-            cell.background_style().and_then(|style| style.bg),
-            Some(Color::Rgb(51, 51, 51))
-        );
+        assert!(cell.background_style().is_none());
         let lines = cell.display_lines(100);
-        assert_eq!(lines[4].spans[1].style.fg, Some(Color::Red));
-        assert_eq!(lines[5].spans[1].style.fg, Some(Color::Green));
-        assert!(lines[2].spans[0].style.add_modifier.contains(Modifier::DIM));
-        assert!(lines[3].spans[1].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(lines[3].spans[1].style.fg, Some(Color::Green));
+        assert_eq!(lines[2].spans[1].style.bg, Some(Color::Rgb(60, 30, 36)));
+        assert_eq!(lines[3].spans[1].style.bg, Some(Color::Rgb(26, 60, 38)));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(28, 32, 38)));
+        assert!(lines[1].spans[1].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn fills_only_the_visual_diff_block_background() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [{
+                    "action": "edit",
+                    "path": "src/main.rs",
+                    "diff": "@@ -2,2 +2,2 @@\n context\n-old\n+new\n"
+                }]
+            })
+            .to_string(),
+        ));
+
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(cell.display_lines(area.width)).render(area, &mut buffer);
+
+        assert_eq!(buffer[(0, 0)].bg, DIFF_BLOCK_BACKGROUND);
+        assert_eq!(buffer[(39, 0)].bg, DIFF_BLOCK_BACKGROUND);
+        assert_eq!(buffer[(0, 2)].bg, DIFF_REMOVED_BACKGROUND);
+        assert_eq!(buffer[(39, 3)].bg, DIFF_ADDED_BACKGROUND);
+    }
+
+    #[test]
+    fn keeps_line_number_columns_aligned_for_large_files() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [{
+                    "action": "edit",
+                    "path": "src/main.rs",
+                    "diff": "@@ -998,3 +1000,3 @@\n context\n-old\n+new\n"
+                }]
+            })
+            .to_string(),
+        ));
+
+        let lines = rendered(&cell, 100);
+        assert_eq!(lines[1], "  998 1000 │ context");
+        assert_eq!(lines[2], "  999      │ -old");
+        assert_eq!(lines[3], "      1001 │ +new");
+    }
+
+    #[test]
+    fn ignores_unified_file_headers_inside_a_patch_block() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [{
+                    "action": "edit",
+                    "path": "src/main.rs",
+                    "diff": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+                }]
+            })
+            .to_string(),
+        ));
+
+        let lines = rendered(&cell, 100);
+        assert!(!lines.iter().any(|line| line.contains("a/src/main.rs")));
+        assert!(lines.iter().any(|line| line.contains("-old")));
+        assert!(lines.iter().any(|line| line.contains("+new")));
     }
 
     #[test]
@@ -1061,7 +1236,15 @@ mod tests {
         ));
 
         let preview = rendered(&cell, 100);
-        assert!(preview.iter().any(|line| line.contains("diff lines omitted")));
+        assert!(!preview.iter().any(|line| line.contains("@@")));
+        assert!(
+            preview
+                .iter()
+                .any(|line| line.contains("diff lines omitted"))
+        );
+        assert!(preview.iter().any(|line| line.contains("line-8")));
+        assert!(preview.iter().any(|line| line.contains("line-9")));
+        assert!(!preview.iter().any(|line| line.contains("line-10")));
         assert!(!preview.iter().any(|line| line.contains("line-39")));
 
         let transcript = cell
@@ -1069,7 +1252,62 @@ mod tests {
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
+        assert!(transcript.iter().any(|line| line == "  @@"));
         assert!(transcript.iter().any(|line| line.contains("line-39")));
+    }
+
+    #[test]
+    fn renders_one_patched_block_per_file() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [
+                    {
+                        "action": "edit",
+                        "path": "src/main.cpp",
+                        "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    },
+                    {
+                        "action": "edit",
+                        "path": "src/util.cpp",
+                        "diff": "@@ -1,1 +1,1 @@\n-old util\n+new util\n"
+                    }
+                ]
+            })
+            .to_string(),
+        ));
+
+        assert_eq!(
+            rendered(&cell, 100),
+            [
+                "Patched src/main.cpp",
+                "    1     │ -old",
+                "        1 │ +new",
+                "",
+                "Patched src/util.cpp",
+                "    1     │ -old util",
+                "        1 │ +new util",
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshots_compact_patched_diff_blocks() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [{
+                    "action": "edit",
+                    "path": "src/main.cpp",
+                    "diff": "@@ -1,3 +1,3 @@\n #include <iostream>\n-int main() {\n+int main(int argc) {\n return 0;\n"
+                }]
+            })
+            .to_string(),
+        ));
+
+        insta::assert_snapshot!(rendered(&cell, 80).join("\n"));
     }
 
     #[test]
@@ -1087,6 +1325,19 @@ mod tests {
         assert_eq!(success_lines, ["• Report ✓"]);
         assert!(!success_lines.iter().any(|line| line.contains("secret")));
         assert!(!success_lines.iter().any(|line| line.contains("status")));
+
+        let mut structured = ToolCell::new("tool-4".to_owned(), "custom.report".to_owned());
+        structured.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "result": "Structured result",
+                "data": {"secret": "do not render"}
+            })
+            .to_string(),
+        ));
+        let structured_lines = rendered(&structured, 100);
+        assert_eq!(structured_lines, ["• Report ✓"]);
+        assert!(!structured_lines.join("\n").contains("Structured result"));
 
         let mut array_result = ToolCell::new("tool-3".to_owned(), "custom.report".to_owned());
         array_result.complete(Some("[\"first\",\"second\"]".to_owned()));
