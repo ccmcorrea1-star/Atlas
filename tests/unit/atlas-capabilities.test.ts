@@ -133,6 +133,159 @@ function tools(request: RequestBody): RequestBody[] {
   return (request.tools as RequestBody[] | undefined) ?? [];
 }
 
+// As core tools vem do Registry, na ordem declarada em atlas.ts.
+const materializedToolNames = [
+  'filesystem_read',
+  'filesystem_list',
+  'filesystem_search',
+  'filesystem_write',
+  'filesystem_edit',
+  'process_exec',
+  'shell_exec',
+  'system_info',
+  'lsp_diagnostics',
+  'git_status',
+  'git_diff',
+];
+const baseToolNames = ['list_tools', 'discover', 'describe', 'execute'];
+
+test('materializes core capabilities as direct tools from the registry', async () => {
+  const definition: CapabilityDefinition = {
+    id: 'filesystem.read',
+    type: 'tool',
+    summary: 'ler o conteudo de um arquivo',
+    description: 'ler o arquivo completo ou por intervalo de linhas',
+    schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        offset: { type: 'integer' },
+        limit: { type: 'integer' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  };
+  const executed: Array<{ id: string; arguments_: Record<string, unknown> }> = [];
+  const capabilityRuntime: CapabilityRuntime = {
+    discover: async () => [],
+    listTools: async () => [
+      { id: 'filesystem', type: 'group', summary: 'arquivos' },
+      {
+        id: definition.id,
+        type: definition.type,
+        summary: definition.summary,
+        group: 'filesystem',
+      },
+    ],
+    getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    execute: async (id, target, arguments_) => {
+      executed.push({ id, arguments_ });
+      return { target, status: 'success', error: '', output: { content: 'conteudo real' } };
+    },
+  };
+  // O modelo chama a tool direta e responde: dois round-trips, sem discover.
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber === 1
+        ? [
+            {
+              id: 'function-call-read',
+              type: 'function_call',
+              status: 'completed',
+              call_id: 'read-call',
+              name: 'filesystem_read',
+              arguments: JSON.stringify({ path: 'README.md' }),
+            },
+          ]
+        : [
+            {
+              id: 'final-read-message',
+              type: 'message',
+              status: 'completed',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Arquivo lido.', annotations: [] }],
+            },
+          ];
+    return responseEnvelope(requestNumber, input, output);
+  });
+
+  try {
+    const result = await runAtlas('Leia o README.md.', {
+      apiKey: 'atlas...ey',
+      baseURL: server.baseURL,
+      conversationId: 'materialized-tools-conversation',
+      capabilityRuntime,
+    });
+
+    assert.equal(result.finalOutput, 'Arquivo lido.');
+    // Chamada direta: nenhum list_tools/describe antes de executar.
+    assert.equal(server.requests.length, 2);
+    assert.deepEqual(executed, [{ id: 'filesystem.read', arguments_: { path: 'README.md' } }]);
+
+    const firstRequest = server.requests[0] as RequestBody;
+    const readTool = tools(firstRequest).find((tool) => tool.name === 'filesystem_read');
+    assert.ok(readTool);
+    const readParameters = readTool.parameters as RequestBody;
+    assert.deepEqual(Object.keys(readParameters.properties as RequestBody).sort(), [
+      'limit',
+      'offset',
+      'path',
+    ]);
+    assert.deepEqual(readParameters.required, ['path']);
+    assert.equal(readParameters.additionalProperties, false);
+    assert.equal(
+      readTool.description,
+      'ler o conteudo de um arquivo — ler o arquivo completo ou por intervalo de linhas',
+    );
+    // A capability materializada nao aparece no payload como schema do describe.
+    assert.doesNotMatch(JSON.stringify(firstRequest.input), /function-call-describe/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('exposes every core capability and keeps the base tools in the same payload', async () => {
+  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const capabilityRuntime = new NativeCapabilityRuntime();
+  const server = await startCapabilityAgentServer();
+
+  try {
+    await runAtlas('Execute node --version.', {
+      apiKey: 'atlas...ey',
+      baseURL: server.baseURL,
+      conversationId: 'materialized-catalog-conversation',
+      capabilityRuntime,
+    });
+
+    const firstRequest = server.requests[0] as RequestBody;
+    assert.deepEqual(
+      tools(firstRequest).map((tool) => tool.name),
+      [...materializedToolNames, ...baseToolNames],
+    );
+
+    // Schemas reais do Registry, sem copia manual em src/atlas.ts.
+    const readTool = tools(firstRequest).find((tool) => tool.name === 'filesystem_read');
+    assert.ok(readTool);
+    const readParameters = readTool.parameters as RequestBody;
+    assert.deepEqual(Object.keys(readParameters.properties as RequestBody).sort(), [
+      'limit',
+      'offset',
+      'path',
+    ]);
+    assert.deepEqual(readParameters.required, ['path']);
+    const statusTool = tools(firstRequest).find((tool) => tool.name === 'git_status');
+    assert.ok(statusTool);
+    assert.deepEqual(
+      Object.keys((statusTool.parameters as RequestBody).properties as RequestBody),
+      ['path'],
+    );
+  } finally {
+    await capabilityRuntime.close();
+    await server.close();
+  }
+});
+
 test('discovers, describes, and executes process.exec through base tools', async () => {
   const server = await startCapabilityAgentServer();
   const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
@@ -152,7 +305,7 @@ test('discovers, describes, and executes process.exec through base tools', async
     const firstRequest = server.requests[0] as RequestBody;
     assert.deepEqual(
       tools(firstRequest).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      [...materializedToolNames, ...baseToolNames],
     );
     const discoverTool = tools(firstRequest).find((tool) => tool.name === 'discover');
     assert.ok(discoverTool);
@@ -171,7 +324,7 @@ test('discovers, describes, and executes process.exec through base tools', async
     const secondRequest = server.requests[1] as RequestBody;
     assert.deepEqual(
       tools(secondRequest).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      [...materializedToolNames, ...baseToolNames],
     );
     assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar programa\\"/);
     assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
@@ -183,7 +336,7 @@ test('discovers, describes, and executes process.exec through base tools', async
     const thirdRequest = server.requests[2] as RequestBody;
     assert.deepEqual(
       tools(thirdRequest).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      [...materializedToolNames, ...baseToolNames],
     );
     const executeTool = tools(thirdRequest).find((tool) => tool.name === 'execute');
     assert.ok(executeTool);
@@ -205,7 +358,7 @@ test('discovers, describes, and executes process.exec through base tools', async
     );
     assert.deepEqual(
       tools(fourthRequest).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      [...materializedToolNames, ...baseToolNames],
     );
   } finally {
     await capabilityRuntime.close();
@@ -309,12 +462,12 @@ test('forwards streamed output from the native process capability', async () => 
   }
 });
 
-test('keeps capability schemas out of tools across conversation turns', async () => {
+test('keeps non-materialized capability schemas out of tools across conversation turns', async () => {
   const definition: CapabilityDefinition = {
-    id: 'process.exec',
+    id: 'sandbox.run',
     type: 'tool',
-    summary: 'executa processos',
-    description: 'executa um programa local diretamente, sem shell',
+    summary: 'executa um programa em sandbox',
+    description: 'executa um programa local em ambiente isolado',
     schema: {
       type: 'object',
       properties: {
@@ -398,7 +551,7 @@ test('keeps capability schemas out of tools across conversation turns', async ()
       conversationId: 'capability-continuation-conversation',
       capabilityRuntime,
     };
-    const firstResult = await runAtlas('O que process.exec faz?', options);
+    const firstResult = await runAtlas('O que sandbox.run faz?', options);
     const secondResult = await runAtlas('Agora testa com python.', options);
 
     assert.equal(firstResult.finalOutput, 'Capability described.');
@@ -412,9 +565,9 @@ test('keeps capability schemas out of tools across conversation turns', async ()
       tools(server.requests[2] as RequestBody).map((tool) => tool.name),
       ['list_tools', 'discover', 'describe', 'execute'],
     );
-    assert.doesNotMatch(JSON.stringify(tools(server.requests[2] as RequestBody)), /process\.exec/);
+    assert.doesNotMatch(JSON.stringify(tools(server.requests[2] as RequestBody)), /sandbox\.run/);
     assert.deepEqual(executed, [
-      { id: 'process.exec', arguments_: { program: 'python', args: ['--version'] } },
+      { id: 'sandbox.run', arguments_: { program: 'python', args: ['--version'] } },
     ]);
   } finally {
     await server.close();

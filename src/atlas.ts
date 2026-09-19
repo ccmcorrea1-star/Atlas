@@ -19,6 +19,7 @@ import {
 import { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
 import {
   createCapabilityRuntime,
+  type CapabilityDefinition,
   type CapabilityDiscoveryRequest,
   type CapabilityDiscoveryResult,
   type CapabilityExecutionOptions,
@@ -26,7 +27,28 @@ import {
 } from './capability-runtime.js';
 
 const ATLAS_INSTRUCTIONS =
-  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. Use list_tools to inspect the complete catalog or the tools in a group. Use discover only with a natural-language query to find usable capabilities by intent. Use describe for a known capability definition and execute with the capability id and arguments. A known capability does not need to be exposed as an individual Function Tool.';
+  'You are Atlas, a pragmatic coding agent. Give clear, concise answers and do not claim work you did not perform. The most common capabilities are already exposed as direct Function Tools: call them directly with their arguments instead of discovering or describing them. Use list_tools to inspect the complete catalog or the tools in a group. Use discover only with a natural-language query to find usable capabilities by intent, and use describe or execute with the capability id for the long tail that is not exposed as a direct tool.';
+
+// Capabilities com uso frequente que o Agent expoe como Function Tool direta.
+// O nome, a descricao e o schema vem sempre do Registry em tempo de execucao.
+export const MATERIALIZED_CAPABILITY_IDS = [
+  'filesystem.read',
+  'filesystem.list',
+  'filesystem.search',
+  'filesystem.write',
+  'filesystem.edit',
+  'process.exec',
+  'shell.exec',
+  'system.info',
+  'lsp.diagnostics',
+  'git.status',
+  'git.diff',
+] as const;
+
+// O provedor aceita apenas [a-zA-Z0-9_-] no nome da Function Tool.
+export function materializedToolName(capabilityId: string): string {
+  return capabilityId.replaceAll('.', '_');
+}
 
 // O Agent base define a identidade; cada turno recebe as tools base do Atlas.
 export const Atlas = new Agent({
@@ -43,6 +65,8 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
   capabilityRuntime?: CapabilityRuntime;
+  // Desligar mantem apenas o caminho generico (list_tools/discover/describe/execute).
+  coreTools?: boolean;
   onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
 };
 
@@ -117,6 +141,39 @@ function createRunner(options: OpenCodeGoProviderOptions): Runner {
     modelProvider: provider,
     tracingDisabled: true,
   });
+}
+
+// As definicoes nao mudam durante o processo: o cache evita uma ida ao Registry
+// por turno, e cada turno ainda monta as tools sobre o runtime com hooks.
+const materializedDefinitionCache = new WeakMap<
+  CapabilityRuntime,
+  Promise<CapabilityDefinition[]>
+>();
+
+function loadMaterializedDefinitions(
+  capabilityRuntime: CapabilityRuntime,
+): Promise<CapabilityDefinition[]> {
+  const cached = materializedDefinitionCache.get(capabilityRuntime);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const loading = Promise.all(
+    MATERIALIZED_CAPABILITY_IDS.map(async (id) => {
+      try {
+        const definition = await capabilityRuntime.getDefinition(id);
+        // Uma definicao de outro id nao materializa tool nenhuma.
+        return definition?.id === id ? definition : undefined;
+      } catch {
+        // Falha de Registry nao pode derrubar o caminho generico de execucao.
+        return undefined;
+      }
+    }),
+  ).then((definitions) =>
+    definitions.filter((item): item is CapabilityDefinition => item !== undefined),
+  );
+  materializedDefinitionCache.set(capabilityRuntime, loading);
+  return loading;
 }
 
 function getRuntimeKey(options: OpenCodeGoProviderOptions): string {
@@ -209,6 +266,49 @@ function executionTool(
             }),
       };
       const result = await capabilityRuntime.execute(id, 'local', arguments_, executionOptions);
+      return JSON.stringify(result);
+    },
+  };
+}
+
+// Function Tool direta para uma capability do Registry: mesmo Executor,
+// hooks e validacao de schema do caminho generico, sem discover/describe.
+function capabilityFunctionTool(
+  definition: CapabilityDefinition,
+  capabilityRuntime: CapabilityRuntime,
+  onOutput?: (
+    capabilityId: string,
+    executionId: string,
+    channel: 'stdout' | 'stderr',
+    delta: string,
+  ) => void | Promise<void>,
+): FunctionTool {
+  return {
+    type: 'function',
+    name: materializedToolName(definition.id),
+    // Resumo e descricao publicos vem do Registry; o schema e o do manifesto.
+    description: `${definition.summary} — ${definition.description}`,
+    parameters: definition.schema as FunctionTool['parameters'],
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input, details) => {
+      const arguments_ = parseObjectInput(input, definition.id);
+      const executionId = details?.toolCall?.callId;
+      const executionOptions: CapabilityExecutionOptions = {
+        signal: details?.signal,
+        ...(executionId === undefined || onOutput === undefined
+          ? {}
+          : {
+              onOutput: (channel, delta) => onOutput(definition.id, executionId, channel, delta),
+            }),
+      };
+      const result = await capabilityRuntime.execute(
+        definition.id,
+        'local',
+        arguments_,
+        executionOptions,
+      );
       return JSON.stringify(result);
     },
   };
@@ -328,6 +428,7 @@ function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
 
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
+  definitions: readonly CapabilityDefinition[],
   onOutput?: (
     capabilityId: string,
     executionId: string,
@@ -341,6 +442,10 @@ function createAtlasAgent(
     instructions: ATLAS_INSTRUCTIONS,
     model,
     tools: [
+      // Core tools materializadas primeiro; o long tail continua nos base tools.
+      ...definitions.map((definition) =>
+        capabilityFunctionTool(definition, capabilityRuntime, onOutput),
+      ),
       listToolsTool(capabilityRuntime),
       discoveryTool(capabilityRuntime),
       describeTool(capabilityRuntime),
@@ -414,7 +519,9 @@ function processExecArguments(item: Record<string, unknown>):
       cwd?: string;
     }
   | undefined {
-  const arguments_ = executeCall(item)?.arguments_;
+  // Aceita o caminho generico (id + arguments) e a tool direta (argumentos crus).
+  const direct = recordValue(decodedJsonValue(item.arguments));
+  const arguments_ = executeCall(item)?.arguments_ ?? direct;
   const program = stringValue(arguments_?.program);
   if (program === undefined) {
     return undefined;
@@ -484,6 +591,7 @@ async function publishRunEvent(
   onEvent: (event: AtlasRunEvent) => void | Promise<void>,
   fallbackMessageId: string,
   capabilityIdsByCallId: Map<string, string>,
+  capabilityIdByToolName: Map<string, string>,
 ): Promise<void> {
   if (event.type === 'raw_model_stream_event') {
     if (event.data.type !== 'output_text_delta') {
@@ -505,8 +613,11 @@ async function publishRunEvent(
   const item = event.item.rawItem as unknown as Record<string, unknown>;
   const agentToolName = stringValue(item.name);
   const toolId = stringValue(item.callId) ?? stringValue(item.call_id);
+  // Uma tool materializada carrega o id da capability no proprio nome.
+  const directCapabilityId =
+    agentToolName === undefined ? undefined : capabilityIdByToolName.get(agentToolName);
   const toolName =
-    (agentToolName === 'execute' ? executeCall(item)?.id : undefined) ??
+    (agentToolName === 'execute' ? executeCall(item)?.id : directCapabilityId) ??
     (toolId === undefined ? undefined : capabilityIdsByCallId.get(toolId));
 
   if (agentToolName === 'execute' && toolId !== undefined && toolName !== undefined) {
@@ -598,6 +709,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     abortSignal,
     onEvent,
     model: requestedModel,
+    coreTools = true,
     ...providerOptions
   } = options;
   const runtime = getAtlasRuntime(providerOptions);
@@ -605,8 +717,14 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   // Cada turno recebe um RetryGuard novo para permitir a mesma chamada apos falha.
   const turnRuntime = new HookableCapabilityRuntime(capabilityRuntime, new RetryGuard());
+  // As tools diretas sao montadas sobre o runtime do turno, com hooks e guard.
+  const definitions = coreTools ? await loadMaterializedDefinitions(capabilityRuntime) : [];
+  const capabilityIdByToolName = new Map(
+    definitions.map((definition) => [materializedToolName(definition.id), definition.id]),
+  );
   const agent = createAtlasAgent(
     turnRuntime,
+    definitions,
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {
@@ -640,7 +758,13 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
       const fallbackMessageId = randomUUID();
       const capabilityIdsByCallId = new Map<string, string>();
       for await (const event of streamedResult) {
-        await publishRunEvent(event, onEvent, fallbackMessageId, capabilityIdsByCallId);
+        await publishRunEvent(
+          event,
+          onEvent,
+          fallbackMessageId,
+          capabilityIdsByCallId,
+          capabilityIdByToolName,
+        );
       }
 
       // O iterador pode terminar antes da finalizacao interna do Runner.

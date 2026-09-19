@@ -379,6 +379,64 @@ async function startProcessStreamingModelServer(): Promise<{
   };
 }
 
+async function startDirectToolStreamingModelServer(): Promise<{
+  baseURL: string;
+  requests: WireMessage[];
+  close: () => Promise<void>;
+}> {
+  const requests: WireMessage[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage);
+
+    // Uma unica chamada de tool direta e a resposta final: sem discover/describe.
+    const output =
+      requests.length === 1
+        ? {
+            id: 'direct-execution-call',
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'direct-execution-call',
+            name: 'process_exec',
+            arguments: JSON.stringify({ program: 'node', args: ['--version'], cwd: '/tmp' }),
+          }
+        : undefined;
+    const events = output
+      ? functionCallStream(output)
+      : messageStream('Executed node --version: v22.x.x');
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of events) {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+    response.end();
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Direct tool model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    requests,
+    close: () =>
+      new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+      }),
+  };
+}
+
 async function startFailingStreamingModelServer(): Promise<{
   baseURL: string;
   close: () => Promise<void>;
@@ -758,6 +816,60 @@ test('publishes process execution lifecycle events over the public Unix protocol
       duration_ms: 120,
       status: 'success',
     });
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('executes a materialized core tool directly and publishes the capability lifecycle', async () => {
+  const model = await startDirectToolStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-direct-tool-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      baseURL: model.baseURL,
+      capabilityRuntime: processCapabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await sendTurn(socketPath, 'materialized-tool-conversation');
+
+    // A tool direta cobre o mesmo lifecycle publico do caminho generico.
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'session.updated',
+        'turn.started',
+        'execution.started',
+        'execution.completed',
+        'message.delta',
+        'message.completed',
+        'context.updated',
+        'turn.completed',
+      ],
+    );
+    assert.deepEqual(events[2]?.data, {
+      execution_id: 'direct-execution-call',
+      capability: 'process.exec',
+      program: 'node',
+      args: ['--version'],
+      cwd: '/tmp',
+      target: 'local',
+    });
+    assert.equal((events.at(-1)?.data as WireMessage).content, 'Executed node --version: v22.x.x');
+
+    // Um round-trip para a tool e outro para a resposta: sem list_tools/describe.
+    assert.equal(model.requests.length, 2);
+    const toolNames = ((model.requests[0]?.tools as WireMessage[] | undefined) ?? []).map(
+      (tool) => tool.name,
+    );
+    assert.equal(toolNames[0], 'process_exec');
+    assert.ok(toolNames.includes('list_tools'));
+    assert.doesNotMatch(JSON.stringify(model.requests[0]?.input), /"name":"(discover|describe)"/);
   } finally {
     await runtime.close();
     await model.close();

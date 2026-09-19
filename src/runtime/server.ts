@@ -310,6 +310,8 @@ async function runServer(): Promise<void> {
     atlasConfig: config,
     runOptions: {
       ...{ apiKey },
+      // ATLAS_CORE_TOOLS=0 mantem apenas o caminho generico, para A/B local.
+      coreTools: process.env.ATLAS_CORE_TOOLS !== '0',
     },
   });
   await server.listen();
