@@ -47,7 +47,7 @@ O Agent consulta o catálogo com `list_tools` e busca por intenção usando Disc
 
 ```text
 list_tools()
-list_tools({ group: "process" })
+list_tools({ group: "shell" })
 discover({ query: "logs de container" })
 ```
 
