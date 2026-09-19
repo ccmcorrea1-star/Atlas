@@ -37,6 +37,13 @@ de processo. [`command_runner.cpp`](../src/capabilities/core/command_runner.cpp)
 camada comum de comandos, incluindo captura de saída, timeout, código de saída e a distinção
 explícita de executável ausente.
 
+O bridge de capabilities em [`src/capabilities/runtime/bridge/`](../src/capabilities/runtime/bridge/)
+é um processo residente iniciado sob demanda por [`NativeCapabilityRuntime`](../src/capability-runtime.ts).
+Ele mantém `Registry` e `Executor` vivos e atende múltiplas requisições NDJSON pelo mesmo stdin,
+correlacionadas por `request_id`. O cliente TypeScript reutiliza o processo enquanto o runtime
+existir, reinicia após crash/EOF e preserva o streaming de `execution.output.delta`. Os runtimes
+individuais das capabilities continuam sendo processos por execução.
+
 A extensão transversal de execução fica em [`src/capability-hooks.ts`](../src/capability-hooks.ts):
 [`HookableCapabilityRuntime`](../src/capability-hooks.ts) decora qualquer `CapabilityRuntime` e
 aplica os pontos `before_execute` e `after_execute` sem alterar o contrato das capabilities.

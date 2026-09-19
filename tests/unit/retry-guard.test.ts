@@ -324,6 +324,7 @@ test('executes web.search without provider once and blocks the identical retry',
     assert.match(retryOutput, /already failed in this turn/);
     assert.match(retryOutput, /no search provider configured/);
   } finally {
+    await native.close();
     await server.close();
     if (savedProvider !== undefined) {
       process.env.ATLAS_WEB_SEARCH_COMMAND = savedProvider;

@@ -135,12 +135,15 @@ function tools(request: RequestBody): RequestBody[] {
 
 test('discovers, describes, and executes process.exec through base tools', async () => {
   const server = await startCapabilityAgentServer();
+  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const capabilityRuntime = new NativeCapabilityRuntime();
 
   try {
     const result = await runAtlas('Execute node --version.', {
       apiKey: 'atlas-capabilities-test-key',
       baseURL: server.baseURL,
       conversationId: 'capability-conversation',
+      capabilityRuntime,
     });
 
     assert.equal(result.finalOutput, `Executed node --version: ${process.version}`);
@@ -205,6 +208,7 @@ test('discovers, describes, and executes process.exec through base tools', async
       ['list_tools', 'discover', 'describe', 'execute'],
     );
   } finally {
+    await capabilityRuntime.close();
     await server.close();
   }
 });
@@ -274,31 +278,35 @@ test('lists the complete tool catalog and filters tools by group', async () => {
 test('forwards streamed output from the native process capability', async () => {
   const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
   const runtime = new NativeCapabilityRuntime();
-  const events: Array<{ channel: string; delta: string }> = [];
-  const result = await runtime.execute(
-    'process.exec',
-    'local',
-    {
-      program: '/bin/sh',
-      args: ['-c', 'printf out-one; sleep 0.04; printf err-one >&2; sleep 0.04; printf out-two'],
-    },
-    {
-      onOutput: (channel, delta) => {
-        events.push({ channel, delta });
+  try {
+    const events: Array<{ channel: string; delta: string }> = [];
+    const result = await runtime.execute(
+      'process.exec',
+      'local',
+      {
+        program: '/bin/sh',
+        args: ['-c', 'printf out-one; sleep 0.04; printf err-one >&2; sleep 0.04; printf out-two'],
       },
-    },
-  );
-  assert.deepEqual(
-    events.map((event) => event.channel),
-    ['stdout', 'stderr', 'stdout'],
-  );
-  assert.deepEqual(
-    events.map((event) => event.delta),
-    ['out-one', 'err-one', 'out-two'],
-  );
-  assert.equal(result.status, 'success');
-  assert.equal(result.stdout, 'out-oneout-two');
-  assert.equal(result.stderr, 'err-one');
+      {
+        onOutput: (channel, delta) => {
+          events.push({ channel, delta });
+        },
+      },
+    );
+    assert.deepEqual(
+      events.map((event) => event.channel),
+      ['stdout', 'stderr', 'stdout'],
+    );
+    assert.deepEqual(
+      events.map((event) => event.delta),
+      ['out-one', 'err-one', 'out-two'],
+    );
+    assert.equal(result.status, 'success');
+    assert.equal(result.stdout, 'out-oneout-two');
+    assert.equal(result.stderr, 'err-one');
+  } finally {
+    await runtime.close();
+  }
 });
 
 test('keeps capability schemas out of tools across conversation turns', async () => {

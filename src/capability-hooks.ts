@@ -86,6 +86,11 @@ export class HookableCapabilityRuntime implements CapabilityRuntime {
     return this.runtime.getDefinition(id);
   }
 
+  // Repassa o encerramento para o runtime decorado, quando ele for persistente.
+  public close(): Promise<void> {
+    return this.runtime.close?.() ?? Promise.resolve();
+  }
+
   public async execute(
     id: string,
     target: string,

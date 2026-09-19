@@ -25,6 +25,7 @@
     "lint:web-fetch": "cargo clippy --locked --manifest-path src/capabilities/tools/web/fetch/Cargo.toml --all-targets -- -D warnings",
     "lint:lsp": "cargo clippy --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml --all-targets -- -D warnings",
     "smoke": "tsx src/smoke.ts",
+    "bench:capabilities": "tsx scripts/benchmark-capability-bridge.ts",
     "test": "node scripts/run-native-tests.mjs && npm run test:lsp && npm run test:web-fetch"
   },
   "repository": {

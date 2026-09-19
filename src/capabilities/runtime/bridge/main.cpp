@@ -4,12 +4,11 @@
 #include "../../core/registry.hpp"
 #include "../executable/protocol.hpp"
 
-#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
-#include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -114,7 +113,26 @@ void loadRegistry(const char* executable, Registry& registry) {
   }
 }
 
-StructuredValue discoveryValue(const Discovery& discovery, const StructuredValue::Object& request) {
+void writeResponse(const StructuredValue::Object& response) {
+  std::cout << atlas::capabilities::serializeJson(StructuredValue(response)) << '\n' << std::flush;
+}
+
+void writeError(const std::optional<std::string>& requestId, std::string message) {
+  StructuredValue::Object response{{"error", std::move(message)}};
+  if (requestId.has_value()) {
+    response["request_id"] = requestId.value();
+  }
+  writeResponse(response);
+}
+
+int failure(std::string message) {
+  writeError(std::nullopt, std::move(message));
+  return 1;
+}
+
+StructuredValue::Object discoveryValue(
+    const Discovery& discovery,
+    const StructuredValue::Object& request) {
   DiscoveryRequest discoveryRequest;
   discoveryRequest.query = optionalString(request, "query");
   discoveryRequest.limit = optionalLimit(request, "limit");
@@ -127,10 +145,12 @@ StructuredValue discoveryValue(const Discovery& discovery, const StructuredValue
         {"summary", result.summary},
     });
   }
-  return StructuredValue(StructuredValue::Object{{"results", std::move(results)}});
+  return StructuredValue::Object{{"results", std::move(results)}};
 }
 
-StructuredValue listToolsValue(const Discovery& discovery, const StructuredValue::Object& request) {
+StructuredValue::Object listToolsValue(
+    const Discovery& discovery,
+    const StructuredValue::Object& request) {
   const std::optional<std::string> group = optionalString(request, "group");
   if (group.has_value() && group->empty()) {
     throw std::runtime_error("field 'group' must be a non-empty string");
@@ -149,7 +169,7 @@ StructuredValue listToolsValue(const Discovery& discovery, const StructuredValue
     }
     tools.emplace_back(std::move(tool));
   }
-  return StructuredValue(StructuredValue::Object{{"tools", std::move(tools)}});
+  return StructuredValue::Object{{"tools", std::move(tools)}};
 }
 
 StructuredValue definitionValue(const Capability& capability) {
@@ -166,19 +186,21 @@ StructuredValue definitionValue(const Capability& capability) {
   return StructuredValue(std::move(definition));
 }
 
-StructuredValue getDefinitionValue(
+StructuredValue::Object getDefinitionValue(
     const Discovery& discovery,
     const StructuredValue::Object& request) {
   const std::string id = requiredString(request, "id");
   const auto definition = discovery.getDefinition(id);
-  return StructuredValue(StructuredValue::Object{
+  return StructuredValue::Object{
       {"definition", definition.has_value() ? definitionValue(definition.value()) : StructuredValue(nullptr)},
-  });
+  };
 }
 
-StructuredValue executeValue(
+StructuredValue::Object executeValue(
     const Registry& registry,
-    const StructuredValue::Object& request) {
+    const Executor& executor,
+    const StructuredValue::Object& request,
+    const std::optional<std::string>& requestId) {
   const std::string id = requiredString(request, "id");
   const std::string target = requiredString(request, "target");
   StructuredValue::Object arguments;
@@ -194,25 +216,68 @@ StructuredValue executeValue(
   if (!definition.has_value()) {
     throw std::runtime_error("capability '" + id + "' is not registered");
   }
+
   const atlas::capabilities::ExecutionOutputCallback on_output =
       optionalBoolean(request, "stream", false)
-      ? [](std::string_view channel, std::string_view delta) {
-          std::cout << atlas::capabilities::serializeJson(StructuredValue(StructuredValue::Object{
+      ? [&requestId](std::string_view channel, std::string_view delta) {
+          StructuredValue::Object event{
               {"event", "execution.output.delta"},
               {"channel", std::string(channel)},
               {"delta", std::string(delta)},
-          })) << '\n' << std::flush;
+          };
+          if (requestId.has_value()) {
+            event["request_id"] = requestId.value();
+          }
+          std::cout << atlas::capabilities::serializeJson(StructuredValue(std::move(event)))
+                    << '\n' << std::flush;
         }
       : atlas::capabilities::ExecutionOutputCallback{};
-  return atlas::capabilities::runtime::executable::responseValue(
-      Executor(registry).execute(id, target, std::move(arguments), on_output));
+  StructuredValue result = atlas::capabilities::runtime::executable::responseValue(
+      executor.execute(id, target, std::move(arguments), on_output));
+  return std::get<StructuredValue::Object>(std::move(result.value));
 }
 
-int failure(std::string message) {
-  std::cout << atlas::capabilities::serializeJson(
-                   StructuredValue(StructuredValue::Object{{"error", std::move(message)}}))
-            << '\n';
-  return 1;
+void handleLine(
+    const Registry& registry,
+    const Executor& executor,
+    const Discovery& discovery,
+    const std::string& line) {
+  std::optional<std::string> requestId;
+  try {
+    std::string parseError;
+    const auto parsed = atlas::capabilities::parseJson(line, parseError);
+    if (!parsed.has_value()) {
+      writeError(std::nullopt, "invalid JSON request: " + parseError);
+      return;
+    }
+    const auto* request = std::get_if<StructuredValue::Object>(&parsed->value);
+    if (request == nullptr) {
+      writeError(std::nullopt, "request must be a JSON object");
+      return;
+    }
+
+    requestId = optionalString(*request, "request_id");
+    const std::string operation = requiredString(*request, "operation");
+    StructuredValue::Object response;
+    if (operation == "list_tools") {
+      response = listToolsValue(discovery, *request);
+    } else if (operation == "discover") {
+      response = discoveryValue(discovery, *request);
+    } else if (operation == "get_definition") {
+      response = getDefinitionValue(discovery, *request);
+    } else if (operation == "execute") {
+      response = executeValue(registry, executor, *request, requestId);
+    } else {
+      throw std::runtime_error("unknown capability bridge operation '" + operation + "'");
+    }
+
+    if (requestId.has_value()) {
+      response["request_id"] = requestId.value();
+    }
+    writeResponse(response);
+  } catch (const std::exception& exception) {
+    writeError(requestId, exception.what());
+  }
 }
 
 }  // namespace
@@ -222,39 +287,26 @@ int main(int argc, char* argv[]) {
     return failure("capability bridge executable path is unavailable");
   }
 
+  Registry registry;
   try {
-    const std::string input{
-        std::istreambuf_iterator<char>(std::cin),
-        std::istreambuf_iterator<char>()};
-    std::string parseError;
-    const auto parsed = atlas::capabilities::parseJson(input, parseError);
-    if (!parsed.has_value()) {
-      return failure("invalid JSON request: " + parseError);
-    }
-    const auto* request = std::get_if<StructuredValue::Object>(&parsed->value);
-    if (request == nullptr) {
-      return failure("request must be a JSON object");
-    }
-
-    Registry registry;
     loadRegistry(argv[0], registry);
-    const std::string operation = requiredString(*request, "operation");
-    StructuredValue response;
-    if (operation == "list_tools") {
-      response = listToolsValue(Discovery(registry), *request);
-    } else if (operation == "discover") {
-      response = discoveryValue(Discovery(registry), *request);
-    } else if (operation == "get_definition") {
-      response = getDefinitionValue(Discovery(registry), *request);
-    } else if (operation == "execute") {
-      response = executeValue(registry, *request);
-    } else {
-      return failure("unknown capability bridge operation '" + operation + "'");
-    }
-
-    std::cout << atlas::capabilities::serializeJson(response) << '\n';
-    return 0;
   } catch (const std::exception& exception) {
     return failure(exception.what());
   }
+
+  const Executor executor(registry);
+  const Discovery discovery(registry);
+
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      continue;
+    }
+    handleLine(registry, executor, discovery, line);
+  }
+
+  return 0;
 }

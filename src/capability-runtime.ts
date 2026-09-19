@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 
 export type CapabilityDiscoveryRequest = {
@@ -47,11 +47,49 @@ export interface CapabilityRuntime {
     arguments_: Record<string, unknown>,
     options?: CapabilityExecutionOptions,
   ): Promise<CapabilityExecutionResult>;
+  // Encerra recursos persistentes quando o runtime é descartado.
+  close?(): Promise<void>;
 }
 
 export type NativeCapabilityRuntimeOptions = {
   executablePath?: string;
 };
+
+type PendingRequest = {
+  resolve: (value: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  onOutput?: (channel: 'stdout' | 'stderr', delta: string) => void | Promise<void>;
+  streamQueue: Promise<void>;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+  settled: boolean;
+};
+
+type BridgeTerminator = () => void;
+
+const activeBridges = new Set<BridgeTerminator>();
+let exitHookInstalled = false;
+
+function registerBridge(terminate: BridgeTerminator): void {
+  activeBridges.add(terminate);
+  if (exitHookInstalled) {
+    return;
+  }
+  exitHookInstalled = true;
+  process.once('exit', () => {
+    for (const active of activeBridges) {
+      active();
+    }
+  });
+}
+
+function unregisterBridge(terminate: BridgeTerminator): void {
+  activeBridges.delete(terminate);
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
 
 function asObject(value: unknown, context: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -98,8 +136,16 @@ function jsonSchema(value: unknown): Record<string, unknown> {
   return asObject(value, 'Capability schema');
 }
 
+// Cliente do bridge C++ persistente. O processo é iniciado sob demanda, reutilizado
+// enquanto este runtime existir e reiniciado de forma limpa depois de crash ou EOF.
 export class NativeCapabilityRuntime implements CapabilityRuntime {
   private readonly executablePath: string;
+  private child: ChildProcessWithoutNullStreams | undefined;
+  private terminate: BridgeTerminator | undefined;
+  private stdoutBuffer = '';
+  private stderrBuffer = '';
+  private requestCounter = 0;
+  private readonly pending = new Map<string, PendingRequest>();
 
   public constructor(options: NativeCapabilityRuntimeOptions = {}) {
     this.executablePath =
@@ -172,7 +218,8 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       },
       options,
     );
-    const result = asObject(response, 'Capability execution result');
+    // request_id é identidade do transporte e não faz parte do resultado público.
+    const { request_id: _requestId, ...result } = asObject(response, 'Capability execution result');
     return {
       ...result,
       target: requiredString(result.target, 'target'),
@@ -181,130 +228,252 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     };
   }
 
+  // Encerra o bridge persistente e libera o processo.
+  public close(): Promise<void> {
+    const child = this.child;
+    if (child === undefined) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolveClose) => {
+      child.once('close', () => resolveClose());
+      child.stdin.end();
+    });
+  }
+
   private request(
     request: Record<string, unknown>,
     options: Pick<CapabilityExecutionOptions, 'signal' | 'onOutput'> = {},
   ): Promise<Record<string, unknown>> {
     return new Promise((resolveRequest, rejectRequest) => {
-      const child = spawn(this.executablePath, [], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-      });
-      let output = '';
-      let errorOutput = '';
-      let settled = false;
-      let streamBuffer = '';
-      let streamQueue = Promise.resolve();
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = this.ensureBridge();
+      } catch (error) {
+        rejectRequest(toError(error));
+        return;
+      }
 
-      const rejectOnce = (error: Error) => {
-        if (!settled) {
-          settled = true;
-          rejectRequest(error);
-        }
+      const requestId = `capability-${++this.requestCounter}`;
+      const pending: PendingRequest = {
+        resolve: resolveRequest,
+        reject: rejectRequest,
+        streamQueue: Promise.resolve(),
+        settled: false,
+        ...(options.onOutput === undefined ? {} : { onOutput: options.onOutput }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       };
-
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
-        output += chunk;
-        if (options.onOutput === undefined) {
-          return;
-        }
-        streamBuffer += chunk;
-        let newline = streamBuffer.indexOf('\n');
-        while (newline !== -1) {
-          const line = streamBuffer.slice(0, newline).trim();
-          streamBuffer = streamBuffer.slice(newline + 1);
-          newline = streamBuffer.indexOf('\n');
-          if (!line) {
-            continue;
-          }
-          let event: unknown;
-          try {
-            event = JSON.parse(line) as unknown;
-          } catch {
-            continue;
-          }
-          const record =
-            event !== null && typeof event === 'object' && !Array.isArray(event)
-              ? (event as Record<string, unknown>)
-              : undefined;
-          if (record?.event !== 'execution.output.delta') {
-            continue;
-          }
-          const channel = record.channel;
-          const delta = record.delta;
-          if ((channel !== 'stdout' && channel !== 'stderr') || typeof delta !== 'string') {
-            continue;
-          }
-          streamQueue = streamQueue.then(() => options.onOutput?.(channel, delta));
-          streamQueue.catch(rejectOnce);
-        }
-      });
-      child.stderr.on('data', (chunk: string) => {
-        errorOutput += chunk;
-      });
-      child.once('error', (error) => {
-        rejectOnce(error);
-      });
-      child.once('close', (code, signal) => {
-        void (async () => {
-          await streamQueue;
-          if (settled) {
-            return;
-          }
-          if (code !== 0) {
-            const detail = errorOutput.trim() || output.trim();
-            rejectOnce(
-              new Error(
-                `Capability runtime exited with ${signal ? `signal ${signal}` : `code ${code}`}${
-                  detail ? `: ${detail}` : '.'
-                }`,
-              ),
-            );
-            return;
-          }
-
-          try {
-            const lines = output
-              .split(/\r?\n/)
-              .map((line) => line.trim())
-              .filter(Boolean);
-            const parsed = JSON.parse(lines.at(-1) ?? '') as unknown;
-            settled = true;
-            resolveRequest(asObject(parsed, 'Capability runtime response'));
-          } catch (error) {
-            rejectOnce(
-              new Error(
-                `Capability runtime returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-              ),
-            );
-          }
-        })().catch(rejectOnce);
-      });
+      this.pending.set(requestId, pending);
 
       const abort = () => {
-        if (process.platform !== 'win32' && child.pid !== undefined) {
-          try {
-            process.kill(-child.pid, 'SIGTERM');
-          } catch {
-            child.kill('SIGTERM');
-          }
-        } else {
-          child.kill('SIGTERM');
-        }
-        rejectOnce(new Error('Capability execution aborted.'));
+        this.rejectRequest(requestId, new Error('Capability execution aborted.'));
+        this.terminateBridge(child);
       };
       if (options.signal !== undefined) {
         if (options.signal.aborted) {
           abort();
-        } else {
-          options.signal.addEventListener('abort', abort, { once: true });
+          return;
         }
+        pending.abortListener = abort;
+        options.signal.addEventListener('abort', abort, { once: true });
       }
 
-      child.stdin.end(JSON.stringify(request));
+      child.stdin.write(`${JSON.stringify({ ...request, request_id: requestId })}\n`, (error) => {
+        if (error) {
+          this.rejectRequest(requestId, toError(error));
+        }
+      });
     });
+  }
+
+  private ensureBridge(): ChildProcessWithoutNullStreams {
+    if (this.child !== undefined) {
+      return this.child;
+    }
+
+    const child = spawn(this.executablePath, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
+    const terminate = () => this.terminateBridge(child);
+    registerBridge(terminate);
+    this.terminate = terminate;
+
+    child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
+    child.stderr.on('data', (chunk: string) => {
+      this.stderrBuffer += chunk;
+    });
+    child.stdin.on('error', (error: Error) => this.handleBridgeError(child, error));
+    child.once('error', (error: Error) => this.handleBridgeError(child, error));
+    child.once('close', (code, signal) => this.handleBridgeClose(child, code, signal));
+
+    this.child = child;
+    return child;
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+    let newline = this.stdoutBuffer.indexOf('\n');
+    while (newline !== -1) {
+      const line = this.stdoutBuffer.slice(0, newline).replace(/\r$/, '').trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      newline = this.stdoutBuffer.indexOf('\n');
+      if (line) {
+        this.handleMessage(line);
+      }
+    }
+  }
+
+  private handleMessage(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      return;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return;
+    }
+
+    const record = parsed as Record<string, unknown>;
+    const requestId = typeof record.request_id === 'string' ? record.request_id : undefined;
+
+    if (record.event === 'execution.output.delta') {
+      if (requestId === undefined) {
+        return;
+      }
+      const pending = this.pending.get(requestId);
+      if (pending === undefined || pending.onOutput === undefined) {
+        return;
+      }
+      const channel = record.channel;
+      const delta = record.delta;
+      if ((channel !== 'stdout' && channel !== 'stderr') || typeof delta !== 'string') {
+        return;
+      }
+      pending.streamQueue = pending.streamQueue.then(async () => {
+        await pending.onOutput?.(channel, delta);
+      });
+      pending.streamQueue.catch((error) => this.rejectRequest(requestId, toError(error)));
+      return;
+    }
+
+    if (requestId === undefined) {
+      const message =
+        typeof record.error === 'string' && record.error
+          ? record.error
+          : 'Capability bridge returned an uncorrelated response.';
+      this.failAll(new Error(message));
+      return;
+    }
+
+    if (this.pending.get(requestId) === undefined) {
+      return;
+    }
+
+    // Erro de protocolo não possui status; resultados de execute sempre possuem.
+    if (typeof record.error === 'string' && record.error && typeof record.status !== 'string') {
+      this.rejectRequest(requestId, new Error(record.error));
+      return;
+    }
+
+    this.resolveRequest(requestId, record);
+  }
+
+  private resolveRequest(requestId: string, value: Record<string, unknown>): void {
+    const pending = this.pending.get(requestId);
+    if (pending === undefined) {
+      return;
+    }
+    pending.streamQueue.then(
+      () => this.finishRequest(requestId, (current) => current.resolve(value)),
+      (error) => this.finishRequest(requestId, (current) => current.reject(toError(error))),
+    );
+  }
+
+  private rejectRequest(requestId: string, error: Error): void {
+    const pending = this.pending.get(requestId);
+    if (pending === undefined) {
+      return;
+    }
+    pending.streamQueue.then(
+      () => this.finishRequest(requestId, (current) => current.reject(error)),
+      () => this.finishRequest(requestId, (current) => current.reject(error)),
+    );
+  }
+
+  private finishRequest(requestId: string, settle: (pending: PendingRequest) => void): void {
+    const pending = this.pending.get(requestId);
+    if (pending === undefined || pending.settled) {
+      return;
+    }
+    pending.settled = true;
+    this.pending.delete(requestId);
+    if (pending.signal !== undefined && pending.abortListener !== undefined) {
+      pending.signal.removeEventListener('abort', pending.abortListener);
+    }
+    settle(pending);
+  }
+
+  private failAll(error: Error): void {
+    for (const requestId of [...this.pending.keys()]) {
+      this.finishRequest(requestId, (pending) => pending.reject(error));
+    }
+  }
+
+  private handleBridgeError(child: ChildProcessWithoutNullStreams, error: unknown): void {
+    if (this.child !== child) {
+      return;
+    }
+    this.failAll(toError(error));
+    this.resetBridge(child);
+  }
+
+  private handleBridgeClose(
+    child: ChildProcessWithoutNullStreams,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.child !== child) {
+      return;
+    }
+    const detail = this.stderrBuffer.trim();
+    const reason = signal !== null ? `signal ${signal}` : `code ${code}`;
+    this.failAll(
+      new Error(`Capability bridge exited with ${reason}${detail ? `: ${detail}` : '.'}`),
+    );
+    this.resetBridge(child);
+  }
+
+  private resetBridge(child: ChildProcessWithoutNullStreams): void {
+    if (this.child !== child) {
+      return;
+    }
+    if (this.terminate !== undefined) {
+      unregisterBridge(this.terminate);
+      this.terminate = undefined;
+    }
+    this.child = undefined;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+  }
+
+  private terminateBridge(child: ChildProcessWithoutNullStreams): void {
+    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+    if (process.platform !== 'win32') {
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+        return;
+      } catch {
+        // Sem grupo próprio, encerra apenas o processo do bridge.
+      }
+    }
+    child.kill('SIGTERM');
   }
 }
 
