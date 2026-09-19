@@ -220,7 +220,7 @@
               "type": "object",
               "properties": {
                 "execution_id": { "type": "string", "minLength": 1 },
-                "capability": { "const": "process.exec" },
+                "capability": { "const": "shell.exec" },
                 "program": { "type": "string", "minLength": 1 },
                 "args": { "type": "array", "items": { "type": "string" } },
                 "cwd": { "type": "string" },
@@ -244,7 +244,7 @@
               "type": "object",
               "properties": {
                 "execution_id": { "type": "string", "minLength": 1 },
-                "capability": { "const": "process.exec" },
+                "capability": { "const": "shell.exec" },
                 "channel": { "enum": ["stdout", "stderr"] },
                 "delta": { "type": "string" }
               },
@@ -266,7 +266,7 @@
               "type": "object",
               "properties": {
                 "execution_id": { "type": "string", "minLength": 1 },
-                "capability": { "const": "process.exec" },
+                "capability": { "const": "shell.exec" },
                 "stdout": { "type": "string" },
                 "stderr": { "type": "string" },
                 "exit_code": { "type": "integer" },

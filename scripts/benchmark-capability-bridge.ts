@@ -49,19 +49,17 @@ const runtime = new NativeCapabilityRuntime();
 try {
   const results: Sample[] = [];
   results.push(
-    await measure('discover', 20, () => runtime.discover({ query: 'executar programa' })),
+    await measure('discover', 20, () => runtime.discover({ query: 'executar comando' })),
   );
-  results.push(await measure('get_definition', 20, () => runtime.getDefinition('process.exec')));
+  results.push(await measure('get_definition', 20, () => runtime.getDefinition('shell.exec')));
   results.push(
-    await measure('execute', 20, () =>
-      runtime.execute('process.exec', 'local', { program: '/bin/true', args: [] }),
-    ),
+    await measure('execute', 20, () => runtime.execute('shell.exec', 'local', { command: 'true' })),
   );
   results.push(
     await measure('sequence_discover_describe_execute', 10, async () => {
-      await runtime.discover({ query: 'executar programa' });
-      await runtime.getDefinition('process.exec');
-      await runtime.execute('process.exec', 'local', { program: '/bin/true', args: [] });
+      await runtime.discover({ query: 'executar comando' });
+      await runtime.getDefinition('shell.exec');
+      await runtime.execute('shell.exec', 'local', { command: 'true' });
     }),
   );
 

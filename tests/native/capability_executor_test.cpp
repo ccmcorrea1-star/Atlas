@@ -59,33 +59,32 @@ const std::string* stringOutput(const ExecutionResult& result, std::string_view 
   return field == nullptr ? nullptr : std::get_if<std::string>(&field->value);
 }
 
-void testProcessExecution() {
+void testShellExecution() {
   Registry registry;
   Loader loader(registry);
-  const std::filesystem::path processDirectory = "src/capabilities/tools/process/exec";
+  const std::filesystem::path shellDirectory = "src/capabilities/tools/shell/exec";
   require(
-      !std::filesystem::exists(processDirectory / "implementation.cpp"),
-      "process.exec should not have a tool-specific implementation.cpp");
+      !std::filesystem::exists(shellDirectory / "implementation.cpp"),
+      "shell.exec should not have a tool-specific implementation.cpp");
   require(
-      loader.load("src/capabilities/tools/process/exec/capability.json"),
-      "process.exec should be loaded from its manifest");
+      loader.load("src/capabilities/tools/shell/exec/capability.json"),
+      "shell.exec should be loaded from its manifest");
 
   Executor executor(registry);
   StructuredArguments arguments{
-      {"program", "/bin/printf"},
-      {"args", StructuredValue::Array{"executor:%s", "native"}},
+      {"command", "printf 'executor:%s' native"},
   };
-  const ExecutionResult result = executor.execute("process.exec", "local", std::move(arguments));
+  const ExecutionResult result = executor.execute("shell.exec", "local", std::move(arguments));
 
-  require(result.status == ExecutionStatus::success, "process.exec should succeed through Executor");
+  require(result.status == ExecutionStatus::success, "shell.exec should succeed through Executor");
   require(result.target == "local", "Executor should preserve the target");
   require(result.error.empty(), "successful execution should not have an error");
   require(
       stringOutput(result, "stdout") != nullptr && *stringOutput(result, "stdout") == "executor:native",
-      "process output should be structured under stdout");
+      "shell output should be structured under stdout");
   require(
       stringOutput(result, "status") != nullptr && *stringOutput(result, "status") == "success",
-      "structured output should expose the process status");
+      "structured output should expose the shell status");
   const StructuredValue* exit_code = outputField(result, "exit_code");
   require(
       exit_code != nullptr && std::get_if<std::int64_t>(&exit_code->value) != nullptr &&
@@ -93,23 +92,21 @@ void testProcessExecution() {
       "structured output should expose the exit code");
 
   StructuredArguments timeoutArguments{
-      {"program", "/bin/sleep"},
-      {"args", StructuredValue::Array{"2"}},
+      {"command", "sleep 2"},
       {"timeout_ms", 100},
   };
-  const ExecutionResult timeout = executor.execute("process.exec", "local", std::move(timeoutArguments));
-  require(timeout.status == ExecutionStatus::timed_out, "process.exec should preserve executable timeouts");
+  const ExecutionResult timeout = executor.execute("shell.exec", "local", std::move(timeoutArguments));
+  require(timeout.status == ExecutionStatus::timed_out, "shell.exec should preserve executable timeouts");
 
   StructuredArguments legacyTimeoutArguments{
-      {"program", "/bin/sleep"},
-      {"args", StructuredValue::Array{"2"}},
+      {"command", "sleep 2"},
       {"timeout", 100},
   };
   const ExecutionResult legacyTimeout = executor.execute(
-      "process.exec", "local", std::move(legacyTimeoutArguments));
+      "shell.exec", "local", std::move(legacyTimeoutArguments));
   require(
       legacyTimeout.status == ExecutionStatus::timed_out,
-      "process.exec should preserve the legacy timeout alias");
+      "shell.exec should preserve the legacy timeout alias");
 }
 
 void testGroupIsNotExecutable() {
@@ -273,7 +270,7 @@ void testInvalidImplementationIsNotRunnable() {
 }  // namespace
 
 int main() {
-  testProcessExecution();
+  testShellExecution();
   testGroupIsNotExecutable();
   testSkillIsNotExecutable();
   testMissingCapability();

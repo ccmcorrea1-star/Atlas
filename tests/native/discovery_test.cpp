@@ -71,7 +71,6 @@ int main() {
       "src/capabilities/tools/filesystem/list/capability.json",
       "src/capabilities/tools/filesystem/search/capability.json",
       "src/capabilities/tools/lsp/diagnostics/capability.json",
-      "src/capabilities/tools/process/exec/capability.json",
       "src/capabilities/tools/shell/exec/capability.json",
       "src/capabilities/tools/system/info/capability.json",
       "src/capabilities/tools/web/fetch/capability.json",
@@ -108,9 +107,6 @@ int main() {
       {"procurar funcao no codigo", "filesystem.search"},
       {"onde esta definida a funcao", "filesystem.search"},
       {"grep", "filesystem.search"},
-      {"executar programa", "process.exec"},
-      {"rodar o binario", "process.exec"},
-      {"rodar um programa", "process.exec"},
       {"comando com pipe", "shell.exec"},
       {"redirecionar saida para arquivo", "shell.exec"},
       {"encadear comandos com shell", "shell.exec"},
@@ -136,20 +132,20 @@ int main() {
       {"servidor de linguagem", "lsp.diagnostics"},
       {"server", "lsp.diagnostics"},
       {"ver", "filesystem.read"},
-      {"executar", "process.exec"},
+      {"executar", "shell.exec"},
   };
   for (const Expectation& expectation : cases) {
     expectTop(discovery, expectation);
   }
 
-  // Segunda posicao deterministica em empate real de placar.
+  // Ordenacao deterministica entre as capabilities mais bem colocadas.
   {
     DiscoveryRequest request;
     request.query = std::string("executar");
     const auto results = discovery.discover(request);
-    require(results.size() >= 2, "empate executar devolve ao menos dois");
-    require(results[0].id == "process.exec", "empate executar: topo process.exec");
-    require(results[1].id == "shell.exec", "empate executar: segundo shell.exec por id");
+    require(results.size() >= 2, "executar devolve ao menos dois");
+    require(results[0].id == "shell.exec", "executar: topo shell.exec");
+    require(results[1].id == "lsp.diagnostics", "executar: segundo lsp.diagnostics por id");
   }
   {
     DiscoveryRequest request;
@@ -165,7 +161,7 @@ int main() {
     DiscoveryRequest request;
     request.query = std::string("de o para com e");
     const auto results = discovery.discover(request);
-    require(results.size() == 11, "so stopwords equivale a query vazia: 11 tools");
+    require(results.size() == 10, "so stopwords equivale a query vazia: 10 tools");
   }
   expectTop(discovery, {"por favor me mostre o arquivo", "filesystem.read"});
   expectTop(discovery, {"informações do sistema", "system.info"});

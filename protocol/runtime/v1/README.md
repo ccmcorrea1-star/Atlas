@@ -63,18 +63,18 @@ Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
 - `message.completed`: mensagem pública completa, com `data.message_id` e `data.content`.
 - `tool.started`: tool executada pelo Runtime iniciou, com `data.tool_id` e `data.name`.
 - `tool.completed`: tool terminou, com `data.tool_id`, `data.name` e `data.output` opcional.
-- `execution.started`: execução de `process.exec` iniciou, com `data.execution_id`, `data.capability`, `data.program`, `data.args` e `data.cwd`/`data.target` opcionais.
-- `execution.output.delta`: fragmento ordenado de saída de `process.exec`, com `data.execution_id`, `data.capability`, `data.channel` (`stdout` ou `stderr`) e `data.delta`. Clientes acrescentam os fragmentos na ordem recebida.
-- `execution.completed`: execução de `process.exec` terminou, com `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms` e `data.status`.
+- `execution.started`: execução de `shell.exec` iniciou, com `data.execution_id`, `data.capability`, `data.program`, `data.args` e `data.cwd`/`data.target` opcionais. O comando interpretado é exposto como a invocação de shell equivalente (`program`/`args`).
+- `execution.output.delta`: fragmento ordenado de saída de `shell.exec`, com `data.execution_id`, `data.capability`, `data.channel` (`stdout` ou `stderr`) e `data.delta`. Clientes acrescentam os fragmentos na ordem recebida.
+- `execution.completed`: execução de `shell.exec` terminou, com `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms` e `data.status`.
 - `turn.completed`: turno terminou, com `data.content`, `data.message_id` opcional e o snapshot de contexto opcional:
   `{ "used_tokens": 6600, "context_window": 256000 }`.
 - `error`: o turno falhou, com `data.code` e `data.message`.
 
-`process.exec` usa o `call_id` da tool como `execution_id`, permitindo que clientes atualizem a mesma execução do início ao fim.
+`shell.exec` usa o `call_id` da tool como `execution_id`, permitindo que clientes atualizem a mesma execução do início ao fim.
 
 Clientes devem aceitar `message.delta`, `message.completed` ou ambos. Um Runtime só emite um evento quando a execução subjacente fornece aquela informação. Clientes devem ignorar tipos adicionados em versões posteriores quando puderem continuar com segurança.
 
-Dados genéricos de tools não contêm argumentos, requisições de Discovery ou objetos de SDK. `process.exec` é a exceção explícita: seu lifecycle público contém apenas os campos estruturados necessários para renderizar e correlacionar uma célula de execução. O Runtime continua responsável por Discovery, capabilities, autorização e execução.
+Dados genéricos de tools não contêm argumentos, requisições de Discovery ou objetos de SDK. `shell.exec` é a exceção explícita: seu lifecycle público contém apenas os campos estruturados necessários para renderizar e correlacionar uma célula de execução. O Runtime continua responsável por Discovery, capabilities, autorização e execução.
 
 ## Superfícies disponíveis no cliente TUI
 

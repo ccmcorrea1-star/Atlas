@@ -204,14 +204,14 @@ mod tests {
     }
 
     #[test]
-    fn renders_active_process_exec_and_working_composer() {
+    fn renders_active_shell_exec_and_working_composer() {
         let mut app = App::new("render-test".to_owned());
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
         app.handle_runtime_event(RuntimeEvent::ExecutionStarted {
             execution_id: "exec-1".to_owned(),
-            capability: "process.exec".to_owned(),
-            program: "node".to_owned(),
-            args: vec!["--version".to_owned()],
+            capability: "shell.exec".to_owned(),
+            program: "sh".to_owned(),
+            args: vec!["-c".to_owned(), "node --version".to_owned()],
             cwd: Some("/tmp".to_owned()),
             target: Some("local".to_owned()),
         });

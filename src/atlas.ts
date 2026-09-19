@@ -63,7 +63,6 @@ export const MATERIALIZED_CAPABILITY_IDS = [
   'filesystem.search',
   'filesystem.write',
   'filesystem.edit',
-  'process.exec',
   'shell.exec',
   'system.info',
   'lsp.diagnostics',
@@ -122,7 +121,7 @@ export type AtlasRunEvent =
   | {
       type: 'execution.started';
       executionId: string;
-      capability: 'process.exec';
+      capability: 'shell.exec';
       program: string;
       args: string[];
       cwd?: string;
@@ -131,14 +130,14 @@ export type AtlasRunEvent =
   | {
       type: 'execution.output.delta';
       executionId: string;
-      capability: 'process.exec';
+      capability: 'shell.exec';
       channel: 'stdout' | 'stderr';
       delta: string;
     }
   | {
       type: 'execution.completed';
       executionId: string;
-      capability: 'process.exec';
+      capability: 'shell.exec';
       stdout: string;
       stderr: string;
       exitCode: number;
@@ -538,7 +537,7 @@ function executeCall(item: Record<string, unknown>):
   return { id, arguments_ };
 }
 
-function processExecArguments(item: Record<string, unknown>):
+function shellExecArguments(item: Record<string, unknown>):
   | {
       program: string;
       args: string[];
@@ -548,23 +547,22 @@ function processExecArguments(item: Record<string, unknown>):
   // Aceita o caminho generico (id + arguments) e a tool direta (argumentos crus).
   const direct = recordValue(decodedJsonValue(item.arguments));
   const arguments_ = executeCall(item)?.arguments_ ?? direct;
-  const program = stringValue(arguments_?.program);
-  if (program === undefined) {
+  const command = stringValue(arguments_?.command);
+  if (command === undefined) {
     return undefined;
   }
 
-  const args = Array.isArray(arguments_?.args)
-    ? arguments_.args.filter((argument): argument is string => typeof argument === 'string')
-    : [];
   const cwd = stringValue(arguments_?.cwd);
+  // shell.exec interpreta o comando pelo shell do sistema; o lifecycle expoe a
+  // invocacao equivalente para renderizacao e correlacao pelos clientes.
   return {
-    program,
-    args,
+    program: 'sh',
+    args: ['-c', command],
     ...(cwd === undefined ? {} : { cwd }),
   };
 }
 
-function processExecResult(value: unknown): {
+function shellExecResult(value: unknown): {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -653,13 +651,13 @@ async function publishRunEvent(
   if (event.name === 'tool_called') {
     // Discovery e describe são detalhes do Agent, não eventos públicos.
     if (toolName && toolId) {
-      if (toolName === 'process.exec') {
-        const arguments_ = processExecArguments(item);
+      if (toolName === 'shell.exec') {
+        const arguments_ = shellExecArguments(item);
         if (arguments_ !== undefined) {
           await onEvent({
             type: 'execution.started',
             executionId: toolId,
-            capability: 'process.exec',
+            capability: 'shell.exec',
             ...arguments_,
             target: 'local',
           });
@@ -674,12 +672,12 @@ async function publishRunEvent(
   if (event.name === 'tool_output') {
     if (toolName && toolId) {
       const output = publicText(item.output);
-      if (toolName === 'process.exec') {
+      if (toolName === 'shell.exec') {
         await onEvent({
           type: 'execution.completed',
           executionId: toolId,
-          capability: 'process.exec',
-          ...processExecResult(item.output),
+          capability: 'shell.exec',
+          ...shellExecResult(item.output),
         });
       } else {
         await onEvent({
@@ -754,11 +752,11 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {
-          if (capabilityId === 'process.exec') {
+          if (capabilityId === 'shell.exec') {
             await onEvent({
               type: 'execution.output.delta',
               executionId,
-              capability: 'process.exec',
+              capability: 'shell.exec',
               channel,
               delta,
             });

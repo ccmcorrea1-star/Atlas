@@ -40,7 +40,7 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
             status: 'completed',
             call_id: 'discover-call',
             name: 'discover',
-            arguments: JSON.stringify({ query: 'executar programa' }),
+            arguments: JSON.stringify({ query: 'executar comando' }),
           },
         ]
       : requestNumber === 2
@@ -51,20 +51,20 @@ function responseBody(requestNumber: number, input: RequestBody): RequestBody {
               status: 'completed',
               call_id: 'describe-call',
               name: 'describe',
-              arguments: JSON.stringify({ id: 'process.exec' }),
+              arguments: JSON.stringify({ id: 'shell.exec' }),
             },
           ]
         : requestNumber === 3
           ? [
               {
-                id: 'function-call-process-exec',
+                id: 'function-call-shell-exec',
                 type: 'function_call',
                 status: 'completed',
-                call_id: 'process-exec-call',
+                call_id: 'shell-exec-call',
                 name: 'execute',
                 arguments: JSON.stringify({
-                  id: 'process.exec',
-                  arguments: { program: 'node', args: ['--version'] },
+                  id: 'shell.exec',
+                  arguments: { command: 'node --version' },
                 }),
               },
             ]
@@ -140,7 +140,6 @@ const materializedToolNames = [
   'filesystem_search',
   'filesystem_write',
   'filesystem_edit',
-  'process_exec',
   'shell_exec',
   'system_info',
   'lsp_diagnostics',
@@ -286,7 +285,7 @@ test('exposes every core capability and keeps the base tools in the same payload
   }
 });
 
-test('discovers, describes, and executes process.exec through base tools', async () => {
+test('discovers, describes, and executes shell.exec through base tools', async () => {
   const server = await startCapabilityAgentServer();
   const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
   const capabilityRuntime = new NativeCapabilityRuntime();
@@ -326,8 +325,8 @@ test('discovers, describes, and executes process.exec through base tools', async
       tools(secondRequest).map((tool) => tool.name),
       [...materializedToolNames, ...baseToolNames],
     );
-    assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar programa\\"/);
-    assert.match(JSON.stringify(secondRequest.input), /process\.exec/);
+    assert.match(JSON.stringify(secondRequest.input), /\\"query\\":\\"executar comando\\"/);
+    assert.match(JSON.stringify(secondRequest.input), /shell\.exec/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /process - executar/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /description/);
     assert.doesNotMatch(JSON.stringify(secondRequest.input), /schema/);
@@ -345,12 +344,12 @@ test('discovers, describes, and executes process.exec through base tools', async
     assert.ok(properties.id);
     assert.ok(properties.arguments);
     assert.deepEqual(schema.required, ['id', 'arguments']);
-    assert.match(JSON.stringify(thirdRequest.input), /\\"id\\":\\"process\.exec\\"/);
+    assert.match(JSON.stringify(thirdRequest.input), /\\"id\\":\\"shell\.exec\\"/);
     assert.match(JSON.stringify(thirdRequest.input), /description/);
     assert.match(JSON.stringify(thirdRequest.input), /schema/);
 
     const fourthRequest = server.requests[3] as RequestBody;
-    assert.match(JSON.stringify(fourthRequest.input), /process-exec-call/);
+    assert.match(JSON.stringify(fourthRequest.input), /shell-exec-call/);
     assert.match(JSON.stringify(fourthRequest.input), /execute/);
     assert.match(
       JSON.stringify(fourthRequest.input),
@@ -374,10 +373,10 @@ test('lists the complete tool catalog and filters tools by group', async () => {
       calls.push(request);
       return request.group === undefined
         ? [
-            { id: 'process', type: 'group', summary: 'process tools' },
-            { id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' },
+            { id: 'shell', type: 'group', summary: 'shell tools' },
+            { id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' },
           ]
-        : [{ id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' }];
+        : [{ id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' }];
     },
     getDefinition: async () => undefined,
     execute: async () => ({ target: 'local', status: 'ok', error: '' }),
@@ -392,7 +391,7 @@ test('lists the complete tool catalog and filters tools by group', async () => {
               status: 'completed',
               call_id: `list-tools-call-${requestNumber}`,
               name: 'list_tools',
-              arguments: JSON.stringify(requestNumber === 1 ? {} : { group: 'process' }),
+              arguments: JSON.stringify(requestNumber === 1 ? {} : { group: 'shell' }),
             },
           ]
         : [
@@ -416,9 +415,9 @@ test('lists the complete tool catalog and filters tools by group', async () => {
     });
 
     assert.equal(result.finalOutput, 'Catalog listed.');
-    assert.deepEqual(calls, [{}, { group: 'process' }]);
-    assert.match(JSON.stringify(server.requests[1]?.input), /process\.exec/);
-    assert.match(JSON.stringify(server.requests[2]?.input), /process\.exec/);
+    assert.deepEqual(calls, [{}, { group: 'shell' }]);
+    assert.match(JSON.stringify(server.requests[1]?.input), /shell\.exec/);
+    assert.match(JSON.stringify(server.requests[2]?.input), /shell\.exec/);
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
       ['list_tools', 'discover', 'describe', 'execute'],
@@ -428,17 +427,16 @@ test('lists the complete tool catalog and filters tools by group', async () => {
   }
 });
 
-test('forwards streamed output from the native process capability', async () => {
+test('forwards streamed output from the native shell capability', async () => {
   const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
   const runtime = new NativeCapabilityRuntime();
   try {
     const events: Array<{ channel: string; delta: string }> = [];
     const result = await runtime.execute(
-      'process.exec',
+      'shell.exec',
       'local',
       {
-        program: '/bin/sh',
-        args: ['-c', 'printf out-one; sleep 0.04; printf err-one >&2; sleep 0.04; printf out-two'],
+        command: 'printf out-one; sleep 0.04; printf err-one >&2; sleep 0.04; printf out-two',
       },
       {
         onOutput: (channel, delta) => {
@@ -506,7 +504,7 @@ test('keeps non-materialized capability schemas out of tools across conversation
               id: 'function-call-describe',
               type: 'function_call',
               status: 'completed',
-              call_id: 'describe-process-exec-call',
+              call_id: 'describe-sandbox-call',
               name: 'describe',
               arguments: JSON.stringify({ id: definition.id }),
             },
@@ -517,7 +515,7 @@ test('keeps non-materialized capability schemas out of tools across conversation
                 id: 'function-call-execute',
                 type: 'function_call',
                 status: 'completed',
-                call_id: 'execute-process-exec-call',
+                call_id: 'execute-sandbox-call',
                 name: 'execute',
                 arguments: JSON.stringify({
                   id: definition.id,

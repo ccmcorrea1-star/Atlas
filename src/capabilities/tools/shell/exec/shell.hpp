@@ -60,7 +60,7 @@ struct ShellResult {
   std::string error;
 };
 
-// Executa um comando com semantica de shell, sem substituir process.exec.
+// Executa um comando com semantica de shell.
 ShellResult exec(
     const ShellRequest& request,
     const atlas::capabilities::ExecutionOutputCallback& on_output = {});

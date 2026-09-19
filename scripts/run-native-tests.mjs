@@ -5,10 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = resolve(projectRoot, '.native-test');
-const processExecutable = resolve(outputDirectory, 'process-exec-test');
 const systemExecutable = resolve(outputDirectory, 'system-info-test');
 const filesystemExecutable = resolve(outputDirectory, 'filesystem-test');
-const capabilityExecutable = resolve(projectRoot, 'src/capabilities/tools/process/exec/runtime');
 const systemInfoExecutable = resolve(projectRoot, 'src/capabilities/tools/system/info/runtime');
 const filesystemTestSource = resolve(projectRoot, 'tests/native/filesystem_test.cpp');
 const bridgeExecutable = resolve(projectRoot, 'src/capabilities/runtime/bridge/runtime');
@@ -21,7 +19,6 @@ const capabilitiesDirectory = resolve(projectRoot, 'src/capabilities');
 const coreDirectory = resolve(capabilitiesDirectory, 'core');
 const executableRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/executable');
 const bridgeRuntimeDirectory = resolve(capabilitiesDirectory, 'runtime/bridge');
-const sourceDirectory = resolve(capabilitiesDirectory, 'tools/process/exec');
 const lspDirectory = resolve(capabilitiesDirectory, 'tools/lsp');
 const lspRuntime = resolve(lspDirectory, 'diagnostics/runtime');
 const webFetchDirectory = resolve(capabilitiesDirectory, 'tools/web/fetch');
@@ -33,7 +30,6 @@ const shellRuntime = resolve(shellDirectory, 'runtime');
 const systemInfoDirectory = resolve(capabilitiesDirectory, 'tools/system/info');
 const filesystemDirectory = resolve(capabilitiesDirectory, 'tools/filesystem');
 const filesystemRuntimeSource = resolve(filesystemDirectory, 'filesystem.cpp');
-const processTestSource = resolve(projectRoot, 'tests/native/process_exec_test.cpp');
 const shellTestSource = resolve(projectRoot, 'tests/native/shell_exec_test.cpp');
 const shellTestExecutable = resolve(outputDirectory, 'shell-exec-test');
 const gitDirectory = resolve(capabilitiesDirectory, 'tools/git');
@@ -70,23 +66,6 @@ function run(command, args) {
 mkdirSync(outputDirectory, { recursive: true });
 
 try {
-  run('g++', [
-    '-std=c++23',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-pedantic',
-    '-pthread',
-    resolve(executableRuntimeDirectory, 'protocol.cpp'),
-    resolve(executableRuntimeDirectory, 'adapter.cpp'),
-    resolve(executableRuntimeDirectory, 'main.cpp'),
-    resolve(coreDirectory, 'spawn.cpp'),
-    resolve(coreDirectory, 'arguments.cpp'),
-    resolve(coreDirectory, 'command_runner.cpp'),
-    resolve(sourceDirectory, 'exec.cpp'),
-    '-o',
-    capabilityExecutable,
-  ]);
   run('g++', [
     '-std=c++23',
     '-Wall',
@@ -203,24 +182,6 @@ try {
     resolve(coreDirectory, 'registry.cpp'),
     resolve(coreDirectory, 'discovery.cpp'),
     resolve(coreDirectory, 'loader.cpp'),
-    resolve(coreDirectory, 'spawn.cpp'),
-    resolve(coreDirectory, 'arguments.cpp'),
-    resolve(coreDirectory, 'command_runner.cpp'),
-    resolve(sourceDirectory, 'exec.cpp'),
-    processTestSource,
-    '-o',
-    processExecutable,
-  ]);
-  run('g++', [
-    '-std=c++23',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-pedantic',
-    '-pthread',
-    resolve(coreDirectory, 'registry.cpp'),
-    resolve(coreDirectory, 'discovery.cpp'),
-    resolve(coreDirectory, 'loader.cpp'),
     loaderTestSource,
     '-o',
     loaderExecutable,
@@ -269,7 +230,7 @@ try {
     resolve(coreDirectory, 'spawn.cpp'),
     resolve(coreDirectory, 'arguments.cpp'),
     resolve(coreDirectory, 'command_runner.cpp'),
-    resolve(sourceDirectory, 'exec.cpp'),
+    resolve(shellDirectory, 'shell.cpp'),
     executorTestSource,
     '-o',
     executorExecutable,
@@ -343,7 +304,6 @@ try {
     '-o',
     commandRunnerExecutable,
   ]);
-  run(processExecutable, []);
   run(shellTestExecutable, []);
   run(systemExecutable, []);
   run(filesystemExecutable, []);

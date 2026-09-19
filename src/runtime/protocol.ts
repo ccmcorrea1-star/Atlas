@@ -52,7 +52,7 @@ export type RuntimeTurnCompletedData = {
 
 export type RuntimeExecutionStartedData = {
   execution_id: string;
-  capability: 'process.exec';
+  capability: 'shell.exec';
   program: string;
   args: string[];
   cwd?: string;
@@ -61,7 +61,7 @@ export type RuntimeExecutionStartedData = {
 
 export type RuntimeExecutionCompletedData = {
   execution_id: string;
-  capability: 'process.exec';
+  capability: 'shell.exec';
   stdout: string;
   stderr: string;
   exit_code: number;

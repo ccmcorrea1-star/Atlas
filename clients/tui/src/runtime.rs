@@ -460,9 +460,9 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
         })),
         "execution.started" => {
             let capability = required_string(&data, "capability")?;
-            if capability != "process.exec" {
+            if capability != "shell.exec" {
                 return Err(RuntimeError::Protocol(
-                    "Runtime execution capability must be process.exec".to_owned(),
+                    "Runtime execution capability must be shell.exec".to_owned(),
                 ));
             }
             let args = data
@@ -493,9 +493,9 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
         }
         "execution.output.delta" => {
             let capability = required_string(&data, "capability")?;
-            if capability != "process.exec" {
+            if capability != "shell.exec" {
                 return Err(RuntimeError::Protocol(
-                    "Runtime execution capability must be process.exec".to_owned(),
+                    "Runtime execution capability must be shell.exec".to_owned(),
                 ));
             }
             let channel = required_string(&data, "channel")?;
@@ -513,9 +513,9 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
         }
         "execution.completed" => {
             let capability = required_string(&data, "capability")?;
-            if capability != "process.exec" {
+            if capability != "shell.exec" {
                 return Err(RuntimeError::Protocol(
-                    "Runtime execution capability must be process.exec".to_owned(),
+                    "Runtime execution capability must be shell.exec".to_owned(),
                 ));
             }
             let exit_code = data
@@ -710,7 +710,7 @@ mod tests {
             "execution.output.delta",
             json!({
                 "execution_id": "exec-1",
-                "capability": "process.exec",
+                "capability": "shell.exec",
                 "channel": "stderr",
                 "delta": "warning\n"
             }),
@@ -721,7 +721,7 @@ mod tests {
             delta,
             RuntimeEvent::ExecutionOutputDelta {
                 execution_id: "exec-1".to_owned(),
-                capability: "process.exec".to_owned(),
+                capability: "shell.exec".to_owned(),
                 channel: "stderr".to_owned(),
                 delta: "warning\n".to_owned(),
             }

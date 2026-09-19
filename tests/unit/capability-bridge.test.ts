@@ -91,7 +91,7 @@ test('answers multiple requests on one bridge process and echoes request_id', as
     const discover = await send({
       request_id: 'req-discover',
       operation: 'discover',
-      query: 'executar programa',
+      query: 'executar comando',
     });
     assert.equal(discover.request_id, 'req-discover');
     assert.ok(Array.isArray(discover.results));
@@ -99,10 +99,10 @@ test('answers multiple requests on one bridge process and echoes request_id', as
     const definition = await send({
       request_id: 'req-definition',
       operation: 'get_definition',
-      id: 'process.exec',
+      id: 'shell.exec',
     });
     assert.equal(definition.request_id, 'req-definition');
-    assert.equal((definition.definition as BridgeRecord).id, 'process.exec');
+    assert.equal((definition.definition as BridgeRecord).id, 'shell.exec');
 
     // Um erro de protocolo não encerra o processo residente.
     const unknown = await send({ request_id: 'req-unknown', operation: 'nope' });
@@ -123,9 +123,9 @@ test('answers multiple requests on one bridge process and echoes request_id', as
     const execute = await send({
       request_id: 'req-execute',
       operation: 'execute',
-      id: 'process.exec',
+      id: 'shell.exec',
       target: 'local',
-      arguments: { program: '/bin/echo', args: ['persistent'] },
+      arguments: { command: 'echo persistent' },
     });
     assert.equal(execute.request_id, 'req-execute');
     assert.equal(execute.status, 'success');
@@ -142,9 +142,9 @@ test('reuses one bridge process for sequential client requests', async () => {
   const wrapper = writeWrapper(directory, 'reuse.sh', { logPath });
   const runtime = new NativeCapabilityRuntime({ executablePath: wrapper });
   try {
-    await runtime.discover({ query: 'executar programa' });
-    await runtime.getDefinition('process.exec');
-    await runtime.execute('process.exec', 'local', { program: '/bin/true', args: [] });
+    await runtime.discover({ query: 'executar comando' });
+    await runtime.getDefinition('shell.exec');
+    await runtime.execute('shell.exec', 'local', { command: 'true' });
 
     const starts = readFileSync(logPath, 'utf8').trim().split('\n');
     assert.equal(starts.length, 1);
@@ -190,8 +190,8 @@ test('rejects pending requests on crash and restarts cleanly', async () => {
     assert.equal(existsSync(crashMarker), true);
 
     // A próxima request reinicia o bridge do zero.
-    const results = await runtime.discover({ query: 'executar programa' });
-    assert.ok(results.some((result) => result.id === 'process.exec'));
+    const results = await runtime.discover({ query: 'executar comando' });
+    assert.ok(results.some((result) => result.id === 'shell.exec'));
   } finally {
     await runtime.close();
     rmSync(directory, { recursive: true, force: true });

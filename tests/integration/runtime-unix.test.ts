@@ -19,33 +19,32 @@ const capabilityRuntime: CapabilityRuntime = {
   execute: async () => ({ target: 'local', status: 'ok', error: '' }),
 };
 
-const processCapabilityRuntime: CapabilityRuntime = {
-  discover: async () => [{ id: 'process.exec', type: 'tool', summary: 'execute a process' }],
+const shellCapabilityRuntime: CapabilityRuntime = {
+  discover: async () => [{ id: 'shell.exec', type: 'tool', summary: 'execute a command' }],
   listTools: async () => [
-    { id: 'process', type: 'group', summary: 'process tools' },
-    { id: 'process.exec', type: 'tool', summary: 'execute a process', group: 'process' },
+    { id: 'shell', type: 'group', summary: 'shell tools' },
+    { id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' },
   ],
   getDefinition: async (id) =>
-    id === 'process.exec'
+    id === 'shell.exec'
       ? {
           id,
           type: 'tool',
-          summary: 'execute a process',
-          description: 'execute a process directly without a shell',
+          summary: 'execute a command',
+          description: 'execute a command with shell semantics',
           schema: {
             type: 'object',
             properties: {
-              program: { type: 'string' },
-              args: { type: 'array', items: { type: 'string' } },
+              command: { type: 'string' },
               cwd: { type: 'string' },
             },
-            required: ['program'],
+            required: ['command'],
             additionalProperties: false,
           },
         }
       : undefined,
   execute: async (_id, target, arguments_) => {
-    const failed = arguments_.program === 'false';
+    const failed = arguments_.command === 'false';
     return {
       target,
       status: failed ? 'failed' : 'success',
@@ -295,7 +294,7 @@ function messageStream(text: string): WireMessage[] {
   ];
 }
 
-async function startProcessStreamingModelServer(): Promise<{
+async function startShellStreamingModelServer(): Promise<{
   baseURL: string;
   requests: WireMessage[];
   close: () => Promise<void>;
@@ -318,7 +317,7 @@ async function startProcessStreamingModelServer(): Promise<{
             status: 'completed',
             call_id: 'discover-call',
             name: 'discover',
-            arguments: JSON.stringify({ query: 'executar programa' }),
+            arguments: JSON.stringify({ query: 'executar comando' }),
           }
         : requests.length === 2
           ? {
@@ -327,7 +326,7 @@ async function startProcessStreamingModelServer(): Promise<{
               status: 'completed',
               call_id: 'describe-call',
               name: 'describe',
-              arguments: JSON.stringify({ id: 'process.exec' }),
+              arguments: JSON.stringify({ id: 'shell.exec' }),
             }
           : requests.length === 3
             ? {
@@ -337,10 +336,9 @@ async function startProcessStreamingModelServer(): Promise<{
                 call_id: 'execution-call',
                 name: 'execute',
                 arguments: JSON.stringify({
-                  id: 'process.exec',
+                  id: 'shell.exec',
                   arguments: {
-                    program: failed ? 'false' : 'node',
-                    args: failed ? [] : ['--version'],
+                    command: failed ? 'false' : 'node --version',
                     cwd: '/tmp',
                   },
                 }),
@@ -400,8 +398,8 @@ async function startDirectToolStreamingModelServer(): Promise<{
             type: 'function_call',
             status: 'completed',
             call_id: 'direct-execution-call',
-            name: 'process_exec',
-            arguments: JSON.stringify({ program: 'node', args: ['--version'], cwd: '/tmp' }),
+            name: 'shell_exec',
+            arguments: JSON.stringify({ command: 'node --version', cwd: '/tmp' }),
           }
         : undefined;
     const events = output
@@ -768,15 +766,15 @@ test('waits for a real streamed run before returning its final output', async ()
   }
 });
 
-test('publishes process execution lifecycle events over the public Unix protocol', async () => {
-  const model = await startProcessStreamingModelServer();
-  const socketPath = `/tmp/atlas-runtime-process-execution-${randomUUID()}.sock`;
+test('publishes shell execution lifecycle events over the public Unix protocol', async () => {
+  const model = await startShellStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-shell-execution-${randomUUID()}.sock`;
   const runtime = new AtlasRuntimeServer({
     socketPath,
     runOptions: {
-      apiKey: 'atlas-runtime-process-execution-key',
+      apiKey: 'atlas-runtime-shell-execution-key',
       baseURL: model.baseURL,
-      capabilityRuntime: processCapabilityRuntime,
+      capabilityRuntime: shellCapabilityRuntime,
     },
   });
 
@@ -801,15 +799,15 @@ test('publishes process execution lifecycle events over the public Unix protocol
     const completed = events[3]?.data as WireMessage;
     assert.deepEqual(started, {
       execution_id: 'execution-call',
-      capability: 'process.exec',
-      program: 'node',
-      args: ['--version'],
+      capability: 'shell.exec',
+      program: 'sh',
+      args: ['-c', 'node --version'],
       cwd: '/tmp',
       target: 'local',
     });
     assert.deepEqual(completed, {
       execution_id: 'execution-call',
-      capability: 'process.exec',
+      capability: 'shell.exec',
       stdout: 'v22.x.x\n',
       stderr: '',
       exit_code: 0,
@@ -830,7 +828,7 @@ test('executes a materialized core tool directly and publishes the capability li
     runOptions: {
       apiKey: 'atlas...ey',
       baseURL: model.baseURL,
-      capabilityRuntime: processCapabilityRuntime,
+      capabilityRuntime: shellCapabilityRuntime,
     },
   });
 
@@ -854,9 +852,9 @@ test('executes a materialized core tool directly and publishes the capability li
     );
     assert.deepEqual(events[2]?.data, {
       execution_id: 'direct-execution-call',
-      capability: 'process.exec',
-      program: 'node',
-      args: ['--version'],
+      capability: 'shell.exec',
+      program: 'sh',
+      args: ['-c', 'node --version'],
       cwd: '/tmp',
       target: 'local',
     });
@@ -867,7 +865,7 @@ test('executes a materialized core tool directly and publishes the capability li
     const toolNames = ((model.requests[0]?.tools as WireMessage[] | undefined) ?? []).map(
       (tool) => tool.name,
     );
-    assert.equal(toolNames[0], 'process_exec');
+    assert.equal(toolNames[0], 'shell_exec');
     assert.ok(toolNames.includes('list_tools'));
     assert.doesNotMatch(JSON.stringify(model.requests[0]?.input), /"name":"(discover|describe)"/);
   } finally {
@@ -876,15 +874,15 @@ test('executes a materialized core tool directly and publishes the capability li
   }
 });
 
-test('publishes failed process execution status and output over the public protocol', async () => {
-  const model = await startProcessStreamingModelServer();
-  const socketPath = `/tmp/atlas-runtime-process-execution-failure-${randomUUID()}.sock`;
+test('publishes failed shell execution status and output over the public protocol', async () => {
+  const model = await startShellStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-shell-execution-failure-${randomUUID()}.sock`;
   const runtime = new AtlasRuntimeServer({
     socketPath,
     runOptions: {
-      apiKey: 'atlas-runtime-process-execution-failure-key',
+      apiKey: 'atlas-runtime-shell-execution-failure-key',
       baseURL: model.baseURL,
-      capabilityRuntime: processCapabilityRuntime,
+      capabilityRuntime: shellCapabilityRuntime,
     },
   });
 
@@ -900,7 +898,7 @@ test('publishes failed process execution status and output over the public proto
     assert.equal(events[3]?.type, 'execution.completed');
     assert.deepEqual(events[3]?.data, {
       execution_id: 'execution-call',
-      capability: 'process.exec',
+      capability: 'shell.exec',
       stdout: '',
       stderr: 'permission denied',
       exit_code: 1,

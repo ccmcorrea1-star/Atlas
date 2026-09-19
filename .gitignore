@@ -10,7 +10,6 @@ dist/
 coverage/
 .native-cmake/
 /clients/tui/target/
-/src/capabilities/tools/process/exec/runtime
 /src/capabilities/tools/shell/exec/runtime
 /src/capabilities/tools/lsp/diagnostics/runtime
 /src/capabilities/tools/lsp/target/

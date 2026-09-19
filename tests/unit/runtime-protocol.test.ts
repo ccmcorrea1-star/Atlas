@@ -39,17 +39,17 @@ test('parses a turn cancellation with the original request identity', () => {
   });
 });
 
-test('serializes the process execution lifecycle without provider tool names', () => {
+test('serializes the shell execution lifecycle without provider tool names', () => {
   const started = runtimeEvent(request, 'execution.started', {
     execution_id: 'call-1',
-    capability: 'process.exec',
-    program: 'node',
-    args: ['--version'],
+    capability: 'shell.exec',
+    program: 'sh',
+    args: ['-c', 'node --version'],
     target: 'local',
   });
   const completed = runtimeEvent(request, 'execution.completed', {
     execution_id: 'call-1',
-    capability: 'process.exec',
+    capability: 'shell.exec',
     stdout: 'v22.x.x\n',
     stderr: '',
     exit_code: 0,
