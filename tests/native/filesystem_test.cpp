@@ -345,6 +345,50 @@ void testSearch(const TempTree& tree) {
   require(truncated != nullptr && *truncated, "limited search should report truncation");
 }
 
+// Regressao do benchmark: artefatos de build e .gitignore nao entram na busca.
+void testSearchIgnores() {
+  TempTree tree = TempTree::create();
+  const std::filesystem::path root = tree.root;
+  std::error_code code;
+  std::filesystem::create_directories(root / "node_modules" / "pkg", code);
+  std::filesystem::create_directories(root / "target" / "debug", code);
+  std::filesystem::create_directories(root / "src", code);
+  TempTree::writeFile(root / "node_modules" / "pkg" / "dep.txt", "needle here\n");
+  TempTree::writeFile(root / "target" / "debug" / "artifact.txt", "needle here\n");
+  TempTree::writeFile(root / "src" / "kept.txt", "needle here\n");
+  TempTree::writeFile(root / "ignored.txt", "needle here\n");
+  TempTree::writeFile(root / ".gitignore", "ignored.txt\n# comentario\n/build-only/\n");
+
+  const ExecutionResult search = filesystem::searchDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"query", std::string("needle")}})});
+  require(search.status == ExecutionStatus::success, "search with ignores should succeed");
+  const StructuredValue::Array* matches = arrayOutput(search, "matches");
+  require(matches != nullptr, "search with ignores should return matches");
+  require(matches->size() == 1, "search should keep only the non-ignored source file");
+  const auto* keptPath = matchField(matches->front(), "path");
+  require(
+      keptPath != nullptr && std::get<std::string>(keptPath->value) == (root / "src/kept.txt").string(),
+      "search should ignore node_modules, target and .gitignore entries");
+
+  // Uma negacao explicita no .gitignore devolve o arquivo a busca.
+  TempTree::writeFile(root / ".gitignore", "ignored.txt\n!kept-again.txt\n");
+  TempTree::writeFile(root / "kept-again.txt", "needle here\n");
+  const ExecutionResult negated = filesystem::searchDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"query", std::string("needle")}})});
+  const StructuredValue::Array* negatedMatches = arrayOutput(negated, "matches");
+  require(
+      negatedMatches != nullptr && negatedMatches->size() == 2,
+      "a negated gitignore rule should keep the file searchable");
+
+  // Busca por nome de arquivo continua funcionando fora dos diretorios ignorados.
+  const ExecutionResult byName = filesystem::searchDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"query", std::string("artifact")}})});
+  const StructuredValue::Array* nameMatches = arrayOutput(byName, "matches");
+  require(
+      nameMatches != nullptr && nameMatches->empty(),
+      "file name search should not report ignored build artifacts");
+}
+
 }  // namespace
 
 int main() {
@@ -355,5 +399,6 @@ int main() {
   testWriteAndList(tree);
   testEdit(tree);
   testSearch(tree);
+  testSearchIgnores();
   return EXIT_SUCCESS;
 }

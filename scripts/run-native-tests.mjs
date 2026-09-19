@@ -165,6 +165,8 @@ try {
       resolve(executableRuntimeDirectory, 'adapter.cpp'),
       resolve(executableRuntimeDirectory, 'main.cpp'),
       filesystemRuntimeSource,
+      // O filesystem.cpp compartilhado referencia as regras de ignore da busca.
+      resolve(filesystemDirectory, 'search/ignore.cpp'),
       resolve(filesystemDirectory, tool, toolSource),
       '-o',
       resolve(filesystemDirectory, tool, 'runtime'),
@@ -304,6 +306,7 @@ try {
     resolve(coreDirectory, 'loader.cpp'),
     resolve(executableRuntimeDirectory, 'protocol.cpp'),
     filesystemRuntimeSource,
+    resolve(filesystemDirectory, 'search/ignore.cpp'),
     filesystemTestSource,
     '-o',
     filesystemExecutable,

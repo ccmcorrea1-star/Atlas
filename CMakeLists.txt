@@ -134,13 +134,23 @@ set_target_properties(atlas-system-info-runtime PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/system/info"
 )
 
+add_library(atlas-filesystem-search-ignore STATIC
+  src/capabilities/tools/filesystem/search/ignore.cpp
+)
+target_include_directories(atlas-filesystem-search-ignore PUBLIC
+  src/capabilities/tools/filesystem/search
+)
+
 function(atlas_filesystem_runtime id directory source)
   add_executable(atlas-filesystem-${id}-runtime
     src/capabilities/runtime/executable/main.cpp
     src/capabilities/tools/filesystem/filesystem.cpp
     src/capabilities/tools/filesystem/${directory}/${source}
   )
-  target_link_libraries(atlas-filesystem-${id}-runtime PRIVATE atlas-capabilities-core)
+  target_link_libraries(atlas-filesystem-${id}-runtime PRIVATE
+    atlas-capabilities-core
+    atlas-filesystem-search-ignore
+  )
   set_target_properties(atlas-filesystem-${id}-runtime PROPERTIES
     OUTPUT_NAME runtime
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/tools/filesystem/${directory}"
@@ -184,7 +194,10 @@ target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-co
 
 add_executable(atlas-filesystem-test tests/native/filesystem_test.cpp)
 target_sources(atlas-filesystem-test PRIVATE src/capabilities/tools/filesystem/filesystem.cpp)
-target_link_libraries(atlas-filesystem-test PRIVATE atlas-capabilities-core)
+target_link_libraries(atlas-filesystem-test PRIVATE
+  atlas-capabilities-core
+  atlas-filesystem-search-ignore
+)
 add_dependencies(atlas-filesystem-test
   atlas-filesystem-read-runtime
   atlas-filesystem-write-runtime
@@ -211,6 +224,7 @@ target_link_libraries(atlas-command-runner-test PRIVATE atlas-capabilities-core)
 foreach(target
     atlas-capabilities-executable-runtime
     atlas-capabilities-core
+    atlas-filesystem-search-ignore
     atlas-process-exec-runtime
     atlas-shell-exec-runtime
     atlas-git-status-runtime

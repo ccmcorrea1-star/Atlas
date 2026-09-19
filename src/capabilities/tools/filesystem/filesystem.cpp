@@ -1,5 +1,8 @@
 #include "filesystem.hpp"
 
+#include "search/ignore.hpp"
+
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -379,6 +382,117 @@ atlas::capabilities::ExecutionResult listDispatch(const atlas::capabilities::Nat
   return result;
 }
 
+namespace {
+
+// Contexto da varredura: mantem o limite, as regras de ignore e o acumulador.
+struct SearchState {
+  const std::string* query = nullptr;
+  std::int64_t limit = 0;
+  // A varredura usa a raiz absoluta; a saida preserva o caminho informado.
+  std::filesystem::path absoluteRoot;
+  std::filesystem::path givenRoot;
+  StructuredValue::Array matches;
+  bool truncated = false;
+  std::int64_t collected = 0;
+
+  bool accept() {
+    if (collected >= limit) {
+      truncated = true;
+      return false;
+    }
+    ++collected;
+    return true;
+  }
+
+  // Reporta o mesmo caminho que o chamador informou como raiz.
+  std::string reportedPath(const std::filesystem::path& entry) const {
+    return (givenRoot / entry.lexically_relative(absoluteRoot)).lexically_normal().string();
+  }
+};
+
+// Percorre um diretorio em ordem determinista, podando o que for ignorado.
+void searchDirectory(const std::filesystem::path& directory, SearchIgnores& ignores, SearchState& state) {
+  const std::size_t mark = ignores.mark();
+  // Um .gitignore local vale apenas para a subarvore visitada.
+  ignores.loadDirectory(directory);
+
+  std::error_code code;
+  std::vector<std::filesystem::directory_entry> entries;
+  for (const std::filesystem::directory_entry& entry :
+       std::filesystem::directory_iterator(
+           directory, std::filesystem::directory_options::skip_permission_denied, code)) {
+    if (code) {
+      code.clear();
+      continue;
+    }
+    entries.push_back(entry);
+  }
+  std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+    return left.path() < right.path();
+  });
+
+  for (const std::filesystem::directory_entry& entry : entries) {
+    if (state.truncated) {
+      break;
+    }
+
+    std::error_code entryError;
+    const bool isDirectory = entry.is_directory(entryError) && !entryError;
+    const bool isFile = entry.is_regular_file(entryError) && !entryError;
+    if (ignores.ignores(entry.path(), isDirectory)) {
+      continue;
+    }
+    if (isDirectory) {
+      searchDirectory(entry.path(), ignores, state);
+      continue;
+    }
+    if (!isFile) {
+      continue;
+    }
+
+    const std::string entryPath = state.reportedPath(entry.path());
+    if (entry.path().filename().string().find(*state.query) != std::string::npos &&
+        state.accept()) {
+      state.matches.push_back(StructuredValue::Object{
+          {"path", entryPath},
+          {"kind", "file"},
+      });
+      if (state.truncated) {
+        break;
+      }
+    }
+
+    FileLines lines;
+    std::string readError;
+    // Arquivos ilegiveis sao ignorados; a busca continua deterministica.
+    if (!readLines(entry.path().string(), lines, readError)) {
+      continue;
+    }
+    for (std::size_t index = 0; index < lines.line_starts.size(); ++index) {
+      const std::string text = lineText(lines, index);
+      if (text.find(*state.query) == std::string::npos) {
+        continue;
+      }
+      if (!state.accept()) {
+        break;
+      }
+      state.matches.push_back(StructuredValue::Object{
+          {"path", entryPath},
+          {"kind", "line"},
+          {"line_number", static_cast<std::int64_t>(index + 1)},
+          {"line", text},
+      });
+      if (state.truncated) {
+        break;
+      }
+    }
+  }
+
+  ignores.restore(mark);
+}
+
+}  // namespace
+
 atlas::capabilities::ExecutionResult searchDispatch(const atlas::capabilities::NativeRequest& request) {
   const std::string* path = nullptr;
   std::string error;
@@ -404,66 +518,18 @@ atlas::capabilities::ExecutionResult searchDispatch(const atlas::capabilities::N
     return failure(request.target, "path is not a directory: " + *path);
   }
 
-  StructuredValue::Array matches;
-  bool truncated = false;
-  std::int64_t collected = 0;
-  const auto accept = [&]() {
-    if (collected >= limit) {
-      truncated = true;
-      return false;
-    }
-    ++collected;
-    return true;
-  };
+  const std::filesystem::path root(*path);
+  const std::filesystem::path absoluteRoot = std::filesystem::absolute(root).lexically_normal();
+  SearchIgnores ignores;
+  ignores.loadDefaults(absoluteRoot);
+  ignores.loadAncestors(absoluteRoot);
 
-  for (const std::filesystem::directory_entry& entry :
-       std::filesystem::recursive_directory_iterator(*path, std::filesystem::directory_options::skip_permission_denied, code)) {
-    if (code) {
-      return failure(request.target, "cannot search directory '" + *path + "': " + code.message());
-    }
-    if (truncated) {
-      break;
-    }
-    const std::string entryPath = entry.path().string();
-
-    if (entry.path().filename().string().find(*query) != std::string::npos && accept()) {
-      matches.push_back(StructuredValue::Object{
-          {"path", entryPath},
-          {"kind", "file"},
-      });
-      if (truncated) {
-        break;
-      }
-    }
-
-    std::error_code entryError;
-    if (!entry.is_regular_file(entryError)) {
-      continue;
-    }
-    FileLines lines;
-    // Arquivos ilegiveis sao ignorados; a busca continua deterministica.
-    if (!readLines(entryPath, lines, error)) {
-      error.clear();
-      continue;
-    }
-    for (std::size_t index = 0; index < lines.line_starts.size(); ++index) {
-      if (lineText(lines, index).find(*query) == std::string::npos) {
-        continue;
-      }
-      if (!accept()) {
-        break;
-      }
-      matches.push_back(StructuredValue::Object{
-          {"path", entryPath},
-          {"kind", "line"},
-          {"line_number", static_cast<std::int64_t>(index + 1)},
-          {"line", lineText(lines, index)},
-      });
-      if (truncated) {
-        break;
-      }
-    }
-  }
+  SearchState state;
+  state.query = query;
+  state.limit = limit;
+  state.givenRoot = root;
+  state.absoluteRoot = absoluteRoot;
+  searchDirectory(state.absoluteRoot, ignores, state);
 
   atlas::capabilities::ExecutionResult result;
   result.target = request.target;
@@ -471,9 +537,9 @@ atlas::capabilities::ExecutionResult searchDispatch(const atlas::capabilities::N
   result.output = StructuredValue::Object{
       {"path", *path},
       {"query", *query},
-      {"matches", std::move(matches)},
-      {"total_matches", collected},
-      {"truncated", truncated},
+      {"matches", std::move(state.matches)},
+      {"total_matches", state.collected},
+      {"truncated", state.truncated},
   };
   return result;
 }
