@@ -18,6 +18,7 @@ npm run typecheck
 npm run build
 npm test
 npm run smoke
+npm run sync:client
 ```
 
 Consulte [`docs/BUILD.md`](./docs/BUILD.md) e [`docs/TEST.md`](./docs/TEST.md) para detalhes.
