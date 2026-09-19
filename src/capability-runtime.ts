@@ -235,8 +235,13 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       return Promise.resolve();
     }
 
+    // O encerramento e um trabalho pendente: precisa segurar o event loop.
+    this.setBridgeKeepAlive(child, true);
     return new Promise<void>((resolveClose) => {
-      child.once('close', () => resolveClose());
+      child.once('close', () => {
+        this.setBridgeKeepAlive(child, false);
+        resolveClose();
+      });
       child.stdin.end();
     });
   }
@@ -264,6 +269,8 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       };
       this.pending.set(requestId, pending);
+      // Enquanto existe requisicao pendente, o bridge precisa segurar o processo.
+      this.setBridgeKeepAlive(child, true);
 
       const abort = () => {
         this.rejectRequest(requestId, new Error('Capability execution aborted.'));
@@ -301,6 +308,8 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     const terminate = () => this.terminateBridge(child);
     registerBridge(terminate);
     this.terminate = terminate;
+    // Ocioso o bridge nao pode segurar o event loop de quem o iniciou.
+    this.setBridgeKeepAlive(child, false);
 
     child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
     child.stderr.on('data', (chunk: string) => {
@@ -415,7 +424,24 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     if (pending.signal !== undefined && pending.abortListener !== undefined) {
       pending.signal.removeEventListener('abort', pending.abortListener);
     }
+    if (this.pending.size === 0 && this.child !== undefined) {
+      // Sem requisicao pendente o bridge nao pode segurar o event loop do pai.
+      this.setBridgeKeepAlive(this.child, false);
+    }
     settle(pending);
+  }
+
+  // O bridge residente vive enquanto o pai trabalha: com requisicao pendente ele
+  // segura o event loop; ocioso, deixa o processo pai encerrar normalmente.
+  private setBridgeKeepAlive(child: ChildProcessWithoutNullStreams, active: boolean): void {
+    const handles = [child, child.stdin, child.stdout, child.stderr] as Array<{
+      ref?: () => void;
+      unref?: () => void;
+    }>;
+    for (const handle of handles) {
+      const change = active ? handle.ref : handle.unref;
+      change?.call(handle);
+    }
   }
 
   private failAll(error: Error): void {
