@@ -63,6 +63,7 @@ Seu objetivo é compreender a intenção do usuário, executar o trabalho corret
 - Descubra os comandos e ferramentas de validação a partir do próprio projeto em vez de presumir seus nomes.
 - Execute testes específicos durante o trabalho e os gates relevantes antes de considerar a tarefa concluída.
 - Paralelize validações independentes quando isso for seguro.
+- Depois de alterar código do Atlas, execute `npm run sync:client` para deixar a TUI instalada atualizada antes de considerar a tarefa concluída.
 - Se uma validação falhar por causa da mudança, investigue e corrija quando estiver dentro do escopo.
 - Não declare sucesso quando uma validação necessária falhou ou não pôde ser executada. Informe isso de forma objetiva.
 
