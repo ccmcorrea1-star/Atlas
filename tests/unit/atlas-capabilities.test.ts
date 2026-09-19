@@ -138,8 +138,6 @@ const materializedToolNames = [
   'filesystem_read',
   'filesystem_list',
   'filesystem_search',
-  'filesystem_write',
-  'filesystem_edit',
   'filesystem_glob',
   'filesystem_patch',
   'shell_exec',

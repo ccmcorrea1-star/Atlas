@@ -17,8 +17,6 @@ coverage/
 /src/capabilities/tools/web/fetch/runtime
 /src/capabilities/tools/web/fetch/target/
 /src/capabilities/tools/filesystem/read/runtime
-/src/capabilities/tools/filesystem/write/runtime
-/src/capabilities/tools/filesystem/edit/runtime
 /src/capabilities/tools/filesystem/list/runtime
 /src/capabilities/tools/filesystem/search/runtime
 /src/capabilities/tools/filesystem/glob/runtime

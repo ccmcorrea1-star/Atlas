@@ -1,8 +1,8 @@
 {
   "id": "filesystem.patch",
   "type": "tool",
-  "summary": "aplicar um patch de arquivos em lote",
-  "description": "aplicar adicoes, atualizacoes, remocoes e movimentos no formato *** Begin Patch/*** End Patch",
+  "summary": "criar, editar, mover e remover arquivos e trechos com um patch",
+  "description": "aplicar alteracoes em arquivos no formato *** Begin Patch/*** End Patch, incluindo escrever e corrigir codigo",
   "schema": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
     "additionalProperties": false
   },
   "parent": "filesystem",
-  "aliases": [],
+  "aliases": ["criar arquivo", "escrever arquivo", "editar arquivo", "corrigir codigo", "patch"],
   "implementation": {
     "kind": "executable",
     "entrypoint": "runtime"

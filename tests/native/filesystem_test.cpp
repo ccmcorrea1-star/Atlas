@@ -122,8 +122,7 @@ void testLoadingAndDiscovery() {
   require(registry.get("filesystem").has_value(), "filesystem group should be registered");
 
   for (const std::string_view id :
-       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search",
-        "filesystem.glob", "filesystem.patch"}) {
+        {"filesystem.read", "filesystem.list", "filesystem.search", "filesystem.glob", "filesystem.patch"}) {
     const auto registered = registry.get(id);
     require(registered.has_value(), std::string(id).append(" should be registered"));
     require(registered->parent == "filesystem", std::string(id).append(" should belong to the filesystem group"));
@@ -137,8 +136,7 @@ void testLoadingAndDiscovery() {
 
   const auto discoverable = discovery.discover();
   for (const std::string_view id :
-       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search",
-        "filesystem.glob", "filesystem.patch"}) {
+        {"filesystem.read", "filesystem.list", "filesystem.search", "filesystem.glob", "filesystem.patch"}) {
     const bool found = std::any_of(
         discoverable.begin(),
         discoverable.end(),
@@ -219,48 +217,12 @@ void testRead(const TempTree& tree) {
   require(emptyTotal != nullptr && *emptyTotal == 0, "empty file should have zero lines");
 }
 
-void testWriteAndList(const TempTree& tree) {
-  const std::filesystem::path created = tree.root / "created.txt";
-  const ExecutionResult write = filesystem::writeDispatch(
-      {"local", arguments({{"path", StructuredValue(created.string())}, {"content", std::string("alpha\nbeta")}})});
-  require(write.status == ExecutionStatus::success, "filesystem.write should succeed");
-  const auto* writeAction = stringOutput(write, "action");
-  require(writeAction != nullptr && *writeAction == "create", "filesystem.write should report create");
-  const auto* writePath = stringOutput(write, "path");
-  require(
-      writePath != nullptr && writePath->ends_with("created.txt") && writePath->front() != '/',
-      "filesystem.write should report a relative workspace path");
-  const auto* writeDiff = stringOutput(write, "diff");
-  require(
-      writeDiff != nullptr && *writeDiff == "@@\n+alpha\n+beta\n",
-      "filesystem.write should report its own create diff");
-  const auto* bytes = integerOutput(write, "bytes");
-  require(bytes != nullptr && *bytes == 10, "filesystem.write should report the byte count");
-  require(tree.readFile(created) == "alpha\nbeta", "filesystem.write should create the file");
-
-  const ExecutionResult overwrite = filesystem::writeDispatch(
-      {"local", arguments({{"path", StructuredValue(created.string())}, {"content", std::string()}})});
-  require(overwrite.status == ExecutionStatus::success, "overwriting should succeed");
-  require(
-      stringOutput(overwrite, "action") != nullptr && *stringOutput(overwrite, "action") == "edit",
-      "filesystem.write should report overwrite as edit");
-  require(
-      stringOutput(overwrite, "diff") != nullptr && *stringOutput(overwrite, "diff") == "@@\n-alpha\n-beta\n",
-      "filesystem.write should report its own overwrite diff");
-  require(tree.readFile(created).empty(), "overwriting should replace the content");
-
-  const ExecutionResult writeDirectory = filesystem::writeDispatch(
-      {"local", arguments({{"path", StructuredValue((tree.root / "nested").string())}, {"content", std::string()}})});
-  require(writeDirectory.status == ExecutionStatus::failed, "writing over a directory should fail");
-  require(
-      writeDirectory.error == "path is a directory: " + (tree.root / "nested").string(),
-      "directory write error should be explicit");
-
+void testList(const TempTree& tree) {
   const ExecutionResult list = filesystem::listDispatch(
       {"local", arguments({{"path", StructuredValue(tree.root.string())}})});
   require(list.status == ExecutionStatus::success, "filesystem.list should succeed");
   const StructuredValue::Array* entries = arrayOutput(list, "entries");
-  require(entries != nullptr && entries->size() == 4, "filesystem.list should return four entries");
+  require(entries != nullptr && entries->size() == 3, "filesystem.list should return three entries");
 
   const auto entryName = [](const StructuredValue& value) {
     const auto* object = std::get_if<StructuredValue::Object>(&value.value);
@@ -270,9 +232,9 @@ void testWriteAndList(const TempTree& tree) {
     const auto iterator = object->find("name");
     return iterator == object->end() ? std::string() : std::get<std::string>(iterator->second.value);
   };
-  require(entryName(entries->front()) == "created.txt", "filesystem.list should sort entries by name");
-  require(entryName((*entries)[1]) == "empty.txt", "filesystem.list should sort entries by name");
-  require(entryName((*entries)[3]) == "nested", "filesystem.list should include directories");
+  require(entryName(entries->front()) == "empty.txt", "filesystem.list should sort entries by name");
+  require(entryName((*entries)[1]) == "hello.txt", "filesystem.list should sort entries by name");
+  require(entryName((*entries)[2]) == "nested", "filesystem.list should include directories");
 
   const std::string notADirectory = tree.file("hello.txt");
   const ExecutionResult listFile = filesystem::listDispatch(
@@ -281,59 +243,6 @@ void testWriteAndList(const TempTree& tree) {
   require(
       listFile.error == "path is not a directory: " + notADirectory,
       "list error should be explicit");
-}
-
-void testEdit(const TempTree& tree) {
-  const std::filesystem::path path = tree.root / "editable.txt";
-  TempTree::writeFile(path, "one\nshared\nshared end\n");
-
-  const auto replacement = [](std::string oldString, std::string newString) {
-    return StructuredValue(StructuredValue::Object{
-        {"old_string", std::move(oldString)},
-        {"new_string", std::move(newString)},
-    });
-  };
-
-  const ExecutionResult single = filesystem::editDispatch(
-      {"local", arguments({{"path", StructuredValue(path.string())},
-                           {"replacements", StructuredValue(StructuredValue::Array{replacement("one", "uno")})}})});
-  require(single.status == ExecutionStatus::success, "filesystem.edit should replace an unique occurrence");
-  require(tree.readFile(path) == "uno\nshared\nshared end\n", "filesystem.edit should write the edited content");
-  require(
-      stringOutput(single, "action") != nullptr && *stringOutput(single, "action") == "edit",
-      "filesystem.edit should report edit");
-  require(
-      stringOutput(single, "diff") != nullptr &&
-          *stringOutput(single, "diff") == "@@\n-one\n+uno\n shared\n shared end\n",
-      "filesystem.edit should report its own diff");
-
-  const ExecutionResult ordered = filesystem::editDispatch(
-      {"local", arguments({{"path", StructuredValue(path.string())},
-                           {"replacements", StructuredValue(StructuredValue::Array{
-                                replacement("shared\nshared end", "done")})}})});
-  require(ordered.status == ExecutionStatus::success, "filesystem.edit should support multiline replacements");
-  require(tree.readFile(path) == "uno\ndone\n", "filesystem.edit should preserve the rest of the file");
-
-  const ExecutionResult ambiguous = filesystem::editDispatch(
-      {"local", arguments({{"path", StructuredValue(path.string())},
-                           {"replacements", StructuredValue(StructuredValue::Array{replacement("o", "x")})}})});
-  require(ambiguous.status == ExecutionStatus::failed, "ambiguous replacement should fail");
-  require(
-      ambiguous.error == "replacement 1: old_string matches 2 occurrences; expected exactly one",
-      "ambiguous replacement error should be explicit");
-
-  const ExecutionResult absent = filesystem::editDispatch(
-      {"local", arguments({{"path", StructuredValue(path.string())},
-                           {"replacements", StructuredValue(StructuredValue::Array{replacement("nothing here", "x")})}})});
-  require(absent.status == ExecutionStatus::failed, "replacement of absent text should fail");
-  require(
-      absent.error == "replacement 1: old_string not found in " + path.string(),
-      "absent replacement error should be explicit");
-
-  const ExecutionResult emptyOld = filesystem::editDispatch(
-      {"local", arguments({{"path", StructuredValue(path.string())},
-                           {"replacements", StructuredValue(StructuredValue::Array{replacement("", "x")})}})});
-  require(emptyOld.status == ExecutionStatus::failed, "empty old_string should fail");
 }
 
 void testSearch(const TempTree& tree) {
@@ -535,7 +444,7 @@ void testPatch() {
       "patch should report the create action");
   require(
       std::get<std::string>(matchField(addChanges->front(), "diff")->value) ==
-          "@@\n+first\n+second\n",
+          "@@ -0,0 +1,2 @@\n+first\n+second\n",
       "patch should report the create diff");
 
   // Update File.
@@ -564,7 +473,7 @@ void testPatch() {
       "patch should report the edit action");
   require(
       std::get<std::string>(matchField(updateChanges->front(), "diff")->value) ==
-          "@@\n first\n-second\n+second-updated\n+third\n",
+          "@@ -1,2 +1,3 @@\n first\n-second\n+second-updated\n+third\n",
       "patch should report the edit diff");
 
   // Move to com edicao.
@@ -598,7 +507,7 @@ void testPatch() {
       "patch should report a relative destination path");
   require(
       std::get<std::string>(matchField(moveChanges->front(), "diff")->value) ==
-          "@@\n-hello\n+hi\n world\n",
+      "@@ -1,2 +1,2 @@\n-hello\n+hi\n world\n",
       "patch should report the edit made during a move");
 
   // Delete File.
@@ -620,7 +529,7 @@ void testPatch() {
       "patch should report the delete action");
   require(
       std::get<std::string>(matchField(removeChanges->front(), "diff")->value) ==
-          "@@\n-first\n-second-updated\n-third\n",
+      "@@ -1,3 +0,0 @@\n-first\n-second-updated\n-third\n",
       "patch should report the delete diff");
 
   // Parsing invalido.
@@ -718,8 +627,7 @@ int main() {
   testLoadingAndDiscovery();
   testReadThroughExecutor(tree);
   testRead(tree);
-  testWriteAndList(tree);
-  testEdit(tree);
+  testList(tree);
   testSearch(tree);
   testSearchIgnores();
   testGlob();

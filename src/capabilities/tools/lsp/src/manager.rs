@@ -1040,7 +1040,7 @@ mod tests {
         let first = client.diagnose(file.to_str().unwrap());
         assert_eq!(first.status, "success", "erro: {}", first.error);
         assert_eq!(first.diagnostics.len(), 1);
-        // Alteracao feita fora do Atlas (filesystem.edit, editor, git...).
+        // Alteracao feita fora do Atlas (filesystem.patch, editor, git...).
         std::fs::write(&file, "fn ok() {}\n// CORRIGIDO\n").unwrap();
         let second = client.diagnose(file.to_str().unwrap());
         std::fs::remove_file(&file).unwrap();

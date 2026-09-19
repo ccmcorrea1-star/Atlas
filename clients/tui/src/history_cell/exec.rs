@@ -1,5 +1,9 @@
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use serde_json::Value;
 use std::path::Path;
 
@@ -130,6 +134,20 @@ impl HistoryCell for ToolCell {
         self.display_lines(width)
     }
 
+    fn background_style(&self) -> Option<Style> {
+        if !self.completed {
+            return None;
+        }
+        let object = json_object(self.output.as_deref().unwrap_or_default())?;
+        if tool_status(Some(self.output.as_deref().unwrap_or_default())) == ToolStatus::Error {
+            return None;
+        }
+        let payload = filesystem_payload(&object);
+        filesystem_changes(&self.tool_name, payload)
+            .is_some()
+            .then(super::messages::user_message_style)
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
     }
@@ -211,6 +229,7 @@ fn tool_summary(tool_name: &str, output: &str) -> Option<String> {
         "filesystem.read" => object.as_ref().and_then(filesystem_read_summary),
         "filesystem.search" => object.as_ref().and_then(filesystem_search_summary),
         "filesystem.glob" => object.as_ref().and_then(filesystem_glob_summary),
+        "filesystem.patch" => object.as_ref().and_then(filesystem_patch_summary),
         "git.status" => object.as_ref().and_then(git_status_summary),
         "git.diff" => object.as_ref().and_then(git_diff_summary),
         _ => None,
@@ -260,6 +279,18 @@ fn filesystem_glob_summary(object: &serde_json::Map<String, Value>) -> Option<St
         number_field(object, "total_matches").or_else(|| array_length(object, "matches"))?;
     let truncated = bool_field(object, "truncated");
     Some(format_count(count, "file found", "files found", truncated))
+}
+
+fn filesystem_patch_summary(object: &serde_json::Map<String, Value>) -> Option<String> {
+    let failed = object
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status != "success")
+        || object
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| !error.trim().is_empty());
+    failed.then_some("failed".to_owned())
 }
 
 fn git_status_summary(object: &serde_json::Map<String, Value>) -> Option<String> {
@@ -432,16 +463,24 @@ fn short_summary(value: &str) -> String {
     }
 }
 
+#[derive(Debug)]
+enum FilesystemDiffItem {
+    Hunk(String),
+    Line {
+        marker: char,
+        old_number: Option<usize>,
+        new_number: Option<usize>,
+        text: String,
+    },
+}
+
 fn filesystem_change_lines(
     tool_name: &str,
     output: &str,
     _width: u16,
     transcript: bool,
 ) -> Option<Vec<Line<'static>>> {
-    if !matches!(
-        tool_name,
-        "filesystem.write" | "filesystem.edit" | "filesystem.patch"
-    ) {
+    if !matches!(tool_name, "filesystem.patch") {
         return None;
     }
     let object = json_object(output)?;
@@ -453,7 +492,7 @@ fn filesystem_change_lines(
     let mut lines = Vec::new();
     let mut diff_lines_shown = 0;
     let mut diff_chars_shown: usize = 0;
-    let mut diff_omitted = false;
+    let mut diff_lines_omitted = 0;
 
     for change in changes {
         let action = change.get("action").and_then(Value::as_str)?;
@@ -477,31 +516,147 @@ fn filesystem_change_lines(
         let Some(diff) = change.get("diff").and_then(Value::as_str) else {
             continue;
         };
-        for diff_line in diff.lines() {
-            let rendered = format!("  {diff_line}");
+        let diff_items = filesystem_diff_items(diff);
+        if diff_items.is_empty() {
+            continue;
+        }
+        lines.push(Line::default());
+        for diff_item in diff_items {
+            let rendered = filesystem_diff_line(diff_item);
             if transcript {
-                lines.push(Line::from(rendered));
+                lines.push(rendered);
                 continue;
             }
-            let line_chars = rendered.chars().count();
+            let line_chars = rendered
+                .spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum::<usize>();
             if diff_lines_shown < FILESYSTEM_DIFF_PREVIEW_MAX_LINES
                 && diff_chars_shown.saturating_add(line_chars) <= FILESYSTEM_DIFF_PREVIEW_MAX_CHARS
             {
-                lines.push(Line::from(rendered));
+                lines.push(rendered);
                 diff_lines_shown += 1;
                 diff_chars_shown = diff_chars_shown.saturating_add(line_chars);
             } else {
-                diff_omitted = true;
+                diff_lines_omitted += 1;
             }
         }
     }
 
-    if !transcript && diff_omitted {
-        lines.push(Line::from(
-            "  … diff omitted; open transcript for full diff",
-        ));
+    if !transcript && diff_lines_omitted > 0 {
+        lines.push(Line::from(format!(
+            "  … {diff_lines_omitted} diff lines omitted; open transcript for full diff"
+        )));
     }
     Some(lines)
+}
+
+fn filesystem_diff_items(diff: &str) -> Vec<FilesystemDiffItem> {
+    let mut old_number = 1;
+    let mut new_number = 1;
+    let mut items = Vec::new();
+    for source in diff.lines() {
+        if source.starts_with("@@") {
+            if let Some((old_start, new_start)) = diff_hunk_starts(source) {
+                old_number = old_start;
+                new_number = new_start;
+            }
+            items.push(FilesystemDiffItem::Hunk(source.to_owned()));
+            continue;
+        }
+
+        let Some(marker) = source.chars().next() else {
+            continue;
+        };
+        if !matches!(marker, ' ' | '+' | '-') {
+            continue;
+        }
+        let text = source[marker.len_utf8()..].to_owned();
+        let item = match marker {
+            ' ' => {
+                let old = (old_number > 0).then_some(old_number);
+                let new = (new_number > 0).then_some(new_number);
+                old_number = old_number.saturating_add(1);
+                new_number = new_number.saturating_add(1);
+                FilesystemDiffItem::Line {
+                    marker,
+                    old_number: old,
+                    new_number: new,
+                    text,
+                }
+            }
+            '-' => {
+                let old = (old_number > 0).then_some(old_number);
+                old_number = old_number.saturating_add(1);
+                FilesystemDiffItem::Line {
+                    marker,
+                    old_number: old,
+                    new_number: None,
+                    text,
+                }
+            }
+            '+' => {
+                let new = (new_number > 0).then_some(new_number);
+                new_number = new_number.saturating_add(1);
+                FilesystemDiffItem::Line {
+                    marker,
+                    old_number: None,
+                    new_number: new,
+                    text,
+                }
+            }
+            _ => unreachable!(),
+        };
+        items.push(item);
+    }
+    items
+}
+
+fn diff_hunk_starts(header: &str) -> Option<(usize, usize)> {
+    let ranges = header.strip_prefix("@@")?.split("@@").next()?;
+    let mut parts = ranges.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    Some((diff_range_start(old)?, diff_range_start(new)?))
+}
+
+fn diff_range_start(range: &str) -> Option<usize> {
+    let start = range.split(',').next()?;
+    start.parse().ok()
+}
+
+fn filesystem_diff_line(item: FilesystemDiffItem) -> Line<'static> {
+    match item {
+        FilesystemDiffItem::Hunk(header) => Line::from(Span::styled(
+            format!("  {header}"),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+        )),
+        FilesystemDiffItem::Line {
+            marker,
+            old_number,
+            new_number,
+            text,
+        } => {
+            let old = old_number.map_or_else(String::new, |number| number.to_string());
+            let new = new_number.map_or_else(String::new, |number| number.to_string());
+            let gutter = format!("  {old:>3} {new:>3} │ ");
+            let content = if marker == ' ' {
+                text
+            } else {
+                format!("{marker}{text}")
+            };
+            let content_style = match marker {
+                '+' => Style::default().fg(Color::Green),
+                '-' => Style::default().fg(Color::Red),
+                _ => Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+            };
+            Line::from(vec![
+                Span::styled(gutter, Style::default().fg(Color::Gray).dim()),
+                Span::styled(content, content_style),
+            ])
+        }
+    }
 }
 
 fn filesystem_payload(object: &serde_json::Map<String, Value>) -> &serde_json::Map<String, Value> {
@@ -755,54 +910,69 @@ mod tests {
             (
                 serde_json::json!({
                     "status": "success",
-                    "action": "create",
-                    "path": "teste.txt",
-                    "diff": "@@\n+Arquivo de teste.\n"
+                    "changes": [{
+                        "action": "create",
+                        "path": "teste.txt",
+                        "diff": "@@\n+Arquivo de teste.\n"
+                    }]
                 }),
-                vec!["✓ Created teste.txt", "  @@", "  +Arquivo de teste."],
+                vec![
+                    "✓ Created teste.txt",
+                    "",
+                    "  @@",
+                    "        1 │ +Arquivo de teste.",
+                ],
             ),
             (
                 serde_json::json!({
                     "status": "success",
-                    "action": "edit",
-                    "path": "teste.txt",
-                    "diff": "@@\n Arquivo de teste.\n+Segunda edição realizada.\n"
+                    "changes": [{
+                        "action": "edit",
+                        "path": "teste.txt",
+                        "diff": "@@ -1,1 +1,2 @@\n Arquivo de teste.\n+Segunda edição realizada.\n"
+                    }]
                 }),
                 vec![
                     "✓ Edited teste.txt",
-                    "  @@",
-                    "   Arquivo de teste.",
-                    "  +Segunda edição realizada.",
+                    "",
+                    "  @@ -1,1 +1,2 @@",
+                    "    1   1 │ Arquivo de teste.",
+                    "        2 │ +Segunda edição realizada.",
                 ],
             ),
             (
                 serde_json::json!({
                     "status": "success",
-                    "action": "delete",
-                    "path": "teste.txt",
-                    "diff": "@@\n-Arquivo de teste.\n-Segunda edição realizada.\n"
+                    "changes": [{
+                        "action": "delete",
+                        "path": "teste.txt",
+                        "diff": "@@\n-Arquivo de teste.\n-Segunda edição realizada.\n"
+                    }]
                 }),
                 vec![
                     "✓ Deleted teste.txt",
+                    "",
                     "  @@",
-                    "  -Arquivo de teste.",
-                    "  -Segunda edição realizada.",
+                    "    1     │ -Arquivo de teste.",
+                    "    2     │ -Segunda edição realizada.",
                 ],
             ),
             (
                 serde_json::json!({
                     "status": "success",
-                    "action": "move",
-                    "path": "teste.txt",
-                    "moved_to": "docs/teste.txt",
-                    "diff": ""
+                    "changes": [{
+                        "action": "move",
+                        "path": "teste.txt",
+                        "moved_to": "docs/teste.txt",
+                        "diff": ""
+                    }]
                 }),
                 vec!["✓ Moved teste.txt → docs/teste.txt"],
             ),
         ];
 
         for (output, expected) in cases {
-            let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.edit".to_owned());
+            let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
             cell.complete(Some(output.to_string()));
             assert_eq!(rendered(&cell, 100), expected);
         }
@@ -810,13 +980,15 @@ mod tests {
 
     #[test]
     fn keeps_filesystem_paths_relative_in_the_conversation() {
-        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.write".to_owned());
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
         cell.complete(Some(
             serde_json::json!({
                 "status": "success",
-                "action": "create",
-                "path": "/workspace/project/teste.txt",
-                "diff": "@@\n+content\n"
+                "changes": [{
+                    "action": "create",
+                    "path": "/workspace/project/teste.txt",
+                    "diff": "@@\n+content\n"
+                }]
             })
             .to_string(),
         ));
@@ -827,24 +999,69 @@ mod tests {
     }
 
     #[test]
+    fn styles_filesystem_diff_blocks_and_line_kinds() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "changes": [{
+                    "action": "edit",
+                    "path": "teste.txt",
+                    "diff": "@@ -2,2 +2,2 @@\n context\n-old\n+new\n"
+                }]
+            })
+            .to_string(),
+        ));
+
+        assert_eq!(
+            cell.background_style().and_then(|style| style.bg),
+            Some(Color::Rgb(51, 51, 51))
+        );
+        let lines = cell.display_lines(100);
+        assert_eq!(lines[4].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(lines[5].spans[1].style.fg, Some(Color::Green));
+        assert!(lines[2].spans[0].style.add_modifier.contains(Modifier::DIM));
+        assert!(lines[3].spans[1].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn hides_patch_error_payloads_and_absolute_paths() {
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
+        cell.complete(Some(
+            serde_json::json!({
+                "status": "failed",
+                "error": "cannot update /workspace/project/teste.txt"
+            })
+            .to_string(),
+        ));
+
+        let lines = rendered(&cell, 100);
+        assert_eq!(lines, ["• Patch ✗", "  └ failed"]);
+        assert!(!lines.join("\n").contains("/workspace/project"));
+        assert!(!lines.join("\n").contains("status"));
+    }
+
+    #[test]
     fn compacts_large_filesystem_diffs_but_keeps_the_full_transcript() {
         let diff = format!(
             "@@\n{}",
             (0..40).map(|i| format!("+line-{i}\n")).collect::<String>()
         );
-        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.write".to_owned());
+        let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.patch".to_owned());
         cell.complete(Some(
             serde_json::json!({
                 "status": "success",
-                "action": "create",
-                "path": "large.txt",
-                "diff": diff
+                "changes": [{
+                    "action": "create",
+                    "path": "large.txt",
+                    "diff": diff
+                }]
             })
             .to_string(),
         ));
 
         let preview = rendered(&cell, 100);
-        assert!(preview.iter().any(|line| line.contains("diff omitted")));
+        assert!(preview.iter().any(|line| line.contains("diff lines omitted")));
         assert!(!preview.iter().any(|line| line.contains("line-39")));
 
         let transcript = cell

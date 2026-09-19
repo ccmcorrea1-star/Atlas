@@ -61,8 +61,6 @@ export const MATERIALIZED_CAPABILITY_IDS = [
   'filesystem.read',
   'filesystem.list',
   'filesystem.search',
-  'filesystem.write',
-  'filesystem.edit',
   'filesystem.glob',
   'filesystem.patch',
   'shell.exec',

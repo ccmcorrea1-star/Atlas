@@ -148,8 +148,6 @@ function(atlas_filesystem_runtime id directory source)
 endfunction()
 
 atlas_filesystem_runtime(read read read.cpp)
-atlas_filesystem_runtime(write write write.cpp)
-atlas_filesystem_runtime(edit edit edit.cpp)
 atlas_filesystem_runtime(list list list.cpp)
 atlas_filesystem_runtime(search search search.cpp)
 atlas_filesystem_runtime(glob glob glob.cpp)
@@ -187,8 +185,6 @@ target_link_libraries(atlas-filesystem-test PRIVATE
 )
 add_dependencies(atlas-filesystem-test
   atlas-filesystem-read-runtime
-  atlas-filesystem-write-runtime
-  atlas-filesystem-edit-runtime
   atlas-filesystem-list-runtime
   atlas-filesystem-search-runtime
   atlas-filesystem-glob-runtime
@@ -220,8 +216,6 @@ foreach(target
     atlas-system-info-runtime
     atlas-capability-bridge-runtime
     atlas-filesystem-read-runtime
-    atlas-filesystem-write-runtime
-    atlas-filesystem-edit-runtime
     atlas-filesystem-list-runtime
     atlas-filesystem-search-runtime
     atlas-filesystem-glob-runtime
@@ -272,12 +266,6 @@ install(TARGETS atlas-capability-bridge-runtime
 install(TARGETS atlas-filesystem-read-runtime
   RUNTIME DESTINATION capabilities/tools/filesystem/read
 )
-install(TARGETS atlas-filesystem-write-runtime
-  RUNTIME DESTINATION capabilities/tools/filesystem/write
-)
-install(TARGETS atlas-filesystem-edit-runtime
-  RUNTIME DESTINATION capabilities/tools/filesystem/edit
-)
 install(TARGETS atlas-filesystem-list-runtime
   RUNTIME DESTINATION capabilities/tools/filesystem/list
 )
@@ -292,12 +280,6 @@ install(TARGETS atlas-filesystem-patch-runtime
 )
 install(FILES src/capabilities/tools/filesystem/read/capability.json
   DESTINATION capabilities/tools/filesystem/read
-)
-install(FILES src/capabilities/tools/filesystem/write/capability.json
-  DESTINATION capabilities/tools/filesystem/write
-)
-install(FILES src/capabilities/tools/filesystem/edit/capability.json
-  DESTINATION capabilities/tools/filesystem/edit
 )
 install(FILES src/capabilities/tools/filesystem/list/capability.json
   DESTINATION capabilities/tools/filesystem/list

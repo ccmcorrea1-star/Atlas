@@ -128,8 +128,6 @@ try {
   ]);
   for (const [tool, toolSource] of [
     ['read', 'read.cpp'],
-    ['write', 'write.cpp'],
-    ['edit', 'edit.cpp'],
     ['list', 'list.cpp'],
     ['search', 'search.cpp'],
     ['glob', 'glob.cpp'],

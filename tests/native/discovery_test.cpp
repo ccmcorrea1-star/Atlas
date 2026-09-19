@@ -66,10 +66,10 @@ int main() {
   Loader loader(registry);
   const std::vector<std::string> manifests = {
       "src/capabilities/tools/filesystem/read/capability.json",
-      "src/capabilities/tools/filesystem/write/capability.json",
-      "src/capabilities/tools/filesystem/edit/capability.json",
       "src/capabilities/tools/filesystem/list/capability.json",
       "src/capabilities/tools/filesystem/search/capability.json",
+      "src/capabilities/tools/filesystem/glob/capability.json",
+      "src/capabilities/tools/filesystem/patch/capability.json",
       "src/capabilities/tools/lsp/diagnostics/capability.json",
       "src/capabilities/tools/shell/exec/capability.json",
       "src/capabilities/tools/system/info/capability.json",
@@ -93,13 +93,13 @@ int main() {
       {"mostre o conteudo do arquivo", "filesystem.read"},
       {"abrir arquivo para leitura", "filesystem.read"},
       {"ler as primeiras linhas", "filesystem.read"},
-      {"criar um arquivo novo", "filesystem.write"},
-      {"escrever arquivo", "filesystem.write"},
-      {"salvar dados num arquivo", "filesystem.write"},
-      {"editar o arquivo", "filesystem.edit"},
-      {"trocar um trecho do codigo", "filesystem.edit"},
-      {"corrigir o bug", "filesystem.edit"},
-      {"substituir texto", "filesystem.edit"},
+      {"criar um arquivo novo", "filesystem.patch"},
+      {"escrever arquivo", "filesystem.patch"},
+      {"salvar dados num arquivo", "filesystem.patch"},
+      {"editar o arquivo", "filesystem.patch"},
+      {"trocar um trecho do codigo", "filesystem.patch"},
+      {"corrigir o bug", "filesystem.patch"},
+      {"substituir texto", "filesystem.patch"},
       {"listar arquivos da pasta", "filesystem.list"},
       {"o que tem no diretorio", "filesystem.list"},
       {"ls", "filesystem.list"},
@@ -128,7 +128,7 @@ int main() {
       {"ver erros", "lsp.diagnostics"},
       {"abrir url", "web.fetch"},
       {"abrir arquivo", "filesystem.read"},
-      {"criar arquivo", "filesystem.write"},
+      {"criar arquivo", "filesystem.patch"},
       {"servidor de linguagem", "lsp.diagnostics"},
       {"server", "lsp.diagnostics"},
       {"ver", "filesystem.read"},
@@ -161,7 +161,7 @@ int main() {
     DiscoveryRequest request;
     request.query = std::string("de o para com e");
     const auto results = discovery.discover(request);
-    require(results.size() == 10, "so stopwords equivale a query vazia: 10 tools");
+    require(results.size() == 10, "so stopwords equivale a query vazia: 10 capabilities");
   }
   expectTop(discovery, {"por favor me mostre o arquivo", "filesystem.read"});
   expectTop(discovery, {"informações do sistema", "system.info"});

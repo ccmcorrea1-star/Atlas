@@ -8,14 +8,6 @@ namespace atlas::capabilities::tools::filesystem {
 atlas::capabilities::ExecutionResult readDispatch(
     const atlas::capabilities::NativeRequest& request);
 
-// Criar ou sobrescrever um arquivo com o conteudo completo.
-atlas::capabilities::ExecutionResult writeDispatch(
-    const atlas::capabilities::NativeRequest& request);
-
-// Substituir trechos literais de um arquivo, na ordem informada.
-atlas::capabilities::ExecutionResult editDispatch(
-    const atlas::capabilities::NativeRequest& request);
-
 // Listar as entradas imediatas de um diretorio.
 atlas::capabilities::ExecutionResult listDispatch(
     const atlas::capabilities::NativeRequest& request);

@@ -273,6 +273,27 @@ std::vector<DiffLine> changedLines(
   return lines;
 }
 
+std::size_t oldLineCount(const std::vector<DiffLine>& lines, std::size_t end) {
+  return static_cast<std::size_t>(std::count_if(
+      lines.begin(),
+      lines.begin() + static_cast<std::ptrdiff_t>(end),
+      [](const DiffLine& line) { return line.marker != '+'; }));
+}
+
+std::size_t newLineCount(const std::vector<DiffLine>& lines, std::size_t end) {
+  return static_cast<std::size_t>(std::count_if(
+      lines.begin(),
+      lines.begin() + static_cast<std::ptrdiff_t>(end),
+      [](const DiffLine& line) { return line.marker != '-'; }));
+}
+
+std::size_t hunkStart(std::size_t before, std::size_t count) {
+  if (count != 0) {
+    return before + 1;
+  }
+  return before == 0 ? 0 : before;
+}
+
 std::string operationDiff(const std::string& before, const std::string& after) {
   if (before == after) {
     return std::string();
@@ -305,7 +326,14 @@ std::string operationDiff(const std::string& before, const std::string& after) {
       }
       const std::size_t firstLine = firstChange > 3 ? firstChange - 3 : 0;
       const std::size_t lastLine = std::min(lines.size(), lastChange + 4);
-      result += "@@\n";
+      const std::size_t oldBefore = oldLineCount(lines, firstLine);
+      const std::size_t newBefore = newLineCount(lines, firstLine);
+      const std::size_t oldCount = oldLineCount(lines, lastLine) - oldBefore;
+      const std::size_t newCount = newLineCount(lines, lastLine) - newBefore;
+      result += "@@ -" + std::to_string(hunkStart(oldBefore, oldCount)) + "," +
+          std::to_string(oldCount) + " +" +
+          std::to_string(hunkStart(newBefore, newCount)) + "," +
+          std::to_string(newCount) + " @@\n";
       for (std::size_t lineIndex = firstLine; lineIndex < lastLine; ++lineIndex) {
         result.push_back(lines[lineIndex].marker);
         result += lines[lineIndex].text;
@@ -364,141 +392,6 @@ atlas::capabilities::ExecutionResult readDispatch(const atlas::capabilities::Nat
       {"line_start", static_cast<std::int64_t>(first)},
       {"line_end", static_cast<std::int64_t>(last)},
       {"total_lines", static_cast<std::int64_t>(lines.line_starts.size())},
-  };
-  return result;
-}
-
-atlas::capabilities::ExecutionResult writeDispatch(const atlas::capabilities::NativeRequest& request) {
-  const std::string* path = nullptr;
-  std::string error;
-  if (!requirePath(request, &path, error)) {
-    return failure(request.target, std::move(error));
-  }
-  const std::string* content = stringField(request, "content");
-  if (content == nullptr) {
-    return failure(request.target, "field 'content' must be a string");
-  }
-
-  std::error_code code;
-  if (std::filesystem::is_directory(*path, code)) {
-    return failure(request.target, "path is a directory: " + *path);
-  }
-
-  std::string before;
-  const bool existed = std::filesystem::exists(*path, code);
-  if (existed) {
-    FileLines lines;
-    if (!readLines(*path, lines, error)) {
-      return failure(request.target, std::move(error));
-    }
-    before = std::move(lines.content);
-  }
-  if (!writeFile(*path, *content, error)) {
-    return failure(request.target, std::move(error));
-  }
-
-  atlas::capabilities::ExecutionResult result;
-  result.target = request.target;
-  result.status = atlas::capabilities::ExecutionStatus::success;
-  result.output = StructuredValue::Object{
-      {"path", workspacePath(*path)},
-      {"action", existed ? "edit" : "create"},
-      {"diff", operationDiff(before, *content)},
-      {"bytes", static_cast<std::int64_t>(content->size())},
-  };
-  return result;
-}
-
-atlas::capabilities::ExecutionResult editDispatch(const atlas::capabilities::NativeRequest& request) {
-  const std::string* path = nullptr;
-  std::string error;
-  if (!requirePath(request, &path, error)) {
-    return failure(request.target, std::move(error));
-  }
-
-  const StructuredValue* replacementsValue = argument(request, "replacements");
-  const auto* replacements = replacementsValue == nullptr
-      ? nullptr
-      : std::get_if<StructuredValue::Array>(&replacementsValue->value);
-  if (replacements == nullptr) {
-    return failure(request.target, "field 'replacements' must be an array of objects");
-  }
-
-  struct Replacement {
-    std::string old_string;
-    std::string new_string;
-  };
-  std::vector<Replacement> parsed;
-  for (const StructuredValue& item : *replacements) {
-    const auto* object = std::get_if<StructuredValue::Object>(&item.value);
-    if (object == nullptr) {
-      return failure(
-          request.target,
-          "field 'replacements' must contain objects with 'old_string' and 'new_string'");
-    }
-
-    Replacement replacement;
-    if (const auto oldIterator = object->find("old_string"); oldIterator != object->end()) {
-      if (const auto* value = std::get_if<std::string>(&oldIterator->second.value); value != nullptr) {
-        replacement.old_string = *value;
-      }
-    }
-    if (const auto newIterator = object->find("new_string"); newIterator != object->end()) {
-      if (const auto* value = std::get_if<std::string>(&newIterator->second.value); value != nullptr) {
-        replacement.new_string = *value;
-      }
-    }
-    if (replacement.old_string.empty()) {
-      return failure(request.target, "field 'old_string' must be a non-empty string");
-    }
-    parsed.push_back(std::move(replacement));
-  }
-
-  FileLines lines;
-  if (!readLines(*path, lines, error)) {
-    return failure(request.target, std::move(error));
-  }
-
-  const std::string before = lines.content;
-  std::string edited = std::move(lines.content);
-  for (std::size_t index = 0; index < parsed.size(); ++index) {
-    const Replacement& item = parsed[index];
-    std::size_t occurrences = 0;
-    for (std::size_t position = edited.find(item.old_string);
-         position != std::string::npos;
-         position = edited.find(item.old_string, position + item.old_string.size())) {
-      ++occurrences;
-    }
-    if (occurrences == 0) {
-      return failure(
-          request.target,
-          "replacement " + std::to_string(index + 1) +
-              ": old_string not found in " + *path);
-    }
-    if (occurrences > 1) {
-      return failure(
-          request.target,
-          "replacement " + std::to_string(index + 1) + ": old_string matches " +
-              std::to_string(occurrences) + " occurrences; expected exactly one");
-    }
-    const std::size_t position = edited.find(item.old_string);
-    edited.replace(position, item.old_string.size(), item.new_string);
-  }
-
-  if (!writeFile(*path, edited, error)) {
-    return failure(request.target, std::move(error));
-  }
-
-  const std::int64_t applied = static_cast<std::int64_t>(parsed.size());
-
-  atlas::capabilities::ExecutionResult result;
-  result.target = request.target;
-  result.status = atlas::capabilities::ExecutionStatus::success;
-  result.output = StructuredValue::Object{
-      {"path", workspacePath(*path)},
-      {"action", "edit"},
-      {"diff", operationDiff(before, edited)},
-      {"replacements", applied},
   };
   return result;
 }
