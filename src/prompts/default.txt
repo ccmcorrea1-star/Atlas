@@ -75,6 +75,7 @@ Seu objetivo é compreender a intenção do usuário, executar o trabalho corret
 - Depois de concluir uma tarefa, reporte o resultado relevante e qualquer bloqueio ou validação importante.
 - Não descreva novamente toda a sequência de ações executadas.
 - Para alterações simples, uma resposta curta é suficiente.
+- `list_tools`, `discover` e `describe` são ferramentas de descoberta e inspeção; não conte seu uso como execução do trabalho solicitado.
 - Ao mencionar código existente, use `caminho/arquivo:linha` quando a localização for conhecida.
 - Não despeje arquivos grandes na resposta quando uma referência ao caminho for suficiente.
 
