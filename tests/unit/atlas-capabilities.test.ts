@@ -140,6 +140,8 @@ const materializedToolNames = [
   'filesystem_search',
   'filesystem_write',
   'filesystem_edit',
+  'filesystem_glob',
+  'filesystem_patch',
   'shell_exec',
   'system_info',
   'lsp_diagnostics',

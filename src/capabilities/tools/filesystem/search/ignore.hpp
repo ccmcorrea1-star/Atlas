@@ -8,6 +8,10 @@
 
 namespace atlas::capabilities::tools::filesystem {
 
+// Casa um padrao glob contra um caminho, com suporte a '**' entre segmentos,
+// '*' e '?' dentro de um segmento e classes '[...]'.
+bool globMatch(std::string_view pattern, std::string_view path);
+
 // Decide quais entradas a busca recursiva deve pular: artefatos conhecidos de
 // build/dependencias e padroes dos arquivos .gitignore do projeto.
 class SearchIgnores {

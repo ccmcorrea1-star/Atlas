@@ -24,4 +24,12 @@ atlas::capabilities::ExecutionResult listDispatch(
 atlas::capabilities::ExecutionResult searchDispatch(
     const atlas::capabilities::NativeRequest& request);
 
+// Localizar arquivos por padrao glob, respeitando as regras de ignore da busca.
+atlas::capabilities::ExecutionResult globDispatch(
+    const atlas::capabilities::NativeRequest& request);
+
+// Aplicar um patch no formato *** Begin Patch/*** End Patch.
+atlas::capabilities::ExecutionResult patchDispatch(
+    const atlas::capabilities::NativeRequest& request);
+
 }  // namespace atlas::capabilities::tools::filesystem

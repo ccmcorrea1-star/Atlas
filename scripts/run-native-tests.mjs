@@ -132,6 +132,8 @@ try {
     ['edit', 'edit.cpp'],
     ['list', 'list.cpp'],
     ['search', 'search.cpp'],
+    ['glob', 'glob.cpp'],
+    ['patch', 'patch.cpp'],
   ]) {
     run('g++', [
       '-std=c++23',

@@ -1,0 +1,23 @@
+{
+  "id": "filesystem.patch",
+  "type": "tool",
+  "summary": "aplicar um patch de arquivos em lote",
+  "description": "aplicar adicoes, atualizacoes, remocoes e movimentos no formato *** Begin Patch/*** End Patch",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "patch": {
+        "type": "string",
+        "description": "patch no formato *** Begin Patch ... *** End Patch"
+      }
+    },
+    "required": ["patch"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

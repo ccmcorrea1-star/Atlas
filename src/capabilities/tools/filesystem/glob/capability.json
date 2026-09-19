@@ -1,0 +1,32 @@
+{
+  "id": "filesystem.glob",
+  "type": "tool",
+  "summary": "localizar arquivos por padrao glob",
+  "description": "encontrar arquivos de um diretorio por padrao glob como **/*.ts, respeitando .gitignore e artefatos de build",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "caminho explicito do diretorio raiz"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "padrao glob relativo a raiz, como **/*.ts"
+      },
+      "max_results": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "limite de resultados; padrao 200"
+      }
+    },
+    "required": ["path", "pattern"],
+    "additionalProperties": false
+  },
+  "parent": "filesystem",
+  "aliases": [],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

@@ -161,6 +161,10 @@ std::filesystem::path repositoryRoot(const std::filesystem::path& root) {
 
 }  // namespace
 
+bool globMatch(std::string_view pattern, std::string_view path) {
+  return matchSegments(splitPath(pattern), 0, splitPath(path), 0);
+}
+
 std::vector<SearchIgnores::Rule> SearchIgnores::parse(std::string_view content) {
   std::vector<Rule> rules;
   std::istringstream stream{std::string(content)};

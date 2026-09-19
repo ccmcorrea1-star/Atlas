@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -121,7 +122,8 @@ void testLoadingAndDiscovery() {
   require(registry.get("filesystem").has_value(), "filesystem group should be registered");
 
   for (const std::string_view id :
-       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search"}) {
+       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search",
+        "filesystem.glob", "filesystem.patch"}) {
     const auto registered = registry.get(id);
     require(registered.has_value(), std::string(id).append(" should be registered"));
     require(registered->parent == "filesystem", std::string(id).append(" should belong to the filesystem group"));
@@ -135,7 +137,8 @@ void testLoadingAndDiscovery() {
 
   const auto discoverable = discovery.discover();
   for (const std::string_view id :
-       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search"}) {
+       {"filesystem.read", "filesystem.write", "filesystem.edit", "filesystem.list", "filesystem.search",
+        "filesystem.glob", "filesystem.patch"}) {
     const bool found = std::any_of(
         discoverable.begin(),
         discoverable.end(),
@@ -389,6 +392,265 @@ void testSearchIgnores() {
       "file name search should not report ignored build artifacts");
 }
 
+// Extrai os caminhos retornados por um resultado de glob.
+std::vector<std::string> globPaths(const ExecutionResult& result) {
+  std::vector<std::string> paths;
+  const StructuredValue::Array* matches = arrayOutput(result, "matches");
+  if (matches == nullptr) {
+    return paths;
+  }
+  for (const StructuredValue& match : *matches) {
+    if (const auto* path = std::get_if<std::string>(&match.value); path != nullptr) {
+      paths.push_back(*path);
+    }
+  }
+  return paths;
+}
+
+void testGlob() {
+  TempTree tree = TempTree::create();
+  const std::filesystem::path root = tree.root;
+  std::error_code code;
+  std::filesystem::create_directories(root / "node_modules" / "pkg", code);
+  std::filesystem::create_directories(root / "src" / "deep", code);
+  TempTree::writeFile(root / "node_modules" / "pkg" / "dep.txt", "ignored\n");
+  TempTree::writeFile(root / "src" / "main.cpp", "int main() {}\n");
+  TempTree::writeFile(root / "src" / "deep" / "util.cpp", "void util() {}\n");
+
+  // Padrao sem '/' casa o nome do arquivo em qualquer nivel.
+  const ExecutionResult byName = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"pattern", std::string("*.cpp")}})});
+  require(byName.status == ExecutionStatus::success, "filesystem.glob by name should succeed");
+  const std::vector<std::string> byNamePaths = globPaths(byName);
+  require(byNamePaths.size() == 2, "filesystem.glob should find both cpp files");
+  require(
+      byNamePaths[0] == (root / "src/deep/util.cpp").string(),
+      "filesystem.glob should sort paths deterministically");
+  require(
+      byNamePaths[1] == (root / "src/main.cpp").string(),
+      "filesystem.glob should sort paths deterministically");
+  require(
+      std::get<std::int64_t>(outputField(byName, "total_matches")->value) == 2,
+      "filesystem.glob should report the total");
+
+  // Padrao com '/' casa o caminho relativo a raiz.
+  const ExecutionResult byPath = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"pattern", std::string("src/**/*.cpp")}})});
+  require(byPath.status == ExecutionStatus::success, "filesystem.glob by relative path should succeed");
+  const std::vector<std::string> byPathPaths = globPaths(byPath);
+  require(byPathPaths.size() == 2, "filesystem.glob should match nested relative paths");
+
+  // Artefatos de build ficam de fora, como em filesystem.search.
+  const ExecutionResult ignored = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}, {"pattern", std::string("**/*.txt")}})});
+  const std::vector<std::string> ignoredPaths = globPaths(ignored);
+  require(ignoredPaths.size() == 2, "filesystem.glob should find the two source txt files");
+  for (const std::string& path : ignoredPaths) {
+    require(
+        path.find("node_modules") == std::string::npos,
+        "filesystem.glob should ignore node_modules");
+  }
+
+  // Limitacao explicita.
+  const ExecutionResult limited = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())},
+                           {"pattern", std::string("**/*.cpp")},
+                           {"max_results", std::int64_t{1}}})});
+  require(limited.status == ExecutionStatus::success, "limited glob should succeed");
+  require(globPaths(limited).size() == 1, "limited glob should honor max_results");
+  require(
+      std::get<bool>(outputField(limited, "truncated")->value),
+      "limited glob should report truncation");
+
+  // Erros.
+  const ExecutionResult missingPath = filesystem::globDispatch(
+      {"local", arguments({{"pattern", StructuredValue(std::string("*.cpp"))}})});
+  require(missingPath.status == ExecutionStatus::failed, "glob without path should fail");
+  require(
+      missingPath.error == "field 'path' must be a non-empty string",
+      "glob path error should be explicit");
+
+  const ExecutionResult missingPattern = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(root.string())}})});
+  require(missingPattern.status == ExecutionStatus::failed, "glob without pattern should fail");
+  require(
+      missingPattern.error == "field 'pattern' must be a non-empty string",
+      "glob pattern error should be explicit");
+
+  const std::string notDirectory = tree.file("hello.txt");
+  const ExecutionResult notDir = filesystem::globDispatch(
+      {"local", arguments({{"path", StructuredValue(notDirectory)}, {"pattern", std::string("*.cpp")}})});
+  require(notDir.status == ExecutionStatus::failed, "glob on a file should fail");
+  require(notDir.error == "path is not a directory: " + notDirectory, "glob error should be explicit");
+}
+
+void testPatch() {
+  TempTree tree = TempTree::create();
+  const std::filesystem::path added = tree.root / "patch-added.txt";
+  const std::filesystem::path source = tree.root / "patch-source.txt";
+  const std::filesystem::path target = tree.root / "patch-target.txt";
+  TempTree::writeFile(source, "hello\nworld\n");
+
+  // Add File.
+  const std::string addPatch =
+      "*** Begin Patch\n"
+      "*** Add File: " + added.string() + "\n"
+      "+first\n"
+      "+second\n"
+      "*** End Patch\n";
+  const ExecutionResult add = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(addPatch)}})});
+  require(add.status == ExecutionStatus::success, "filesystem.patch add should succeed");
+  require(tree.readFile(added) == "first\nsecond\n", "patch add should write the content");
+  require(
+      std::get<std::int64_t>(outputField(add, "added")->value) == 1,
+      "patch should count added files");
+
+  // Update File.
+  const std::string updatePatch =
+      "*** Begin Patch\n"
+      "*** Update File: " + added.string() + "\n"
+      "@@\n"
+      " first\n"
+      "-second\n"
+      "+second-updated\n"
+      "+third\n"
+      "*** End Patch\n";
+  const ExecutionResult update = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(updatePatch)}})});
+  require(update.status == ExecutionStatus::success, "filesystem.patch update should succeed");
+  require(
+      tree.readFile(added) == "first\nsecond-updated\nthird\n",
+      "patch update should apply the hunk");
+  require(
+      std::get<std::int64_t>(outputField(update, "updated")->value) == 1,
+      "patch should count updated files");
+
+  // Move to com edicao.
+  const std::string movePatch =
+      "*** Begin Patch\n"
+      "*** Update File: " + source.string() + "\n"
+      "*** Move to: " + target.string() + "\n"
+      "@@\n"
+      "-hello\n"
+      "+hi\n"
+      " world\n"
+      "*** End Patch\n";
+  const ExecutionResult move = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(movePatch)}})});
+  require(move.status == ExecutionStatus::success, "filesystem.patch move should succeed");
+  require(!std::filesystem::exists(source), "patch move should remove the source");
+  require(tree.readFile(target) == "hi\nworld\n", "patch move should keep the edited content");
+  require(
+      std::get<std::int64_t>(outputField(move, "moved")->value) == 1,
+      "patch should count moves");
+  const StructuredValue::Array* moveChanges = arrayOutput(move, "changes");
+  require(moveChanges != nullptr && moveChanges->size() == 1, "patch move should report one change");
+  require(
+      std::get<std::string>(matchField(moveChanges->front(), "action")->value) == "move",
+      "patch should report the move action");
+
+  // Delete File.
+  const std::string deletePatch =
+      "*** Begin Patch\n"
+      "*** Delete File: " + added.string() + "\n"
+      "*** End Patch\n";
+  const ExecutionResult remove = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(deletePatch)}})});
+  require(remove.status == ExecutionStatus::success, "filesystem.patch delete should succeed");
+  require(!std::filesystem::exists(added), "patch delete should remove the file");
+  require(
+      std::get<std::int64_t>(outputField(remove, "deleted")->value) == 1,
+      "patch should count deleted files");
+
+  // Parsing invalido.
+  const ExecutionResult noBegin = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(std::string("*** Add File: x\n+hi\n*** End Patch\n"))}})});
+  require(noBegin.status == ExecutionStatus::failed, "patch without begin should fail");
+  require(
+      noBegin.error == "invalid patch: patch must start with '*** Begin Patch'",
+      "patch begin error should be explicit");
+
+  const ExecutionResult noEnd = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(std::string("*** Begin Patch\n*** Delete File: x\n"))}})});
+  require(noEnd.status == ExecutionStatus::failed, "patch without end should fail");
+  require(
+      noEnd.error == "invalid patch: patch must end with '*** End Patch'",
+      "patch end error should be explicit");
+
+  const ExecutionResult badLine = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Add File: /tmp/atlas-patch-x\nhello\n*** End Patch\n")}})});
+  require(badLine.status == ExecutionStatus::failed, "add without '+' should fail");
+  require(
+      badLine.error == "invalid patch: add lines must start with '+' in section '/tmp/atlas-patch-x'",
+      "patch add line error should be explicit");
+
+  const ExecutionResult empty = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(std::string("*** Begin Patch\n*** End Patch\n"))}})});
+  require(empty.status == ExecutionStatus::failed, "empty patch should fail");
+  require(
+      empty.error == "invalid patch: patch must contain at least one operation",
+      "empty patch error should be explicit");
+
+  const ExecutionResult missingPatch = filesystem::patchDispatch({"local", {}});
+  require(missingPatch.status == ExecutionStatus::failed, "patch without field should fail");
+  require(
+      missingPatch.error == "field 'patch' must be a string",
+      "patch field error should be explicit");
+
+  // Erros de execucao.
+  const ExecutionResult addExisting = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Add File: " + tree.file("hello.txt") + "\n+hi\n*** End Patch\n")}})});
+  require(addExisting.status == ExecutionStatus::failed, "adding an existing file should fail");
+  require(
+      addExisting.error == "cannot add file that already exists: " + tree.file("hello.txt"),
+      "add existing error should be explicit");
+
+  const ExecutionResult deleteMissing = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Delete File: " + tree.file("missing.txt") + "\n*** End Patch\n")}})});
+  require(deleteMissing.status == ExecutionStatus::failed, "deleting a missing file should fail");
+  require(
+      deleteMissing.error == "cannot delete file that does not exist: " + tree.file("missing.txt"),
+      "delete missing error should be explicit");
+
+  const ExecutionResult updateMissing = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Update File: " + tree.file("missing.txt") + "\n@@\n-x\n+y\n*** End Patch\n")}})});
+  require(updateMissing.status == ExecutionStatus::failed, "updating a missing file should fail");
+  require(
+      updateMissing.error == "cannot update file that does not exist: " + tree.file("missing.txt"),
+      "update missing error should be explicit");
+
+  const ExecutionResult noContext = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Update File: " + tree.file("hello.txt") + "\n@@\n-not-here\n+x\n*** End Patch\n")}})});
+  require(noContext.status == ExecutionStatus::failed, "update without matching context should fail");
+  require(
+      noContext.error == "update '" + tree.file("hello.txt") + "': hunk 1 context not found",
+      "hunk context error should be explicit");
+
+  const ExecutionResult moveExisting = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Update File: " + tree.file("hello.txt") + "\n*** Move to: " +
+          (tree.root / "nested/other.txt").string() + "\n*** End Patch\n")}})});
+  require(moveExisting.status == ExecutionStatus::failed, "moving onto an existing file should fail");
+  require(
+      moveExisting.error == "cannot move onto existing file: " + (tree.root / "nested/other.txt").string(),
+      "move existing error should be explicit");
+
+  // Validacao antes de aplicar: um patch parcialmente invalido nao altera nada.
+  const std::filesystem::path untouched = tree.root / "patch-untouched.txt";
+  const ExecutionResult atomic = filesystem::patchDispatch(
+      {"local", arguments({{"patch", StructuredValue(
+          "*** Begin Patch\n*** Add File: " + untouched.string() + "\n+content\n*** Update File: " +
+          tree.file("hello.txt") + "\n@@\n-not-here\n+x\n*** End Patch\n")}})});
+  require(atomic.status == ExecutionStatus::failed, "invalid patch should fail");
+  require(!std::filesystem::exists(untouched), "failed patch should not create files");
+}
+
 }  // namespace
 
 int main() {
@@ -400,5 +662,7 @@ int main() {
   testEdit(tree);
   testSearch(tree);
   testSearchIgnores();
+  testGlob();
+  testPatch();
   return EXIT_SUCCESS;
 }

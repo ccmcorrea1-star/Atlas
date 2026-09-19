@@ -152,6 +152,8 @@ atlas_filesystem_runtime(write write write.cpp)
 atlas_filesystem_runtime(edit edit edit.cpp)
 atlas_filesystem_runtime(list list list.cpp)
 atlas_filesystem_runtime(search search search.cpp)
+atlas_filesystem_runtime(glob glob glob.cpp)
+atlas_filesystem_runtime(patch patch patch.cpp)
 
 add_executable(atlas-capability-bridge-runtime
   src/capabilities/runtime/bridge/main.cpp
@@ -189,6 +191,8 @@ add_dependencies(atlas-filesystem-test
   atlas-filesystem-edit-runtime
   atlas-filesystem-list-runtime
   atlas-filesystem-search-runtime
+  atlas-filesystem-glob-runtime
+  atlas-filesystem-patch-runtime
 )
 
 add_executable(atlas-git-test tests/native/git_test.cpp)
@@ -220,6 +224,8 @@ foreach(target
     atlas-filesystem-edit-runtime
     atlas-filesystem-list-runtime
     atlas-filesystem-search-runtime
+    atlas-filesystem-glob-runtime
+    atlas-filesystem-patch-runtime
     atlas-shell-exec-test
     atlas-system-info-test
     atlas-filesystem-test
@@ -278,6 +284,12 @@ install(TARGETS atlas-filesystem-list-runtime
 install(TARGETS atlas-filesystem-search-runtime
   RUNTIME DESTINATION capabilities/tools/filesystem/search
 )
+install(TARGETS atlas-filesystem-glob-runtime
+  RUNTIME DESTINATION capabilities/tools/filesystem/glob
+)
+install(TARGETS atlas-filesystem-patch-runtime
+  RUNTIME DESTINATION capabilities/tools/filesystem/patch
+)
 install(FILES src/capabilities/tools/filesystem/read/capability.json
   DESTINATION capabilities/tools/filesystem/read
 )
@@ -292,6 +304,12 @@ install(FILES src/capabilities/tools/filesystem/list/capability.json
 )
 install(FILES src/capabilities/tools/filesystem/search/capability.json
   DESTINATION capabilities/tools/filesystem/search
+)
+install(FILES src/capabilities/tools/filesystem/glob/capability.json
+  DESTINATION capabilities/tools/filesystem/glob
+)
+install(FILES src/capabilities/tools/filesystem/patch/capability.json
+  DESTINATION capabilities/tools/filesystem/patch
 )
 install(FILES src/capabilities/tools/filesystem/group.json
   DESTINATION capabilities/tools/filesystem
