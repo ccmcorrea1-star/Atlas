@@ -6,6 +6,8 @@
   "oneOf": [
     { "$ref": "#/$defs/turnRequest" },
     { "$ref": "#/$defs/turnCancel" },
+    { "$ref": "#/$defs/commandRequest" },
+    { "$ref": "#/$defs/approvalRespond" },
     { "$ref": "#/$defs/sessionUpdated" },
     { "$ref": "#/$defs/turnStarted" },
     { "$ref": "#/$defs/contextUpdated" },
@@ -21,6 +23,9 @@
     { "$ref": "#/$defs/executionCompleted" },
     { "$ref": "#/$defs/turnCompleted" },
     { "$ref": "#/$defs/turnCancelled" },
+    { "$ref": "#/$defs/commandCompleted" },
+    { "$ref": "#/$defs/approvalRequested" },
+    { "$ref": "#/$defs/approvalResolved" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -73,7 +78,11 @@
       "type": "object",
       "properties": {
         "type": { "const": "turn.request" },
-        "input": { "type": "string", "minLength": 1 }
+        "input": { "type": "string", "minLength": 1 },
+        "attachments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attachment" }
+        }
       },
       "required": ["type", "input"],
       "additionalProperties": true
@@ -85,6 +94,53 @@
         "type": { "const": "turn.cancel" }
       },
       "required": ["type"],
+      "additionalProperties": true
+    },
+    "commandRequest": {
+      "allOf": [{ "$ref": "#/$defs/protocolHeader" }, { "$ref": "#/$defs/requestIdentity" }],
+      "type": "object",
+      "properties": {
+        "type": { "const": "command.request" },
+        "command": { "enum": ["new", "status", "stop"] }
+      },
+      "required": ["type", "command"],
+      "additionalProperties": true
+    },
+    "approvalRespond": {
+      "allOf": [{ "$ref": "#/$defs/protocolHeader" }, { "$ref": "#/$defs/requestIdentity" }],
+      "type": "object",
+      "properties": {
+        "type": { "const": "approval.respond" },
+        "approval_id": { "type": "string", "minLength": 1 },
+        "approved": { "type": "boolean" },
+        "comment": { "type": "string" }
+      },
+      "required": ["type", "approval_id", "approved"],
+      "additionalProperties": true
+    },
+    "attachment": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["voice", "audio", "image", "document"] },
+        "uri": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "file_name": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "source": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "required": ["type", "uri", "media_type"],
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["idle", "running", "cancelled"] },
+        "active_request_id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["id", "model", "provider", "status"],
       "additionalProperties": true
     },
     "sessionUpdated": {
@@ -363,7 +419,11 @@
               "properties": {
                 "content": { "type": "string" },
                 "message_id": { "type": "string", "minLength": 1 },
-                "context": { "$ref": "#/$defs/context" }
+                "context": { "$ref": "#/$defs/context" },
+                "attachments": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/attachment" }
+                }
               },
               "required": ["content"],
               "additionalProperties": true
@@ -389,6 +449,73 @@
               "additionalProperties": true
             }
           }
+        }
+      ]
+    },
+    "commandCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "command.completed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "command": { "enum": ["new", "status", "stop"] },
+                "message": { "type": "string" },
+                "session": { "$ref": "#/$defs/session" }
+              },
+              "required": ["command", "message", "session"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "approvalRequested": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "approval.requested" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "approval_id": { "type": "string", "minLength": 1 },
+                "tool_name": { "type": "string", "minLength": 1 },
+                "reason": { "type": "string", "minLength": 1 },
+                "expires_at": { "type": "string" }
+              },
+              "required": ["approval_id", "tool_name", "reason"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "approvalResolved": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "approval.resolved" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "approval_id": { "type": "string", "minLength": 1 },
+                "approved": { "type": "boolean" },
+                "comment": { "type": "string" }
+              },
+              "required": ["approval_id", "approved"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
         }
       ]
     },

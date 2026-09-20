@@ -7,6 +7,7 @@ import {
   Agent,
   MemorySession,
   Runner,
+  type AgentInputItem,
   type FunctionTool,
   type Model,
   type RunStreamEvent,
@@ -25,6 +26,7 @@ import {
   stableSerialize,
 } from '../capabilities/execution-hooks.js';
 import type { AtlasConfig } from '../config/index.js';
+import type { RuntimeAttachment } from '../runtime/protocol.js';
 import {
   createCapabilityRuntime,
   type CapabilityDiscoveryRequest,
@@ -97,6 +99,8 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   model?: string;
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
+  // Anexos chegam tipados ao Agent, sem marcadores textuais de plataforma.
+  attachments?: RuntimeAttachment[];
   capabilityRuntime?: CapabilityRuntime;
   // Configuração global também alimenta os adapters das capabilities.
   atlasConfig?: AtlasConfig;
@@ -916,10 +920,47 @@ function getConversationId(options: AtlasRunOptions): string {
   return randomUUID();
 }
 
+function inputWithAttachments(
+  input: string,
+  attachments?: readonly RuntimeAttachment[],
+): string | AgentInputItem[] {
+  if (attachments === undefined || attachments.length === 0) {
+    return input;
+  }
+
+  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: input }];
+  for (const attachment of attachments) {
+    if (attachment.type === 'image') {
+      content.push({ type: 'input_image', image: attachment.uri });
+    } else if (attachment.type === 'voice' || attachment.type === 'audio') {
+      content.push({
+        type: 'audio',
+        audio: attachment.uri,
+        format: attachment.media_type,
+      });
+    } else {
+      content.push({
+        type: 'input_file',
+        file: attachment.uri,
+        ...(attachment.file_name === undefined ? {} : { filename: attachment.file_name }),
+      });
+    }
+  }
+
+  return [{ role: 'user', content }] as AgentInputItem[];
+}
+
+export function resetAtlasConversation(conversationId: string): void {
+  for (const runtime of atlasRuntimes.values()) {
+    runtime.sessions.delete(conversationId);
+  }
+}
+
 export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   // O ID de conversa nao participa da chave do runtime, apenas da sessao de historico.
   const {
     conversationId: _conversationId,
+    attachments,
     capabilityRuntime: requestedCapabilityRuntime,
     atlasConfig,
     abortSignal,
@@ -966,13 +1007,14 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
   runtime.sessions.set(sessionId, session);
 
+  const agentInput = inputWithAttachments(input, attachments);
   return withOpenCodeGoAbortSignal(abortSignal, () =>
     withOpenCodeGoSession(sessionId, async () => {
       if (!onEvent) {
-        return runtime.runner.run(agent, input, { session });
+        return runtime.runner.run(agent, agentInput, { session });
       }
 
-      const streamedResult = await runtime.runner.run(agent, input, {
+      const streamedResult = await runtime.runner.run(agent, agentInput, {
         session,
         stream: true,
       });

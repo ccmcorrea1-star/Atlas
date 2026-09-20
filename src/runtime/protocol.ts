@@ -1,6 +1,41 @@
 export const RUNTIME_PROTOCOL = 'atlas-runtime';
 export const RUNTIME_PROTOCOL_VERSION = 1;
 
+export type RuntimeAttachmentType = 'voice' | 'audio' | 'image' | 'document';
+
+export type RuntimeAttachment = {
+  type: RuntimeAttachmentType;
+  uri: string;
+  media_type: string;
+  file_name?: string;
+  size_bytes?: number;
+  source?: Record<string, string>;
+};
+
+export type RuntimeCommandName = 'new' | 'status' | 'stop';
+
+export type RuntimeCommandDefinition = {
+  name: RuntimeCommandName;
+  description: string;
+  available_during_turn: boolean;
+};
+
+export const RUNTIME_COMMANDS: readonly RuntimeCommandDefinition[] = [
+  { name: 'new', description: 'inicia uma nova sessão', available_during_turn: true },
+  { name: 'status', description: 'consulta o estado da sessão', available_during_turn: true },
+  { name: 'stop', description: 'cancela o turno ativo', available_during_turn: true },
+];
+
+export type RuntimeSessionStatus = 'idle' | 'running' | 'cancelled';
+
+export type RuntimeSession = {
+  id: string;
+  model: string;
+  provider: string;
+  status: RuntimeSessionStatus;
+  active_request_id?: string;
+};
+
 export type RuntimeTurnRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -8,6 +43,7 @@ export type RuntimeTurnRequest = {
   request_id: string;
   conversation_id: string;
   input: string;
+  attachments?: RuntimeAttachment[];
 };
 
 export type RuntimeTurnCancel = {
@@ -18,7 +54,28 @@ export type RuntimeTurnCancel = {
   conversation_id: string;
 };
 
-export type RuntimeRequest = RuntimeTurnRequest | RuntimeTurnCancel;
+export type RuntimeCommandRequest = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'command.request';
+  request_id: string;
+  conversation_id: string;
+  command: RuntimeCommandName;
+};
+
+export type RuntimeApprovalResponse = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'approval.respond';
+  request_id: string;
+  conversation_id: string;
+  approval_id: string;
+  approved: boolean;
+  comment?: string;
+};
+
+export type RuntimeRequest =
+  RuntimeTurnRequest | RuntimeTurnCancel | RuntimeCommandRequest | RuntimeApprovalResponse;
 
 export type RuntimeEventType =
   | 'session.updated'
@@ -36,6 +93,9 @@ export type RuntimeEventType =
   | 'execution.completed'
   | 'turn.completed'
   | 'turn.cancelled'
+  | 'command.completed'
+  | 'approval.requested'
+  | 'approval.resolved'
   | 'error';
 
 export type RuntimeContextUsage = {
@@ -46,6 +106,25 @@ export type RuntimeContextUsage = {
 export type RuntimeSessionUpdatedData = {
   model: string;
   provider: string;
+};
+
+export type RuntimeCommandCompletedData = {
+  command: RuntimeCommandName;
+  message: string;
+  session: RuntimeSession;
+};
+
+export type RuntimeApprovalRequestedData = {
+  approval_id: string;
+  tool_name: string;
+  reason: string;
+  expires_at?: string;
+};
+
+export type RuntimeApprovalResolvedData = {
+  approval_id: string;
+  approved: boolean;
+  comment?: string;
 };
 
 export type RuntimeToolStartedData = {
@@ -71,6 +150,7 @@ export type RuntimeTurnCompletedData = {
   content: string;
   message_id?: string;
   context?: RuntimeContextUsage;
+  attachments?: RuntimeAttachment[];
 };
 
 export type RuntimeTurnCancelledData = {
@@ -129,6 +209,63 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requiredString(value, field);
+}
+
+function parseAttachments(value: unknown): RuntimeAttachment[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new RuntimeProtocolError('Runtime request field "attachments" must be an array.');
+  }
+
+  return value.map((item, index) => {
+    const attachment = objectValue(item, `Runtime attachment ${index}`);
+    const type = requiredString(attachment.type, `attachments[${index}].type`);
+    if (!['voice', 'audio', 'image', 'document'].includes(type)) {
+      throw new RuntimeProtocolError(`Unsupported attachment type "${type}".`);
+    }
+
+    const size = attachment.size_bytes;
+    if (
+      size !== undefined &&
+      (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0)
+    ) {
+      throw new RuntimeProtocolError(
+        `attachments[${index}].size_bytes must be a non-negative integer.`,
+      );
+    }
+
+    const source = attachment.source;
+    if (source !== undefined) {
+      const sourceObject = objectValue(source, `attachments[${index}].source`);
+      for (const [key, sourceValue] of Object.entries(sourceObject)) {
+        if (typeof sourceValue !== 'string') {
+          throw new RuntimeProtocolError(`attachments[${index}].source.${key} must be a string.`);
+        }
+      }
+    }
+
+    const fileName =
+      attachment.file_name === undefined
+        ? undefined
+        : requiredString(attachment.file_name, `attachments[${index}].file_name`);
+    return {
+      type: type as RuntimeAttachmentType,
+      uri: requiredString(attachment.uri, `attachments[${index}].uri`),
+      media_type: requiredString(attachment.media_type, `attachments[${index}].media_type`),
+      ...(fileName === undefined ? {} : { file_name: fileName }),
+      ...(size === undefined ? {} : { size_bytes: size as number }),
+      ...(source === undefined ? {} : { source: source as Record<string, string> }),
+    };
+  });
+}
+
 export function parseRuntimeMessage(payload: string): RuntimeRequest {
   let value: unknown;
   try {
@@ -152,6 +289,7 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
   const request_id = requiredString(request.request_id, 'request_id');
   const conversation_id = requiredString(request.conversation_id, 'conversation_id');
   if (request.type === 'turn.request') {
+    const attachments = parseAttachments(request.attachments);
     return {
       protocol: RUNTIME_PROTOCOL,
       version: RUNTIME_PROTOCOL_VERSION,
@@ -159,6 +297,7 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       request_id,
       conversation_id,
       input: requiredString(request.input, 'input'),
+      ...(attachments === undefined ? {} : { attachments }),
     };
   }
   if (request.type === 'turn.cancel') {
@@ -168,6 +307,36 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       type: 'turn.cancel',
       request_id,
       conversation_id,
+    };
+  }
+  if (request.type === 'command.request') {
+    const command = requiredString(request.command, 'command');
+    if (!RUNTIME_COMMANDS.some((definition) => definition.name === command)) {
+      throw new RuntimeProtocolError(`Unsupported runtime command "${command}".`);
+    }
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'command.request',
+      request_id,
+      conversation_id,
+      command: command as RuntimeCommandName,
+    };
+  }
+  if (request.type === 'approval.respond') {
+    if (typeof request.approved !== 'boolean') {
+      throw new RuntimeProtocolError('Runtime request field "approved" must be a boolean.');
+    }
+    const comment = optionalString(request.comment, 'comment');
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'approval.respond',
+      request_id,
+      conversation_id,
+      approval_id: requiredString(request.approval_id, 'approval_id'),
+      approved: request.approved === true,
+      ...(comment === undefined ? {} : { comment }),
     };
   }
   throw new RuntimeProtocolError(`Unsupported runtime message type "${String(request.type)}".`);
@@ -182,7 +351,7 @@ export function parseRuntimeTurnRequest(payload: string): RuntimeTurnRequest {
 }
 
 export function runtimeEvent(
-  request: RuntimeTurnRequest,
+  request: Pick<RuntimeTurnRequest, 'request_id' | 'conversation_id'>,
   type: RuntimeEventType,
   data: Record<string, unknown> = {},
 ): RuntimeEvent {

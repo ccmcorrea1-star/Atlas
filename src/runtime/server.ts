@@ -9,7 +9,12 @@ import {
   type AtlasConfig,
   loadAtlasConfig,
 } from '../config/index.js';
-import { runAtlas, type AtlasRunEvent, type AtlasRunOptions } from '../index.js';
+import {
+  runAtlas,
+  resetAtlasConversation,
+  type AtlasRunEvent,
+  type AtlasRunOptions,
+} from '../index.js';
 import {
   getOpenCodeGoContextWindow,
   OPENCODE_GO_MODELS,
@@ -21,8 +26,11 @@ import {
   runtimeErrorEvent,
   runtimeEvent,
   serializeRuntimeMessage,
+  type RuntimeCommandCompletedData,
+  type RuntimeCommandRequest,
   type RuntimeEvent,
   type RuntimeRequest,
+  type RuntimeSession,
   type RuntimeSessionUpdatedData,
   type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
@@ -204,6 +212,17 @@ export class AtlasRuntimeServer {
     if (message.type === 'turn.cancel') {
       return this.handleCancel(message, send);
     }
+    if (message.type === 'command.request') {
+      return this.handleCommand(message, send);
+    }
+    if (message.type === 'approval.respond') {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent('No approval is currently waiting in this Runtime.', message),
+        ),
+      );
+      return Promise.resolve();
+    }
 
     const request = message;
     const controller = new AbortController();
@@ -237,6 +256,57 @@ export class AtlasRuntimeServer {
     };
     void current.then(clearQueue, clearQueue);
     return current;
+  }
+
+  private async handleCommand(
+    request: RuntimeCommandRequest,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const active = this.activeTurns.get(request.conversation_id);
+    const abortActive = () => {
+      for (const controller of active?.values() ?? []) {
+        controller.abort(new Error(`runtime command ${request.command}`));
+      }
+    };
+
+    let message: string;
+    let statusOverride: RuntimeSession['status'] | undefined;
+    if (request.command === 'new') {
+      abortActive();
+      this.conversationQueues.delete(request.conversation_id);
+      resetAtlasConversation(request.conversation_id);
+      message = 'Nova sessão iniciada.';
+    } else if (request.command === 'stop') {
+      abortActive();
+      message =
+        active === undefined || active.size === 0 ? 'Nenhum turno ativo.' : 'Turno cancelado.';
+      statusOverride = active === undefined || active.size === 0 ? 'idle' : 'cancelled';
+    } else {
+      message = 'Sessão ativa.';
+    }
+
+    const session = this.sessionSnapshot(request.conversation_id, statusOverride);
+    const data: RuntimeCommandCompletedData = {
+      command: request.command,
+      message,
+      session,
+    };
+    send(serializeRuntimeMessage(runtimeEvent(request, 'command.completed', data)));
+  }
+
+  private sessionSnapshot(
+    conversationId: string,
+    statusOverride?: RuntimeSession['status'],
+  ): RuntimeSession {
+    const active = this.activeTurns.get(conversationId);
+    const activeRequestId = active?.keys().next().value as string | undefined;
+    return {
+      id: conversationId,
+      model: this.sessionData.model,
+      provider: this.sessionData.provider,
+      status: statusOverride ?? (activeRequestId === undefined ? 'idle' : 'running'),
+      ...(activeRequestId === undefined ? {} : { active_request_id: activeRequestId }),
+    };
   }
 
   private handleCancel(
@@ -290,6 +360,7 @@ export class AtlasRuntimeServer {
         model: this.atlasModel,
         atlasConfig: this.atlasConfig,
         conversationId: request.conversation_id,
+        ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
         onEvent: (event) => {
           messageId = eventMessageId(event) ?? messageId;
           if (event.type === 'message.delta') {

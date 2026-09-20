@@ -127,7 +127,7 @@ O **Atlas Telegram** é o cliente remoto do Atlas para Telegram.
 
 Ele deve oferecer uma experiência próxima à do Atlas nos demais clientes, usando mensagens, voz, imagens, documentos e controles interativos como interface para o mesmo Runtime.
 
-A implementação fica em `clients/telegram/` e atua como adapter entre a Telegram Bot API e os contratos públicos do Atlas. Agent, sessões, Tasks, Workers, memória e execução continuam pertencendo ao Runtime.
+A implementação fica em `clients/telegram/` e atua como adapter entre a Telegram Bot API e os contratos públicos do Atlas em [`protocol/runtime/v1/`](../protocol/runtime/v1/). Agent, sessões, Tasks, Workers, memória e execução continuam pertencendo ao Runtime.
 
 O cliente deve suportar conversas persistentes, streaming por atualização de mensagens, anexos, notificações assíncronas, acompanhamento de Tasks e approvals. Comandos operacionais podem expor ações como iniciar uma nova conversa, consultar estado, cancelar uma execução e alternar sessões.
 

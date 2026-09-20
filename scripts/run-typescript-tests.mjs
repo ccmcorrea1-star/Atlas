@@ -22,6 +22,7 @@ function testFiles(domain) {
   const webSearchTest = resolve(unitTests, 'web-search.test.ts');
   const webBrowserTest = resolve(unitTests, 'web-browser.test.ts');
   const webCrawlTest = resolve(unitTests, 'web-crawl.test.ts');
+  const telegramTest = resolve(unitTests, 'telegram.test.ts');
   if (domain === 'web-search') {
     return [webSearchTest];
   }
@@ -31,11 +32,18 @@ function testFiles(domain) {
   if (domain === 'web-crawl') {
     return [webCrawlTest];
   }
+  if (domain === 'telegram') {
+    return [resolve(projectRoot, 'tests/unit/telegram.test.ts')];
+  }
   if (domain !== 'runtime') {
     throw new Error(`unknown TypeScript test domain: ${domain}`);
   }
   return collectTestFiles(resolve(projectRoot, 'tests')).filter(
-    (path) => path !== webSearchTest && path !== webBrowserTest && path !== webCrawlTest,
+    (path) =>
+      path !== webSearchTest &&
+      path !== webBrowserTest &&
+      path !== webCrawlTest &&
+      path !== telegramTest,
   );
 }
 

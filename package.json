@@ -12,7 +12,7 @@
     "build:native": "node scripts/build-native.mjs all",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.tests.json --noEmit",
-    "lint": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"clients/telegram/**/*.ts\" \"tests/**/*.ts\"",
     "lint:client": "cargo clippy --locked --manifest-path clients/tui/Cargo.toml --all-targets -- -D warnings",
     "lint:fix": "eslint --config config/eslint.config.mjs \"config/**/*.mjs\" \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "format": "prettier --write .",
@@ -27,6 +27,7 @@
     "build:web-fetch": "node scripts/build-capability-runtime.mjs web-fetch release",
     "test:tui": "npm run test:client",
     "test:runtime": "node scripts/run-typescript-tests.mjs runtime",
+    "test:telegram": "node scripts/run-typescript-tests.mjs telegram",
     "test:native": "node scripts/run-native-tests.mjs",
     "test:lsp": "cargo test --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml",
     "test:web-fetch": "cargo test --locked --manifest-path src/capabilities/tools/web/fetch/Cargo.toml",
@@ -40,7 +41,7 @@
     "lint:lsp": "cargo clippy --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml --all-targets -- -D warnings",
     "smoke": "tsx src/smoke.ts",
     "bench:capabilities": "tsx scripts/benchmark-capability-bridge.ts",
-    "test": "npm run test:runtime && npm run test:native && npm run test:lsp && npm run test:web-fetch && npm run test:web-search && npm run test:web-browser && npm run test:web-crawl"
+    "test": "npm run test:runtime && npm run test:telegram && npm run test:native && npm run test:lsp && npm run test:web-fetch && npm run test:web-search && npm run test:web-browser && npm run test:web-crawl"
   },
   "repository": {
     "type": "git",

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  RUNTIME_COMMANDS,
   RUNTIME_PROTOCOL,
   RUNTIME_PROTOCOL_VERSION,
   parseRuntimeMessage,
@@ -127,5 +128,76 @@ test('serializes the reasoning lifecycle with a stable reasoning id', () => {
   assert.deepEqual(
     events.map((event) => event.type),
     ['reasoning-start', 'reasoning-delta', 'reasoning-end'],
+  );
+});
+
+test('parses typed attachments without encoding them in input text', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.request',
+      request_id: 'request-1',
+      conversation_id: 'conversation-1',
+      input: 'Analise o arquivo.',
+      attachments: [
+        {
+          type: 'document',
+          uri: 'file:///tmp/report.pdf',
+          media_type: 'application/pdf',
+          file_name: 'report.pdf',
+          size_bytes: 12,
+          source: { platform: 'telegram', file_id: 'file-1' },
+        },
+      ],
+    }),
+  );
+
+  assert.equal(parsed.type, 'turn.request');
+  assert.deepEqual(parsed.attachments?.[0], {
+    type: 'document',
+    uri: 'file:///tmp/report.pdf',
+    media_type: 'application/pdf',
+    file_name: 'report.pdf',
+    size_bytes: 12,
+    source: { platform: 'telegram', file_id: 'file-1' },
+  });
+  assert.equal(parsed.input, 'Analise o arquivo.');
+});
+
+test('accepts only commands exposed by the Runtime catalog', () => {
+  assert.deepEqual(
+    RUNTIME_COMMANDS.map((command) => command.name),
+    ['new', 'status', 'stop'],
+  );
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'command.request',
+      request_id: 'command-1',
+      conversation_id: 'conversation-1',
+      command: 'stop',
+    }),
+  );
+  assert.equal(parsed.type, 'command.request');
+  assert.equal(parsed.command, 'stop');
+});
+
+test('keeps approval responses typed and rejects non-boolean decisions', () => {
+  assert.throws(
+    () =>
+      parseRuntimeMessage(
+        JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'approval.respond',
+          request_id: 'approval-1',
+          conversation_id: 'conversation-1',
+          approval_id: 'approval-1',
+          approved: 'yes',
+        }),
+      ),
+    /approved.*boolean/,
   );
 });

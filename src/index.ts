@@ -1,5 +1,11 @@
 // Este e o ponto de entrada publico: consumidores importam o Agent e seu runtime daqui.
-export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './agent/atlas.js';
+export {
+  Atlas,
+  createAtlasRunner,
+  getAtlasRunner,
+  resetAtlasConversation,
+  runAtlas,
+} from './agent/atlas.js';
 export type { AtlasRunEvent, AtlasRunOptions } from './agent/atlas.js';
 
 // O runtime de capabilities permanece independente do Agent SDK e pode ser substituido em testes.
@@ -54,7 +60,25 @@ export type {
 } from './providers/opencode-go.js';
 
 export type {
+  RuntimeAttachment,
+  RuntimeAttachmentType,
+  RuntimeApprovalRequestedData,
+  RuntimeApprovalResolvedData,
+  RuntimeApprovalResponse,
+  RuntimeCommandCompletedData,
+  RuntimeCommandRequest,
+  RuntimeCommandDefinition,
+  RuntimeCommandName,
   RuntimeContextUsage,
+  RuntimeSession,
+  RuntimeSessionStatus,
   RuntimeTurnCancelledData,
   RuntimeTurnCompletedData,
+  RuntimeTurnRequest,
+} from './runtime/protocol.js';
+
+export {
+  RUNTIME_COMMANDS,
+  RUNTIME_PROTOCOL,
+  RUNTIME_PROTOCOL_VERSION,
 } from './runtime/protocol.js';

@@ -79,6 +79,18 @@ Clientes devem aceitar `message.delta`, `message.completed` ou ambos. Um Runtime
 
 Dados genéricos de tools não contêm argumentos, requisições de Discovery ou objetos de SDK. `shell.exec` é a exceção explícita: seu lifecycle público contém apenas os campos estruturados necessários para renderizar e correlacionar uma célula de execução. O Runtime continua responsável por Discovery, capabilities, autorização e execução.
 
+### Anexos
+
+`turn.request` aceita `attachments` como uma lista tipada. Cada item possui `type` (`voice`, `audio`, `image` ou `document`), `uri`, `media_type` e metadados opcionais. A origem do arquivo é transportada em `source`, sem marcadores inseridos no texto do usuário ou da resposta.
+
+### Sessões e comandos
+
+O Runtime mantém a sessão e a expõe tipada em `command.completed`. Clientes enviam `command.request` com um comando do catálogo público `new`, `status` ou `stop`. Esses comandos podem ser enviados enquanto outro turno está ativo. `session.updated` continua carregando apenas o modelo e o provider da sessão. O Runtime é responsável por resetar sessões e cancelar turnos.
+
+### Approvals
+
+`approval.requested` e `approval.resolved` são eventos públicos tipados. Um cliente responde com `approval.respond`; a implementação atual rejeita a resposta quando nenhum approval está aguardando, sem criar estado de approval no cliente.
+
 ## Superfícies disponíveis no cliente TUI
 
 O cliente TUI mapeia os eventos públicos para as superfícies canônicas existentes:
@@ -87,7 +99,7 @@ O cliente TUI mapeia os eventos públicos para as superfícies canônicas existe
 - `turn.started`, `context.updated`, `turn.completed` e `error` alimentam o status do turno, o footer e o contexto visível;
 - `turn.cancel` fecha o ciclo de cancelamento real do turno ativo.
 
-O v1 não oferece eventos ou requisições para approvals, `request_user_input`, elicitation MCP, anexos, keymap configurável ou sessões/modos adicionais. Essas superfícies não devem aparecer como atalhos ou views no cliente até que exista semântica equivalente no Runtime. Clientes v1 ignoram eventos aditivos desconhecidos quando puderem continuar com segurança.
+O v1 ainda não oferece eventos ou requisições para `request_user_input`, elicitation MCP ou keymap configurável. Essas superfícies não devem aparecer como atalhos ou views no cliente até que exista semântica equivalente no Runtime. Clientes v1 ignoram eventos aditivos desconhecidos quando puderem continuar com segurança.
 
 Quando disponível, `context` contém:
 
