@@ -177,6 +177,9 @@ add_dependencies(atlas-system-info-test atlas-system-info-runtime)
 add_executable(atlas-capability-loader-test tests/native/capability_loader_test.cpp)
 target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-core)
 
+add_executable(atlas-capability-discovery-test tests/native/discovery_test.cpp)
+target_link_libraries(atlas-capability-discovery-test PRIVATE atlas-capabilities-core)
+
 add_executable(atlas-filesystem-test tests/native/filesystem_test.cpp)
 target_sources(atlas-filesystem-test PRIVATE src/capabilities/tools/filesystem/filesystem.cpp)
 target_link_libraries(atlas-filesystem-test PRIVATE
@@ -225,6 +228,7 @@ foreach(target
     atlas-filesystem-test
     atlas-git-test
     atlas-capability-loader-test
+    atlas-capability-discovery-test
     atlas-capability-executor-test
     atlas-command-runner-test)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -235,6 +239,7 @@ add_test(NAME atlas-system-info COMMAND atlas-system-info-test)
 add_test(NAME atlas-filesystem COMMAND atlas-filesystem-test)
 add_test(NAME atlas-git COMMAND atlas-git-test)
 add_test(NAME atlas-capability-loader COMMAND atlas-capability-loader-test)
+add_test(NAME atlas-capability-discovery COMMAND atlas-capability-discovery-test)
 add_test(NAME atlas-capability-executor COMMAND atlas-capability-executor-test)
 add_test(NAME atlas-command-runner COMMAND atlas-command-runner-test)
 set_tests_properties(
@@ -243,6 +248,7 @@ set_tests_properties(
   atlas-filesystem
   atlas-git
   atlas-capability-loader
+  atlas-capability-discovery
   atlas-capability-executor
   atlas-command-runner
   PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"

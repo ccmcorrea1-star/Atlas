@@ -22,7 +22,7 @@ Requer Node.js 22+, CMake com suporte a C++23 e Rust/Cargo.
 
 ```bash
 npm ci
-cargo install --locked --path clients/tui
+npm run sync:client
 atlas server run
 ```
 
