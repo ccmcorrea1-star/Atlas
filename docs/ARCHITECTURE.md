@@ -66,6 +66,10 @@ O modelo interno separa definições executáveis e procedurais:
 
 O Runtime compõe [`ToolDiscovery`](../src/capabilities/core/discovery.hpp) e
 [`SkillDiscovery`](../src/skills/discovery.hpp) em um resultado unificado.
+O bridge pontua os dois catálogos com a busca textual compartilhada em
+[`src/search.cpp`](../src/search.cpp), ordena por relevância e só então aplica o limite.
+Correspondências parciais são usadas apenas quando não há correspondência completa
+em nenhum dos catálogos. A busca não pontua o corpo das instruções das Skills.
 [`discover`](../src/agent/atlas.ts) retorna somente `id`, `type` e `summary` para ambos os tipos.
 [`list_tools`](../src/agent/atlas.ts) retorna somente Tools. A Function Tool `skill({ id })`
 materializa instruções e origem somente quando o Agent escolhe uma Skill. `skill({ id, path })`

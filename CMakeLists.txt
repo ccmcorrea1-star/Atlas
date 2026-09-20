@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_library(atlas-search STATIC src/search.cpp)
+
 add_library(atlas-capabilities-executable-runtime STATIC
   src/capabilities/runtime/executable/adapter.cpp
   src/capabilities/runtime/executable/protocol.cpp
@@ -23,7 +25,7 @@ add_library(atlas-capabilities-core STATIC
   src/capabilities/core/spawn.cpp
 )
 target_include_directories(atlas-capabilities-core PUBLIC src/capabilities/core)
-target_link_libraries(atlas-capabilities-core PUBLIC atlas-capabilities-executable-runtime)
+target_link_libraries(atlas-capabilities-core PUBLIC atlas-capabilities-executable-runtime atlas-search)
 
 add_library(atlas-skills STATIC
   src/skills/discovery.cpp

@@ -6,7 +6,9 @@
 #include "../../../skills/discovery.hpp"
 #include "../../../skills/loader.hpp"
 #include "../../../skills/registry.hpp"
+#include "../../../search.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -32,7 +35,6 @@ using atlas::capabilities::StructuredValue;
 using atlas::capabilities::ToolListResult;
 using atlas::skills::Skill;
 using atlas::skills::SkillDiscovery;
-using atlas::skills::SkillDiscoveryRequest;
 using atlas::skills::SkillLoader;
 using atlas::skills::SkillRegistry;
 using atlas::skills::SkillSource;
@@ -44,15 +46,47 @@ class RuntimeDiscovery {
 
   std::vector<atlas::capabilities::DiscoveryResult> discover(
       const DiscoveryRequest& request) const {
-    std::vector<atlas::capabilities::DiscoveryResult> result = tools_.discover(request);
-    SkillDiscoveryRequest skillRequest;
-    skillRequest.query = request.query.value_or("");
-    if (request.limit.has_value()) {
-      skillRequest.hasLimit = true;
-      skillRequest.limit = request.limit.value();
+    const atlas::search::Query query(request.query.value_or(""));
+    struct RankedResult {
+      atlas::capabilities::DiscoveryResult result;
+      atlas::search::Match match;
+    };
+    std::vector<RankedResult> ranked;
+    for (const auto& tool : tools_.discover()) {
+      const auto definition = tools_.getDefinition(tool.id);
+      if (!definition.has_value()) {
+        continue;
+      }
+      const auto match = query.match(
+          {tool.id, tool.summary, definition->aliases, definition->description});
+      if (match.score >= 0) {
+        ranked.push_back({tool, match});
+      }
     }
-    for (const auto& skill : skills_.discover(skillRequest)) {
-      result.push_back({skill.id, skill.type, skill.summary});
+    for (const auto& skill : skills_.discover()) {
+      const auto match = query.match({skill.id, skill.summary});
+      if (match.score >= 0) {
+        ranked.push_back({{skill.id, skill.type, skill.summary}, match});
+      }
+    }
+    // A reserva parcial só vale quando nenhum dos dois catálogos cobre a consulta.
+    if (std::any_of(ranked.begin(), ranked.end(), [](const RankedResult& entry) {
+          return entry.match.full;
+        })) {
+      std::erase_if(ranked, [](const RankedResult& entry) { return !entry.match.full; });
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const RankedResult& left, const RankedResult& right) {
+      if (left.match.score != right.match.score) {
+        return left.match.score > right.match.score;
+      }
+      if (left.result.id != right.result.id) {
+        return left.result.id < right.result.id;
+      }
+      return left.result.type < right.result.type;
+    });
+    std::vector<atlas::capabilities::DiscoveryResult> result;
+    for (auto& entry : ranked) {
+      result.push_back(std::move(entry.result));
     }
     if (request.limit.has_value() && result.size() > request.limit.value()) {
       result.resize(request.limit.value());

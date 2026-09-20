@@ -199,6 +199,52 @@ void testBridge(const std::filesystem::path& directory) {
       error != nullptr && std::get_if<std::string>(&error->value) != nullptr &&
            std::get_if<std::string>(&error->value)->find("is not registered") != std::string::npos,
        "bridge should not send a Skill to the executor");
+
+  const auto reviewPath = project / ".atlas" / "skills" / "review" / "SKILL.md";
+  std::filesystem::create_directories(reviewPath.parent_path());
+  writeManifest(reviewPath, skillDocument(
+      "filesystem-read-review", "Review files before editing them", "hiddenrankingword"));
+  const auto search = [&](std::string_view fields) {
+    const std::string response = runBridge(executable, project, home,
+        "{\"operation\":\"discover\",\"request_id\":\"ranking\"" + std::string(fields) + "}\n");
+    std::string parseError;
+    const auto parsed = atlas::capabilities::parseJson(response, parseError);
+    require(parsed.has_value(), "ranking response should be valid JSON");
+    const auto* object = std::get_if<StructuredValue::Object>(&parsed->value);
+    require(object != nullptr, "ranking response should be an object");
+    const auto* results = objectField(*object, "results");
+    require(results != nullptr, "ranking response should contain results");
+    const auto* array = std::get_if<StructuredValue::Array>(&results->value);
+    require(array != nullptr, "ranking results should be an array");
+    std::vector<std::string> ids;
+    for (const auto& result : *array) {
+      const auto* entry = std::get_if<StructuredValue::Object>(&result.value);
+      require(entry != nullptr && entry->size() == 3,
+          "ranking must expose only id, type and summary");
+      const auto* id = objectField(*entry, "id");
+      require(id != nullptr && std::get_if<std::string>(&id->value) != nullptr,
+          "ranking result should contain an id");
+      ids.push_back(std::get<std::string>(id->value));
+    }
+    return ids;
+  };
+  const std::vector<std::string> reviewOnly = {"filesystem-read-review"};
+  require(search(",\"query\":\"filesystem read review\",\"limit\":1") == reviewOnly,
+      "a fully matching Skill should beat a partially matching Tool before limiting");
+  require(search(",\"query\":\"filesystem read review\"") == reviewOnly,
+      "full matches should suppress partial matches across both catalogs");
+  require(search(",\"query\":\"read\",\"limit\":1") == std::vector<std::string>{"filesystem.read"},
+      "a stronger Tool match should still beat a Skill match");
+  require(search(",\"limit\":1") == std::vector<std::string>{"bridge.agent"},
+      "empty queries should break ties by id across both catalogs");
+  require(search(",\"query\":\"read\",\"limit\":0").empty(), "zero limit should return no results");
+  require(search(",\"query\":\"hiddenrankingword\"").empty(),
+      "Skill instructions must not participate in ranking");
+  const auto all = search(",\"query\":\"read\"");
+  auto firstTwo = all;
+  firstTwo.resize(std::min<std::size_t>(2, all.size()));
+  require(search(",\"query\":\"read\",\"limit\":2") == firstTwo,
+      "limited results should be a prefix of the combined relevance order");
 }
 
 void testLoader(const std::filesystem::path& directory) {
