@@ -46,6 +46,8 @@ struct ShellResult {
   // Saidas capturadas separadamente dos descritores padrao do comando.
   std::string stdout;
   std::string stderr;
+  bool stdout_truncated{false};
+  bool stderr_truncated{false};
 
   // O codigo de saida e preservado; executavel ausente e tratado pelo runner.
   int exit_code{-1};

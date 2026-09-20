@@ -22,11 +22,12 @@ namespace {
 constexpr int kChildFailureExitCode = 127;
 
 enum class ChildErrorStage : int {
-  change_directory = 1,
-  redirect_stdin = 2,
-  redirect_stdout = 3,
-  redirect_stderr = 4,
-  execute = 5,
+  create_process_group = 1,
+  change_directory = 2,
+  redirect_stdin = 3,
+  redirect_stdout = 4,
+  redirect_stderr = 5,
+  execute = 6,
 };
 
 struct ChildError {
@@ -222,6 +223,7 @@ void prepareChild(const SpawnRequest& request, const Pipes& pipes, char* const a
 bool drainOutput(
     int& fd,
     std::string& output,
+    bool& truncated,
     std::string& capture_error,
     std::string_view channel,
     const ExecutionOutputCallback& on_output) {
@@ -234,9 +236,18 @@ bool drainOutput(
     const ssize_t count = read(fd, buffer.data(), buffer.size());
     if (count > 0) {
       const std::size_t size = static_cast<std::size_t>(count);
-      output.append(buffer.data(), size);
-      if (on_output) {
-        on_output(channel, std::string_view(buffer.data(), size));
+      const std::size_t remaining = output.size() < kMaximumCapturedOutputBytes
+          ? kMaximumCapturedOutputBytes - output.size()
+          : 0;
+      const std::size_t captured = std::min(size, remaining);
+      if (captured > 0) {
+        output.append(buffer.data(), captured);
+        if (on_output) {
+          on_output(channel, std::string_view(buffer.data(), captured));
+        }
+      }
+      if (captured < size) {
+        truncated = true;
       }
       continue;
     }
@@ -311,6 +322,8 @@ std::string childErrorMessage(
     const ChildError& child_error) {
   const std::string detail = errnoMessage(child_error.error_code);
   switch (static_cast<ChildErrorStage>(child_error.stage)) {
+    case ChildErrorStage::create_process_group:
+      return "failed to create process group: " + detail;
     case ChildErrorStage::change_directory:
       return "failed to change directory to '" + request.cwd.value_or("") + "': " + detail;
     case ChildErrorStage::redirect_stdin:
@@ -417,7 +430,16 @@ SpawnResult spawn(
     return requestError(message, started);
   }
   if (child_pid == 0) {
+    if (setpgid(0, 0) == -1) {
+      writeChildError(pipes.error_write, ChildErrorStage::create_process_group, errno);
+      _exit(kChildFailureExitCode);
+    }
     prepareChild(request, pipes, argv.data());
+  }
+
+  // O grupo permite encerrar tambem netos criados pelo shell no timeout.
+  if (setpgid(child_pid, child_pid) == -1 && errno != EACCES && errno != ESRCH) {
+    kill(child_pid, SIGKILL);
   }
 
   // O pai fecha as pontas de escrita e acompanha saidas e encerramento em paralelo.
@@ -439,8 +461,20 @@ SpawnResult spawn(
   // O pai alterna leitura dos pipes, waitpid e verificacao do timeout.
   SpawnResult result;
   while (!child_reaped) {
-    drainOutput(pipes.stdout_read, result.stdout, capture_error, "stdout", on_output);
-    drainOutput(pipes.stderr_read, result.stderr, capture_error, "stderr", on_output);
+    drainOutput(
+        pipes.stdout_read,
+        result.stdout,
+        result.stdout_truncated,
+        capture_error,
+        "stdout",
+        on_output);
+    drainOutput(
+        pipes.stderr_read,
+        result.stderr,
+        result.stderr_truncated,
+        capture_error,
+        "stderr",
+        on_output);
     drainChildError(
         pipes.error_read,
         child_error_bytes,
@@ -453,7 +487,7 @@ SpawnResult spawn(
       child_reaped = true;
     } else if (wait_result == -1 && errno != EINTR) {
       capture_error = "failed to wait for process: " + errnoMessage(errno);
-      kill(child_pid, SIGKILL);
+      kill(-child_pid, SIGKILL);
       while (waitpid(child_pid, &wait_status, 0) == -1 && errno == EINTR) {
       }
       child_reaped = true;
@@ -461,7 +495,7 @@ SpawnResult spawn(
 
     if (!child_reaped && deadline.has_value() &&
         std::chrono::steady_clock::now() >= deadline.value()) {
-      if (kill(child_pid, SIGKILL) == -1 && errno != ESRCH) {
+      if (kill(-child_pid, SIGKILL) == -1 && errno != ESRCH) {
         capture_error = "failed to terminate timed out process: " + errnoMessage(errno);
       }
       timed_out = true;
@@ -495,8 +529,20 @@ SpawnResult spawn(
   }
 
   // Drena dados já escritos sem esperar por descendentes que herdaram os pipes.
-  drainOutput(pipes.stdout_read, result.stdout, capture_error, "stdout", on_output);
-  drainOutput(pipes.stderr_read, result.stderr, capture_error, "stderr", on_output);
+  drainOutput(
+      pipes.stdout_read,
+      result.stdout,
+      result.stdout_truncated,
+      capture_error,
+      "stdout",
+      on_output);
+  drainOutput(
+      pipes.stderr_read,
+      result.stderr,
+      result.stderr_truncated,
+      capture_error,
+      "stderr",
+      on_output);
   drainChildError(
       pipes.error_read,
       child_error_bytes,

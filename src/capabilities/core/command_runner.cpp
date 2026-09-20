@@ -15,6 +15,8 @@ CommandResult runCommand(
   CommandResult result;
   result.stdout = spawned.stdout;
   result.stderr = spawned.stderr;
+  result.stdout_truncated = spawned.stdout_truncated;
+  result.stderr_truncated = spawned.stderr_truncated;
   result.exit_code = spawned.exit_code;
   result.duration = spawned.duration;
   result.error = spawned.error;

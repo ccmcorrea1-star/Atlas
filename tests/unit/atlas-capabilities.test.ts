@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 
 import type { CapabilityRuntime, ToolDefinition } from '../../src/capabilities/runtime-client.js';
+import { DEFAULT_ATLAS_CONFIG } from '../../src/config/index.js';
 import { runAtlas } from '../../src/index.js';
 
 type RequestBody = Record<string, unknown>;
@@ -404,6 +405,69 @@ test('materializes web.search and web.fetch as direct tools', async () => {
     );
     assert.deepEqual(executed, ['web.search:{"query":"Atlas"}']);
     assert.doesNotMatch(JSON.stringify(server.requests[0]?.input), /function-call-discover/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('isolates native capability runtimes by web configuration', async () => {
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber % 2 === 1
+        ? [
+            {
+              id: `function-call-web-search-${requestNumber}`,
+              type: 'function_call',
+              status: 'completed',
+              call_id: `web-search-call-${requestNumber}`,
+              name: 'web_search',
+              arguments: JSON.stringify({ query: 'Atlas' }),
+            },
+          ]
+        : [
+            {
+              id: `final-web-search-${requestNumber}`,
+              type: 'message',
+              status: 'completed',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Busca concluída.', annotations: [] }],
+            },
+          ];
+    return responseEnvelope(requestNumber, input, output);
+  });
+  const configFor = (provider: string) => ({
+    ...DEFAULT_ATLAS_CONFIG,
+    web: {
+      ...DEFAULT_ATLAS_CONFIG.web!,
+      search: {
+        ...DEFAULT_ATLAS_CONFIG.web!.search,
+        provider,
+        fallbackProviders: [],
+      },
+    },
+  });
+  const common = {
+    apiKey: 'atlas-web-config-isolation-key',
+    baseURL: server.baseURL,
+  };
+
+  try {
+    await runAtlas('Busque Atlas com o primeiro provider.', {
+      ...common,
+      conversationId: 'web-config-a',
+      atlasConfig: configFor('missing-provider-a'),
+    });
+    await runAtlas('Busque Atlas com o segundo provider.', {
+      ...common,
+      conversationId: 'web-config-b',
+      atlasConfig: configFor('missing-provider-b'),
+    });
+
+    const firstResult = JSON.stringify(server.requests[1]?.input);
+    const secondResult = JSON.stringify(server.requests[3]?.input);
+    assert.match(firstResult, /missing-provider-a/);
+    assert.doesNotMatch(firstResult, /missing-provider-b/);
+    assert.match(secondResult, /missing-provider-b/);
   } finally {
     await server.close();
   }

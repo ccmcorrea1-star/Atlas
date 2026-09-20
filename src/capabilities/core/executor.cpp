@@ -3,6 +3,7 @@
 #include "../runtime/executable/protocol.hpp"
 #include "schema.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdlib>
@@ -20,6 +21,8 @@ extern char** environ;
 
 namespace atlas::capabilities {
 namespace {
+
+constexpr std::size_t kMaximumExecutableOutputBytes = 8 * 1024 * 1024;
 
 struct Pipes {
   int input_read{-1};
@@ -183,6 +186,7 @@ void consumeOutputEvents(
 bool drainPipe(
     int& fd,
     std::string& output,
+    bool& truncated,
     std::string& error,
     std::string* eventBuffer = nullptr,
     const ExecutionOutputCallback& on_output = {}) {
@@ -191,9 +195,18 @@ bool drainPipe(
     const ssize_t count = read(fd, buffer.data(), buffer.size());
     if (count > 0) {
       const std::size_t size = static_cast<std::size_t>(count);
-      output.append(buffer.data(), size);
-      if (eventBuffer != nullptr) {
-        consumeOutputEvents(*eventBuffer, std::string_view(buffer.data(), size), on_output);
+      const std::size_t remaining = output.size() < kMaximumExecutableOutputBytes
+          ? kMaximumExecutableOutputBytes - output.size()
+          : 0;
+      const std::size_t captured = std::min(size, remaining);
+      if (captured > 0) {
+        output.append(buffer.data(), captured);
+        if (eventBuffer != nullptr) {
+          consumeOutputEvents(*eventBuffer, std::string_view(buffer.data(), captured), on_output);
+        }
+      }
+      if (captured < size) {
+        truncated = true;
       }
       continue;
     }
@@ -277,12 +290,14 @@ std::optional<std::string> runExecutable(
 
   std::string output;
   std::string eventBuffer;
+  bool outputTruncated = false;
+  bool errorTruncated = false;
   std::size_t written = 0;
   bool childReaped = false;
   int waitStatus = 0;
   while (!childReaped || !allClosed(pipes)) {
-    drainPipe(pipes.output_read, output, error, &eventBuffer, on_output);
-    drainPipe(pipes.error_read, standardError, error);
+    drainPipe(pipes.output_read, output, outputTruncated, error, &eventBuffer, on_output);
+    drainPipe(pipes.error_read, standardError, errorTruncated, error);
 
     if (pipes.input_write != -1 && written < payload.size()) {
       const ssize_t count = write(pipes.input_write, payload.data() + written, payload.size() - written);
@@ -327,11 +342,14 @@ std::optional<std::string> runExecutable(
       poll(pollFds, pollCount, 20);
     }
   }
-  drainPipe(pipes.output_read, output, error, &eventBuffer, on_output);
-  drainPipe(pipes.error_read, standardError, error);
+  drainPipe(pipes.output_read, output, outputTruncated, error, &eventBuffer, on_output);
+  drainPipe(pipes.error_read, standardError, errorTruncated, error);
   closePipes(pipes);
 
   exitCode = WIFEXITED(waitStatus) ? WEXITSTATUS(waitStatus) : 128 + WTERMSIG(waitStatus);
+  if (outputTruncated || errorTruncated) {
+    error = "capability executable output exceeded the 8 MiB capture limit";
+  }
   if (!error.empty()) {
     return std::nullopt;
   }

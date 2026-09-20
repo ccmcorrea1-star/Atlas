@@ -39,7 +39,8 @@ como adaptador de protocolo e conectam o `run()` ao dispatch C++ da capability.
 [`src/capabilities/core/spawn.cpp`](../src/capabilities/core/spawn.cpp) permanece uma primitive
 de processo. [`command_runner.cpp`](../src/capabilities/core/command_runner.cpp) fornece a
 camada comum de comandos, incluindo captura de saída, timeout, código de saída e a distinção
-explícita de executável ausente.
+explícita de executável ausente. Cada canal capturado é limitado a 1 MiB e informa truncamento;
+timeouts encerram o grupo do processo para não deixar descendentes em execução.
 
 O bridge em [`src/capabilities/runtime/bridge/`](../src/capabilities/runtime/bridge/)
 é um processo residente iniciado sob demanda por [`NativeCapabilityRuntime`](../src/capabilities/runtime-client.ts).
@@ -88,6 +89,8 @@ O `SKILL.md` exige frontmatter com `name` e `description`; `name` é o id da Ski
 `description` é o resumo de discovery e o restante do arquivo são suas instruções.
 O fluxo esperado é `discover -> skill -> execute`: a Skill orienta o Agent e somente as
 Tools escolhidas são executadas.
+Arquivos auxiliares são resolvidos pelo caminho canônico e só podem ser lidos quando o destino
+real permanece dentro do diretório da própria Skill.
 
 Antes de criar um novo módulo, verifique se a responsabilidade pertence a um módulo existente.
 

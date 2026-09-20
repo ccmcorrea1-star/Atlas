@@ -2,6 +2,7 @@
 #include "../../src/capabilities/core/discovery.hpp"
 #include "../../src/capabilities/core/loader.hpp"
 #include "../../src/capabilities/core/registry.hpp"
+#include "../../src/capabilities/core/spawn.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -137,6 +138,40 @@ void testTimeout() {
   require(result.duration < std::chrono::seconds(2), "timeout should terminate the command");
 }
 
+void testTimeoutTerminatesDescendants(const std::filesystem::path& directory) {
+  const std::filesystem::path marker = directory / "descendant-survived.txt";
+  ShellRequest request = localRequest(
+      "(sleep 0.3; printf survived > descendant-survived.txt) & wait");
+  request.cwd = directory.string();
+  request.timeout = std::chrono::milliseconds(50);
+
+  const auto result = exec(request);
+  require(result.status == ShellStatus::timed_out, "descendant command should time out");
+  usleep(500000);
+  require(
+      !std::filesystem::exists(marker),
+      "timeout must terminate descendants before they can keep changing state");
+}
+
+void testOutputCaptureLimit() {
+  const std::size_t requested = atlas::capabilities::kMaximumCapturedOutputBytes + 4096;
+  std::size_t streamed = 0;
+  const auto result = exec(
+      localRequest("yes x | head -c " + std::to_string(requested)),
+      [&streamed](std::string_view channel, std::string_view delta) {
+        require(channel == "stdout", "large output should stream on stdout");
+        streamed += delta.size();
+      });
+
+  require(result.status == ShellStatus::success, "large successful command should remain successful");
+  require(
+      result.stdout.size() == atlas::capabilities::kMaximumCapturedOutputBytes,
+      "stdout capture should stop at the configured limit");
+  require(result.stdout_truncated, "stdout should report truncation");
+  require(!result.stderr_truncated, "empty stderr should not report truncation");
+  require(streamed == result.stdout.size(), "streaming should honor the same output limit");
+}
+
 void testWorkingDirectory(const std::filesystem::path& directory) {
   ShellRequest request = localRequest("pwd");
   request.cwd = directory.string();
@@ -266,6 +301,8 @@ int main() {
   testFailure();
   testMissingCommand();
   testTimeout();
+  testTimeoutTerminatesDescendants(directory);
+  testOutputCaptureLimit();
   testWorkingDirectory(directory);
   testEmptyCommand();
   testDispatch();

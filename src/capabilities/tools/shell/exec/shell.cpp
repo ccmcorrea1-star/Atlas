@@ -45,6 +45,8 @@ ShellResult exec(
 
   result.stdout = spawned.stdout;
   result.stderr = spawned.stderr;
+  result.stdout_truncated = spawned.stdout_truncated;
+  result.stderr_truncated = spawned.stderr_truncated;
   result.exit_code = spawned.exit_code;
   result.duration = spawned.duration;
   result.status = spawned.status == atlas::capabilities::CommandStatus::success
@@ -82,6 +84,8 @@ atlas::capabilities::ExecutionResult resultFromShell(const ShellResult& shellRes
   result.output = StructuredValue::Object{
       {"stdout", shellResult.stdout},
       {"stderr", shellResult.stderr},
+      {"stdout_truncated", shellResult.stdout_truncated},
+      {"stderr_truncated", shellResult.stderr_truncated},
       {"exit_code", shellResult.exit_code},
       {"duration_ms", static_cast<std::int64_t>(shellResult.duration.count())},
   };

@@ -90,7 +90,7 @@ bool isPathBoundary(char character) {
 std::vector<QueryToken> normalizeQueryTokens(std::string_view value) {
   std::vector<QueryToken> tokens;
   std::string current;
-  bool uppercase = false;
+  bool technicalCase = false;
   bool digit = false;
   char leadingBoundary = ' ';
   char previousBoundary = ' ';
@@ -99,11 +99,11 @@ std::vector<QueryToken> normalizeQueryTokens(std::string_view value) {
     if (current.empty()) {
       return;
     }
-    const bool technical = uppercase || digit || isPathBoundary(leadingBoundary) ||
+    const bool technical = technicalCase || digit || isPathBoundary(leadingBoundary) ||
         isPathBoundary(trailingBoundary);
     tokens.push_back({std::move(current), technical});
     current.clear();
-    uppercase = false;
+    technicalCase = false;
     digit = false;
   };
   for (std::size_t index = 0; index < size;) {
@@ -116,7 +116,7 @@ std::vector<QueryToken> normalizeQueryTokens(std::string_view value) {
           leadingBoundary = previousBoundary;
         }
         if (character >= 'A' && character <= 'Z') {
-          uppercase = true;
+          technicalCase = technicalCase || !current.empty();
           current.push_back(static_cast<char>(character - 'A' + 'a'));
         } else {
           digit = digit || (character >= '0' && character <= '9');

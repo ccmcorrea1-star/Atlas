@@ -27,6 +27,8 @@ enum class CommandStatus {
 struct CommandResult {
   std::string stdout;
   std::string stderr;
+  bool stdout_truncated{false};
+  bool stderr_truncated{false};
   int exit_code{-1};
   std::chrono::milliseconds duration{0};
   CommandStatus status{CommandStatus::failed};

@@ -34,6 +34,19 @@ bool safeRelativePath(std::string_view value, std::filesystem::path& path) {
   return isAuxiliaryPath(path);
 }
 
+bool isWithin(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+  auto rootPart = root.begin();
+  auto candidatePart = candidate.begin();
+  while (rootPart != root.end() && candidatePart != candidate.end()) {
+    if (*rootPart != *candidatePart) {
+      return false;
+    }
+    ++rootPart;
+    ++candidatePart;
+  }
+  return rootPart == root.end();
+}
+
 }  // namespace
 
 std::vector<SkillDiscoveryResult> SkillDiscovery::discover(
@@ -56,9 +69,15 @@ std::optional<Skill> SkillDiscovery::getSkill(
   if (!safeRelativePath(path.value(), relative)) {
     return std::nullopt;
   }
-  const std::filesystem::path filePath = skill->source.parent_path() / relative;
   std::error_code error;
-  if (!std::filesystem::is_regular_file(filePath, error) || error) {
+  const std::filesystem::path root = std::filesystem::canonical(
+      skill->source.parent_path(), error);
+  if (error) {
+    return std::nullopt;
+  }
+  const std::filesystem::path filePath = std::filesystem::canonical(root / relative, error);
+  if (error || !isWithin(root, filePath) ||
+      !std::filesystem::is_regular_file(filePath, error) || error) {
     return std::nullopt;
   }
   std::ifstream file(filePath, std::ios::binary);

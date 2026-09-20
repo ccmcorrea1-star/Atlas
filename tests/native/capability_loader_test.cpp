@@ -235,6 +235,8 @@ void testBridge(const std::filesystem::path& directory) {
       "full matches should suppress partial matches across both catalogs");
   require(search(",\"query\":\"read\",\"limit\":1") == std::vector<std::string>{"filesystem.read"},
       "a stronger Tool match should still beat a Skill match");
+  require(search(",\"query\":\"Read file\"") == search(",\"query\":\"read file\""),
+      "discovery ranking should be case-insensitive for natural-language queries");
   require(search(",\"limit\":1") == std::vector<std::string>{"bridge.agent"},
       "empty queries should break ties by id across both catalogs");
   require(search(",\"query\":\"read\",\"limit\":0").empty(), "zero limit should return no results");
@@ -372,6 +374,14 @@ void testLoader(const std::filesystem::path& directory) {
       materialized.has_value() && materialized->files.size() == 1 &&
           materialized->files.front().content == "reference content",
       "skill discovery should materialize an auxiliary file on demand");
+
+  const std::filesystem::path external = directory / "external-secret.txt";
+  writeManifest(external, "must stay outside the Skill");
+  const std::filesystem::path escaped = localSkills / "procedure" / "references" / "escaped.md";
+  std::filesystem::create_symlink(external, escaped);
+  require(
+      !skillDiscovery.getSkill("tests.procedure", "references/escaped.md").has_value(),
+      "skill discovery must reject auxiliary symlinks outside the Skill directory");
 
   const auto catalog = discovery.listTools();
   require(

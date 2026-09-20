@@ -3,11 +3,14 @@
 #include "execution.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace atlas::capabilities {
+
+inline constexpr std::size_t kMaximumCapturedOutputBytes = 1024 * 1024;
 
 // Resultado do lancamento e acompanhamento de um processo filho com saidas capturadas.
 enum class SpawnStatus {
@@ -43,6 +46,8 @@ struct SpawnResult {
   // Saidas capturadas separadamente dos descritores padrao do processo.
   std::string stdout;
   std::string stderr;
+  bool stdout_truncated{false};
+  bool stderr_truncated{false};
 
   // O codigo de saida e preservado; executavel ausente e indicado por error_kind.
   int exit_code{-1};

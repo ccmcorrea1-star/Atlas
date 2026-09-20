@@ -220,10 +220,10 @@ function loadMaterializedDefinitions(
   return loading;
 }
 
-function getRuntimeKey(options: OpenCodeGoProviderOptions): string {
-  // A sessao pertence a conversa; o Runner deve ser compartilhado entre elas.
+function getRuntimeKey(options: OpenCodeGoProviderOptions, atlasConfig?: AtlasConfig): string {
+  // A sessao pertence a conversa; configuracoes web distintas exigem bridges distintos.
   const { session: _session, sessionId: _sessionId, ...providerOptions } = options;
-  return stableSerialize(providerOptions);
+  return stableSerialize({ providerOptions, webConfig: atlasConfig?.web });
 }
 
 // Reutiliza o Runner por configuração e mantém as sessões separadas por conversa.
@@ -231,7 +231,7 @@ function getAtlasRuntime(
   options: OpenCodeGoProviderOptions,
   atlasConfig?: AtlasConfig,
 ): AtlasRuntime {
-  const key = getRuntimeKey(options);
+  const key = getRuntimeKey(options, atlasConfig);
   const existingRuntime = atlasRuntimes.get(key);
   if (existingRuntime) {
     // Reaproveita provider, cache de modelos e conexoes para a mesma configuracao.
