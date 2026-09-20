@@ -137,6 +137,18 @@ Atlas Torrent e Atlas Media podem trabalhar em conjunto por meio do Runtime: dow
 
 A arquitetura deve separar a interface do serviço residente responsável por biblioteca, sessões, streaming e transcoding, permitindo que Workstation, Mobile, Web e futuros clientes de TV consumam o mesmo servidor de mídia.
 
+## Atlas Music
+
+O **Atlas Music** é o player e a experiência dedicada a música do ecossistema Atlas.
+
+Ele apresenta artistas, álbuns, faixas, playlists, fila, letras, favoritos, histórico, recomendações e dispositivos de reprodução em uma interface própria para consumo musical.
+
+Quando a origem for local, Atlas Music deve reutilizar biblioteca, metadata e streaming do Atlas Media em vez de manter uma base de mídia duplicada.
+
+A integração com o Atlas permite controlar reprodução e fila por linguagem natural, criar playlists, consultar histórico, encontrar músicas e continuar a reprodução entre dispositivos.
+
+A arquitetura deve permitir fontes adicionais no futuro, como serviços externos de música, sem acoplar o app a um único provider. Atlas Music continua responsável pela experiência de reprodução, enquanto Atlas Media permanece responsável pelo serviço de mídia local.
+
 ## Atlas Mobile
 
 O **Atlas Mobile** é o companion móvel do Atlas.
@@ -185,6 +197,8 @@ Atlas Web não representa um Runtime diferente nem uma versão independente do A
      Telegram         Torrent
                            │
                          Media
+                           │
+                         Music
 ```
 
 Os apps podem apresentar diferentes partes do mesmo estado, mas a fonte de verdade permanece no Runtime.
@@ -204,6 +218,7 @@ Atlas Terminal      → app
 Atlas Telegram      → app
 Atlas Torrent       → app
 Atlas Media         → app
+Atlas Music         → app
 
 GitHub              → integração
 Google Drive        → integração
