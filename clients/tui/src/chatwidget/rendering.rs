@@ -84,9 +84,18 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
     Clear.render(area, buffer);
     buffer.set_style(area, surface_style());
     let max_scroll = total_height.saturating_sub(usize::from(area.height));
-    let scroll = max_scroll
-        .saturating_sub(app.history_scroll())
-        .min(max_scroll);
+    let only_session_header = app.cells().len() == 1
+        && app.cells()[0]
+            .as_any()
+            .is::<crate::history_cell::SessionHeaderCell>()
+        && app.active_cells().is_empty();
+    let scroll = if only_session_header {
+        app.history_scroll().min(max_scroll)
+    } else {
+        max_scroll
+            .saturating_sub(app.history_scroll())
+            .min(max_scroll)
+    };
     for (start, height, rendered, thought, active, cell_index) in cells {
         let start = start as isize - scroll as isize;
         let end = start.saturating_add(height as isize);
@@ -232,6 +241,37 @@ mod tests {
             .collect()
     }
 
+    fn normalize_millisecond_durations(screen: Vec<String>) -> String {
+        screen
+            .into_iter()
+            .map(|line| {
+                let Some(separator) = line.find(" · ") else {
+                    return line;
+                };
+                let duration_start = separator + " · ".len();
+                let duration_end = line[duration_start..]
+                    .find("ms")
+                    .map(|offset| duration_start + offset + 2);
+                let Some(duration_end) = duration_end else {
+                    return line;
+                };
+                if line[duration_start..duration_end - 2]
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+                {
+                    format!(
+                        "{}<duration>{}",
+                        &line[..duration_start],
+                        &line[duration_end..]
+                    )
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn renders_active_shell_exec_and_working_composer() {
         let mut app = App::new("render-test".to_owned());
@@ -279,11 +319,11 @@ mod tests {
         }
 
         let screen = screen_rows(&mut app, 100, 37).join("\n");
-        assert!(screen.contains("• Running 3 commands"));
+        assert!(screen.contains("░ Running 3 commands"));
         assert!(screen.contains("npm test"));
         assert!(screen.contains("npm run lint"));
         assert!(screen.contains("npm run typecheck"));
-        assert!(!screen.contains("• Running npm test"));
+        assert!(!screen.contains("░ Running npm test"));
     }
 
     #[test]
@@ -313,7 +353,7 @@ mod tests {
         }
 
         let screen = screen_rows(&mut app, 100, 37).join("\n");
-        assert!(screen.contains("• Ran 2 commands"));
+        assert!(screen.contains("✓ Ran 2 commands"));
         assert_eq!(screen.matches("commands").count(), 1);
         assert!(!screen.contains("Running 2 commands"));
         assert!(screen.contains("npm run lint"));
@@ -328,7 +368,7 @@ mod tests {
         });
 
         let screen = screen_rows(&mut app, 80, 24).join("\n");
-        assert!(screen.contains("! provider unavailable"));
+        assert!(screen.contains("✗ provider unavailable"));
         assert!(!screen.contains("Thinking ("));
     }
 
@@ -414,6 +454,24 @@ mod tests {
         let mut app = snapshot_app("render-initial");
 
         insta::assert_snapshot!("initial_layout", screen_rows(&mut app, 80, 12).join("\n"));
+    }
+
+    #[test]
+    fn session_header_is_the_first_cell_and_scrolls_with_the_transcript() {
+        let mut app = snapshot_app("render-header");
+        assert!(
+            app.cells()[0]
+                .as_any()
+                .is::<crate::history_cell::SessionHeaderCell>()
+        );
+
+        let initial = screen_rows(&mut app, 80, 12).join("\n");
+        assert!(initial.contains("█████"));
+
+        app.insert_text("question");
+        assert_eq!(app.submit_input().as_deref(), Some("question"));
+        let after_message = screen_rows(&mut app, 80, 12).join("\n");
+        assert!(!after_message.contains("█████"));
     }
 
     #[test]
@@ -504,7 +562,7 @@ mod tests {
 
         insta::assert_snapshot!(
             "turn_lifecycle_shared_inset",
-            screen_rows(&mut app, 80, 24).join("\n")
+            normalize_millisecond_durations(screen_rows(&mut app, 80, 24))
         );
     }
 

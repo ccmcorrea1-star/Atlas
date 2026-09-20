@@ -6,15 +6,15 @@ A identidade visual do Atlas usa uma seleção reduzida da Vint-HS. A base deve 
 
 ## Paleta principal
 
-| Nome | Hex | Uso |
-| --- | --- | --- |
-| Fundo | `#141414` | Fundo principal |
-| Superfície | `#202125` | Composer, cards e painéis |
-| Texto | `#E9F6E1` | Respostas, títulos e conteúdo principal |
-| Secundário | `#827D7D` | Thought, footer, duração e metadados |
-| Azul Atlas | `#3C53CE` | Foco, links, tools e identidade |
-| Azul ativo | `#797DDE` | Thinking, cursor e estados ativos |
-| Erro | `#BE173B` | Falhas e estados destrutivos |
+| Nome       | Hex       | Uso                                     |
+| ---------- | --------- | --------------------------------------- |
+| Fundo      | `#141414` | Fundo principal                         |
+| Superfície | `#202125` | Composer, cards e painéis               |
+| Texto      | `#E9F6E1` | Respostas, títulos e conteúdo principal |
+| Secundário | `#827D7D` | Thought, footer, duração e metadados    |
+| Azul Atlas | `#3C53CE` | Foco, links, tools e identidade         |
+| Azul ativo | `#797DDE` | Thinking, cursor e estados ativos       |
+| Erro       | `#BE173B` | Falhas e estados destrutivos            |
 
 ## Aplicação
 

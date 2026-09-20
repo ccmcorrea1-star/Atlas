@@ -19,12 +19,16 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::CancelledCell;
 use crate::history_cell::ErrorCell;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::SessionHeaderCell;
 use crate::history_cell::ThoughtCell;
 use crate::history_cell::ToolCell;
 use crate::history_cell::ToolGroupCell;
 use crate::runtime::ContextUsage;
 use crate::runtime::RuntimeEvent;
 use std::collections::HashMap;
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 const MAX_CELLS: usize = 500;
 const MAX_CELL_BYTES: usize = 16 * 1024 * 1024;
@@ -44,8 +48,17 @@ pub(crate) struct ChatWidget {
 
 impl ChatWidget {
     pub(crate) fn new() -> Self {
+        let workspace = std::env::var_os("ATLAS_RUNTIME_CWD")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::current_dir().ok());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let cells: Vec<Box<dyn HistoryCell>> = vec![Box::new(SessionHeaderCell::new(
+            workspace.as_deref(),
+            home.as_deref(),
+        ))];
         Self {
-            cells: Vec::new(),
+            cells,
             active_cells: Vec::new(),
             status: Status::Ready,
             turn_active: false,
@@ -83,6 +96,29 @@ impl ChatWidget {
 
     pub(crate) fn context_usage(&self) -> Option<ContextUsage> {
         self.context_usage
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_display_paths(&mut self, workspace: &Path, home: Option<&Path>) {
+        if let Some(header) = self
+            .cells
+            .first_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<SessionHeaderCell>())
+        {
+            header.set_workspace(workspace, home);
+            self.history_changed();
+        }
+    }
+
+    pub(crate) fn set_session_metadata(&mut self, model: String, provider: String) {
+        if let Some(header) = self
+            .cells
+            .first_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<SessionHeaderCell>())
+        {
+            header.set_session(model, provider);
+            self.history_changed();
+        }
     }
 
     fn active_running_execution_activities(&self) -> Vec<String> {
@@ -126,6 +162,16 @@ impl ChatWidget {
         for cell in &mut self.active_cells {
             if let Some(thought) = cell.as_any_mut().downcast_mut::<ThoughtCell>() {
                 thought.tick();
+            }
+            if let Some(group) = cell.as_any_mut().downcast_mut::<RunningGroupCell>() {
+                group.tick();
+            } else if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
+                exec.tick();
+            }
+            if let Some(group) = cell.as_any_mut().downcast_mut::<ToolGroupCell>() {
+                group.tick();
+            } else if let Some(tool) = cell.as_any_mut().downcast_mut::<ToolCell>() {
+                tool.tick();
             }
         }
         let committed_parts = self
@@ -578,7 +624,11 @@ impl ChatWidget {
             if self.cells.len() <= 1 {
                 break;
             }
-            self.cells.remove(0);
+            let first_cell_is_header = self
+                .cells
+                .first()
+                .is_some_and(|cell| cell.as_any().is::<SessionHeaderCell>());
+            self.cells.remove(usize::from(first_cell_is_header));
         }
     }
 

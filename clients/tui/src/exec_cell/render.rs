@@ -9,7 +9,9 @@ use unicode_width::UnicodeWidthStr;
 use super::model::CommandOutput;
 use super::model::ExecCell;
 use super::model::ExecState;
+use crate::animation::tool_frame;
 use crate::history_cell::HistoryCell;
+use crate::icons;
 use crate::markdown::render_ansi_line;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::ui_consts::TRANSCRIPT_HINT;
@@ -52,6 +54,10 @@ impl HistoryCell for ExecCell {
         self.state() == ExecState::Ran
     }
 
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.is_running().then_some(self.frame() as u64)
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -70,7 +76,7 @@ impl ExecCell {
         for line in command {
             lines.extend(prefixed_wrapped_lines_with_styles(
                 line,
-                "$ ",
+                &format!("{} ", icons::SHELL),
                 "    ",
                 width,
                 action_style(),
@@ -82,10 +88,10 @@ impl ExecCell {
 
             if let Some(duration_ms) = self.duration_ms() {
                 let mut result = if self.succeeded() {
-                    Line::from(Span::styled("✓", success_style()))
+                    Line::from(Span::styled(icons::SUCCESS, success_style()))
                 } else {
                     Line::from(vec![
-                        Span::styled("✗", error_style()),
+                        Span::styled(icons::ERROR, error_style()),
                         Span::styled(
                             self.exit_code()
                                 .map(|code| format!(" ({code})"))
@@ -113,8 +119,15 @@ impl ExecCell {
             (ExecState::Ran, Some(_)) => (error_style(), "Ran"),
             (ExecState::Ran, None) => (running_style(), "Ran"),
         };
+        let marker = if self.is_running() {
+            tool_frame("shell.exec", self.frame())
+        } else if self.succeeded() {
+            icons::SUCCESS
+        } else {
+            icons::ERROR
+        };
         let mut header = Line::from(vec![
-            Span::styled("•", marker_style),
+            Span::styled(marker, marker_style),
             Span::raw(" "),
             Span::styled(title, marker_style),
             Span::raw(" "),
@@ -154,9 +167,9 @@ impl ExecCell {
             lines.extend(output);
             if let Some(duration_ms) = self.duration_ms() {
                 let result = if self.succeeded() {
-                    Span::styled("✓", success_style())
+                    Span::styled(icons::SUCCESS, success_style())
                 } else {
-                    Span::styled("✗", error_style())
+                    Span::styled(icons::ERROR, error_style())
                 };
                 let code = self
                     .exit_code()
@@ -429,7 +442,7 @@ mod tests {
 
         let lines = cell.transcript_lines(80);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
-        assert_eq!(rendered, ["$ echo hello", "hello", "world", "✓ • 12ms"]);
+        assert_eq!(rendered, [">_ echo hello", "hello", "world", "✓ • 12ms"]);
         insta::assert_snapshot!(rendered.join("\n"));
     }
 

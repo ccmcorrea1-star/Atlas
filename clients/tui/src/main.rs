@@ -1,3 +1,4 @@
+mod animation;
 mod app;
 mod bottom_pane;
 mod capability_names;
@@ -10,6 +11,7 @@ mod external_editor;
 mod file_search;
 mod history_cell;
 mod history_store;
+mod icons;
 mod keymap;
 mod line_truncation;
 mod markdown;

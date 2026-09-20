@@ -10,12 +10,16 @@ use std::time::Instant;
 
 use super::HistoryCell;
 use super::plain_lines;
+use crate::animation::tool_frame;
 use crate::capability_names::capability_activity_with_target;
 use crate::capability_names::capability_label;
+use crate::icons;
 use crate::markdown::sanitize_terminal_text;
+use crate::ui_consts::COLOR_DIFF_ADDED;
+use crate::ui_consts::COLOR_DIFF_ADDED_BG;
+use crate::ui_consts::COLOR_DIFF_REMOVED;
+use crate::ui_consts::COLOR_DIFF_REMOVED_BG;
 use crate::ui_consts::COLOR_SURFACE_DIFF;
-use crate::ui_consts::COLOR_SURFACE_DIFF_ADDED;
-use crate::ui_consts::COLOR_SURFACE_DIFF_REMOVED;
 use crate::ui_consts::action_style;
 use crate::ui_consts::error_style;
 use crate::ui_consts::primary_style;
@@ -30,8 +34,8 @@ const TOOL_SUMMARY_MAX_CHARS: usize = 120;
 const FILESYSTEM_DIFF_PREVIEW_MAX_CHARS: usize = 600;
 const FILESYSTEM_DIFF_PREVIEW_MAX_LINES: usize = 10;
 const DIFF_BLOCK_BACKGROUND: Color = COLOR_SURFACE_DIFF;
-const DIFF_ADDED_BACKGROUND: Color = COLOR_SURFACE_DIFF_ADDED;
-const DIFF_REMOVED_BACKGROUND: Color = COLOR_SURFACE_DIFF_REMOVED;
+const DIFF_ADDED_BACKGROUND: Color = COLOR_DIFF_ADDED_BG;
+const DIFF_REMOVED_BACKGROUND: Color = COLOR_DIFF_REMOVED_BG;
 
 /// Atividade generica de tool do Runtime renderizada com a margem do Codex.
 #[derive(Clone, Debug)]
@@ -44,6 +48,7 @@ pub(crate) struct ToolCell {
     cancelled: bool,
     duration_ms: Option<u64>,
     started_at: Instant,
+    frame: usize,
 }
 
 impl ToolCell {
@@ -65,6 +70,7 @@ impl ToolCell {
             cancelled: false,
             duration_ms: None,
             started_at: Instant::now(),
+            frame: 0,
         }
     }
 
@@ -110,6 +116,12 @@ impl ToolCell {
 
     pub(crate) fn is_running(&self) -> bool {
         !self.completed
+    }
+
+    pub(crate) fn tick(&mut self) {
+        if self.is_running() {
+            self.frame = self.frame.wrapping_add(1);
+        }
     }
 
     pub(crate) fn activity(&self) -> String {
@@ -191,6 +203,12 @@ impl ToolGroupCell {
             .zip(other.tools.first())
             .is_some_and(|(left, right)| left.tool_name == right.tool_name)
     }
+
+    pub(crate) fn tick(&mut self) {
+        for tool in &mut self.tools {
+            tool.tick();
+        }
+    }
 }
 
 impl HistoryCell for ToolGroupCell {
@@ -207,6 +225,13 @@ impl HistoryCell for ToolGroupCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.tools
+            .iter()
+            .find(|tool| tool.is_running())
+            .map(|tool| tool.frame as u64)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -231,13 +256,18 @@ impl ToolGroupCell {
             .any(|tool| tool.completed && tool_status(tool.output.as_deref()) == ToolStatus::Error);
         let cancelled = self.tools.iter().any(|tool| tool.cancelled);
         let (marker, style) = if running {
-            ("•", running_style())
+            let active = self
+                .tools
+                .iter()
+                .find(|tool| tool.is_running())
+                .unwrap_or(first);
+            (tool_frame(&active.tool_name, active.frame), running_style())
         } else if failed {
-            ("✗", error_style())
+            (icons::ERROR, error_style())
         } else if cancelled {
-            ("•", secondary_style())
+            (icons::CANCELLED, secondary_style())
         } else {
-            ("✓", success_style())
+            (icons::SUCCESS, success_style())
         };
         let duration = if !running {
             let total = self
@@ -328,7 +358,10 @@ impl HistoryCell for ToolCell {
             }
         });
         let header_style = status.map_or_else(running_style, ToolStatus::style);
-        let marker = status.map_or("•", ToolStatus::marker);
+        let marker = status.map_or_else(
+            || tool_frame(&self.tool_name, self.frame),
+            ToolStatus::marker,
+        );
         let duration = self
             .duration_ms
             .map(|duration| format!(" · {}", format_duration(duration)))
@@ -393,6 +426,10 @@ impl HistoryCell for ToolCell {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.is_running().then_some(self.frame as u64)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -405,9 +442,9 @@ enum ToolStatus {
 impl ToolStatus {
     fn marker(self) -> &'static str {
         match self {
-            Self::Success => "✓",
-            Self::Error => "✗",
-            Self::Cancelled => "•",
+            Self::Success => icons::SUCCESS,
+            Self::Error => icons::ERROR,
+            Self::Cancelled => icons::CANCELLED,
         }
     }
 
@@ -764,7 +801,7 @@ fn filesystem_change_lines(
         lines.push(padded_diff_line(
             vec![
                 Span::styled(
-                    format!("✓ {title}"),
+                    format!("{} {title}", icons::SUCCESS),
                     action_style()
                         .bg(DIFF_BLOCK_BACKGROUND)
                         .add_modifier(Modifier::BOLD),
@@ -958,8 +995,8 @@ fn filesystem_diff_line(
                 _ => DIFF_BLOCK_BACKGROUND,
             };
             let content_style = match marker {
-                '+' => success_style().bg(line_background),
-                '-' => error_style().bg(line_background),
+                '+' => Style::default().fg(COLOR_DIFF_ADDED).bg(line_background),
+                '-' => Style::default().fg(COLOR_DIFF_REMOVED).bg(line_background),
                 _ => secondary_style().bg(line_background),
             };
             padded_diff_line(
@@ -1064,9 +1101,9 @@ impl ErrorCell {
 
 impl HistoryCell for ErrorCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let prefix = "! ";
+        let prefix = format!("{} ", icons::ERROR);
         let usable = usize::from(width)
-            .saturating_sub(display_width(prefix))
+            .saturating_sub(display_width(&prefix))
             .max(1);
         let mut result = Vec::new();
         for (line_index, source) in self.message.lines().enumerate() {
@@ -1074,7 +1111,7 @@ impl HistoryCell for ErrorCell {
                 result.push(Line::from(vec![
                     Span::styled(
                         (if line_index == 0 && part_index == 0 {
-                            prefix
+                            prefix.as_str()
                         } else {
                             "  "
                         })
@@ -1152,7 +1189,26 @@ mod tests {
             Some("tsconfig.json".to_owned()),
         );
         assert_eq!(cell.activity(), "Reading tsconfig.json");
-        assert_eq!(rendered(&cell, 80), ["• Read tsconfig.json"]);
+        assert_eq!(rendered(&cell, 80), ["░ Read tsconfig.json"]);
+    }
+
+    #[test]
+    fn animates_active_web_tools_and_uses_state_symbols_when_done() {
+        let mut search = ToolCell::new("tool-1".to_owned(), "web.search".to_owned());
+        assert_eq!(rendered(&search, 80), ["◎ Search"]);
+        search.tick();
+        assert_eq!(rendered(&search, 80), ["◉ Search"]);
+
+        search.complete_with_duration(None, 1_200);
+        assert_eq!(rendered(&search, 80), ["✓ Search · 1.2s"]);
+
+        let mut failed = ToolCell::new("tool-2".to_owned(), "filesystem.patch".to_owned());
+        failed.complete_with_duration(Some(r#"{"status":"failed"}"#.to_owned()), 84);
+        assert_eq!(rendered(&failed, 80), ["✗ Patch · 84ms", "  └ failed"]);
+
+        let mut cancelled = ToolCell::new("tool-3".to_owned(), "filesystem.read".to_owned());
+        cancelled.cancel();
+        assert!(rendered(&cancelled, 80)[0].starts_with("• Read · "));
     }
 
     #[test]
@@ -1380,16 +1436,10 @@ mod tests {
 
         assert!(cell.background_style().is_none());
         let lines = cell.display_lines(100);
-        assert_eq!(
-            lines[2].spans[1].style.fg,
-            Some(crate::ui_consts::COLOR_ERROR)
-        );
-        assert_eq!(
-            lines[3].spans[1].style.fg,
-            Some(crate::ui_consts::COLOR_SUCCESS)
-        );
-        assert_eq!(lines[2].spans[1].style.bg, Some(COLOR_SURFACE_DIFF_REMOVED));
-        assert_eq!(lines[3].spans[1].style.bg, Some(COLOR_SURFACE_DIFF_ADDED));
+        assert_eq!(lines[2].spans[1].style.fg, Some(COLOR_DIFF_REMOVED));
+        assert_eq!(lines[3].spans[1].style.fg, Some(COLOR_DIFF_ADDED));
+        assert_eq!(lines[2].spans[1].style.bg, Some(COLOR_DIFF_REMOVED_BG));
+        assert_eq!(lines[3].spans[1].style.bg, Some(COLOR_DIFF_ADDED_BG));
         assert!(
             lines[0].spans[0]
                 .style
@@ -1397,7 +1447,7 @@ mod tests {
                 .contains(Modifier::BOLD)
         );
         assert_eq!(lines[0].spans[0].style.bg, Some(COLOR_SURFACE_DIFF));
-        assert!(lines[1].spans[1].style.add_modifier.contains(Modifier::DIM));
+        assert!(!lines[1].spans[1].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

@@ -20,13 +20,6 @@ impl ChatWidget {
                 reasoning_id,
                 delta,
             } => {
-                if self.active_thought_index(&reasoning_id).is_none()
-                    && !self.has_thought(&reasoning_id)
-                {
-                    self.handle_reasoning_event(RuntimeEvent::ReasoningStart {
-                        reasoning_id: reasoning_id.clone(),
-                    });
-                }
                 if let Some(thought) = self.find_active_thought_mut(&reasoning_id) {
                     thought.append(&bounded_text(&delta));
                     self.status = Status::Working;
@@ -159,7 +152,7 @@ mod tests {
         let mut widget = ChatWidget::new();
         widget.handle_runtime_event(RuntimeEvent::TurnStarted);
         assert!(widget.active_cells().is_empty());
-        assert!(widget.cells().is_empty());
+        assert_eq!(widget.cells().len(), 1);
         assert!(matches!(widget.status(), Status::Working));
 
         widget.handle_runtime_event(RuntimeEvent::ReasoningStart {
@@ -167,7 +160,7 @@ mod tests {
         });
 
         assert_eq!(thought_texts(&widget, true).len(), 1);
-        assert!(widget.cells().is_empty());
+        assert_eq!(widget.cells().len(), 1);
     }
 
     #[test]
@@ -253,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_delta_without_start_opens_the_thought_cell() {
+    fn reasoning_delta_without_start_does_not_open_the_thought_cell() {
         let mut widget = ChatWidget::new();
         widget.handle_runtime_event(RuntimeEvent::TurnStarted);
         widget.handle_runtime_event(RuntimeEvent::ReasoningDelta {
@@ -261,10 +254,8 @@ mod tests {
             delta: "**Reading the diff**".to_owned(),
         });
 
-        assert_eq!(
-            thought_texts(&widget, true),
-            vec!["⠋ Thinking: Reading the diff".to_owned()]
-        );
+        assert!(thought_texts(&widget, true).is_empty());
+        assert_eq!(widget.cells().len(), 1);
     }
 
     #[test]

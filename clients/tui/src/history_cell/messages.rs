@@ -8,6 +8,8 @@ use unicode_width::UnicodeWidthStr;
 use super::HistoryCell;
 use super::markdown_render_cache::MarkdownRenderCache;
 use super::plain_lines;
+use crate::animation::reasoning_frame;
+use crate::icons;
 use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
 use crate::render::highlight_streaming::StreamingCodeHighlighter;
@@ -23,7 +25,6 @@ use crate::wrapping::wrap_text;
 use std::time::Instant;
 
 const USER_MESSAGE_VERTICAL_PADDING: usize = 1;
-const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
@@ -174,10 +175,7 @@ impl HistoryCell for ThoughtCell {
         let title = self.title.as_deref().unwrap_or_default();
         let mut header = if self.is_running() {
             Line::from(vec![
-                Span::styled(
-                    THINKING_FRAMES[self.frame % THINKING_FRAMES.len()],
-                    thinking_style(),
-                ),
+                Span::styled(reasoning_frame(self.frame), thinking_style()),
                 Span::styled(" Thinking", thinking_style()),
             ])
         } else {
@@ -218,6 +216,10 @@ impl HistoryCell for ThoughtCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.source.lines().map(|line| Line::from(line.to_owned())))
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.is_running().then_some(self.frame as u64)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -289,7 +291,10 @@ pub(crate) struct CancelledCell;
 
 impl HistoryCell for CancelledCell {
     fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        vec![Line::from(Span::styled("Cancelled", secondary_style()))]
+        vec![Line::from(vec![
+            Span::styled(icons::CANCELLED, secondary_style()),
+            Span::styled(" Cancelled", secondary_style()),
+        ])]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

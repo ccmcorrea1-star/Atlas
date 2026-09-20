@@ -108,6 +108,7 @@ pub(crate) struct ExecCell {
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
     state: ExecState,
+    frame: usize,
 }
 
 impl ExecCell {
@@ -121,6 +122,7 @@ impl ExecCell {
             exit_code: None,
             duration_ms: None,
             state: ExecState::Running,
+            frame: 0,
         }
     }
 
@@ -134,6 +136,16 @@ impl ExecCell {
 
     pub(crate) fn is_running(&self) -> bool {
         self.state == ExecState::Running
+    }
+
+    pub(crate) fn tick(&mut self) {
+        if self.is_running() {
+            self.frame = self.frame.wrapping_add(1);
+        }
+    }
+
+    pub(crate) fn frame(&self) -> usize {
+        self.frame
     }
 
     pub(crate) fn complete(

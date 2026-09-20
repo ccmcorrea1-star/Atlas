@@ -304,7 +304,7 @@ mod tests {
             content: "intro\n```rust\nlet answer = 42;\n```\nfinal\n".to_owned(),
         });
         assert!(widget.active_cells().is_empty());
-        assert_eq!(widget.cells().len(), 1);
+        assert_eq!(widget.cells().len(), 2);
     }
 
     fn row_text(line: &ratatui::text::Line<'_>) -> String {
@@ -349,7 +349,7 @@ mod tests {
             message_id: "message".to_owned(),
             content: content.to_owned(),
         });
-        rows_of(widget.cells(), width)
+        rows_of(&widget.cells()[1..], width)
     }
 
     fn reference_rows(content: &str, width: u16) -> Vec<String> {
@@ -473,7 +473,10 @@ mod tests {
         });
 
         assert!(widget.active_cells().is_empty());
-        assert_eq!(rows_of(widget.cells(), 60), reference_rows(content, 60));
+        assert_eq!(
+            rows_of(&widget.cells()[1..], 60),
+            reference_rows(content, 60)
+        );
     }
 
     #[test]
@@ -514,8 +517,8 @@ mod tests {
             content: "intro\n```rust\nlet answer = 42;\n```".to_owned(),
         });
         assert!(widget.active_cells().is_empty());
-        assert_eq!(widget.cells().len(), 1);
-        assert!(widget.cells()[0].display_lines(80).iter().any(|line| {
+        assert_eq!(widget.cells().len(), 2);
+        assert!(widget.cells()[1].display_lines(80).iter().any(|line| {
             line.spans
                 .iter()
                 .any(|span| span.content.contains("answer"))

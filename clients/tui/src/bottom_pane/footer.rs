@@ -1,7 +1,7 @@
 //! Renderizacao do footer adaptada do painel inferior da TUI do Codex.
 //!
-//! O footer e uma view pura do estado do composer. Ele concentra workspace,
-//! atalhos, modelo e contexto sem deixar a informacao da direita cobrir a dica.
+//! O footer e uma view pura do estado do composer. Ele concentra atalhos,
+//! modelo e contexto sem deixar a informacao da direita cobrir a dica.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -10,20 +10,17 @@ use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
-use std::path::Path;
-use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+use crate::icons;
+use crate::ui_consts::action_style;
 use crate::ui_consts::composer_secondary_style;
 use crate::ui_consts::error_style;
-use crate::ui_consts::warning_style;
 
 const SHORTCUT_HEIGHT: u16 = 11;
 /// Espaco minimo entre o grupo da esquerda e o contexto alinhado a direita.
 const RIGHT_ALIGNED_GAP: usize = 2;
-/// Separador entre o caminho do workspace e a dica do composer.
-const LEFT_GROUP_SEPARATOR: &str = " · ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FooterMode {
@@ -40,9 +37,7 @@ pub(crate) enum FooterMode {
 pub(crate) struct FooterProps {
     mode: FooterMode,
     left: String,
-    session: Option<String>,
-    workspace: Option<PathBuf>,
-    home: Option<PathBuf>,
+    model: Option<String>,
     context: Option<String>,
 }
 
@@ -78,16 +73,14 @@ impl FooterProps {
             FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft => "? shortcuts".to_owned(),
             FooterMode::ShortcutOverlay => String::new(),
         };
-        let session = session_info(app);
         let context = app
             .context_usage()
             .map(|usage| format_context(usage.used_tokens, usage.context_window));
+        let model = app.session_model().map(str::to_owned);
         Self {
             mode,
             left,
-            session,
-            workspace: app.workspace().map(Path::to_path_buf),
-            home: app.home().map(Path::to_path_buf),
+            model,
             context,
         }
     }
@@ -100,10 +93,6 @@ pub(crate) fn desired_height(app: &App, _width: u16) -> u16 {
     } else {
         1
     }
-}
-
-fn session_info(app: &App) -> Option<String> {
-    app.session_model().map(ToOwned::to_owned)
 }
 
 pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -155,13 +144,13 @@ fn render_workspace_line(area: Rect, props: &FooterProps, buffer: &mut Buffer) {
 }
 
 fn right_candidates(props: &FooterProps) -> Vec<String> {
-    match (props.session.as_deref(), props.context.as_deref()) {
-        (Some(session), Some(context)) => vec![
-            format!("{session} · {context}"),
+    match (props.model.as_deref(), props.context.as_deref()) {
+        (Some(model), Some(context)) => vec![
+            format!("{model} · {context}"),
             context.to_owned(),
-            session.to_owned(),
+            model.to_owned(),
         ],
-        (Some(session), None) => vec![session.to_owned()],
+        (Some(model), None) => vec![model.to_owned()],
         (None, Some(context)) => vec![context.to_owned()],
         (None, None) => Vec::new(),
     }
@@ -174,88 +163,12 @@ fn left_group_fits(props: &FooterProps, available: usize, right_width: usize) ->
     hint.is_empty() || left.ends_with(hint)
 }
 
-/// Grupo da esquerda: caminho do workspace e a dica do composer.
-///
-/// O caminho cede espaco primeiro; a dica so e cortada quando sozinha nao cabe.
 fn left_group(props: &FooterProps, budget: usize) -> String {
     let hint = props.left.trim();
-    let hint_width = UnicodeWidthStr::width(hint);
     if hint.is_empty() {
-        return props
-            .workspace
-            .as_deref()
-            .and_then(|workspace| workspace_label(workspace, props.home.as_deref(), budget))
-            .unwrap_or_default();
+        return String::new();
     }
-    if hint_width >= budget {
-        return truncate_to_width(hint, budget);
-    }
-    let separator_width = UnicodeWidthStr::width(LEFT_GROUP_SEPARATOR);
-    let workspace_budget = budget
-        .saturating_sub(hint_width)
-        .saturating_sub(separator_width);
-    match props
-        .workspace
-        .as_deref()
-        .and_then(|workspace| workspace_label(workspace, props.home.as_deref(), workspace_budget))
-    {
-        Some(label) if !label.is_empty() => {
-            format!("{label}{LEFT_GROUP_SEPARATOR}{hint}")
-        }
-        _ => hint.to_owned(),
-    }
-}
-
-/// Rotulo do workspace: `~/` quando cabe, `…/` apenas em truncamento real.
-pub(crate) fn workspace_label(
-    workspace: &Path,
-    home: Option<&Path>,
-    available: usize,
-) -> Option<String> {
-    if available == 0 {
-        return None;
-    }
-    let mut candidates = Vec::new();
-    if let Some(home) = home
-        && let Ok(relative) = workspace.strip_prefix(home)
-    {
-        let relative = relative.to_string_lossy();
-        if relative.is_empty() {
-            candidates.push("~".to_owned());
-        } else {
-            candidates.push(format!("~/{relative}"));
-        }
-    }
-    candidates.push(workspace.to_string_lossy().into_owned());
-    let relative_components = display_components(workspace, home);
-    let absolute_components = display_components(workspace, None);
-    for components in [&relative_components, &absolute_components] {
-        for keep in (1..components.len()).rev() {
-            candidates.push(format!(
-                "…/{}",
-                components[components.len() - keep..].join("/")
-            ));
-        }
-    }
-    if let Some(last) = absolute_components.last() {
-        candidates.push(format!("…/{last}"));
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= available)
-}
-
-fn display_components(workspace: &Path, home: Option<&Path>) -> Vec<String> {
-    let path = match home {
-        Some(home) => workspace.strip_prefix(home).unwrap_or(workspace),
-        None => workspace,
-    };
-    path.components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect()
+    truncate_to_width(hint, budget)
 }
 
 fn truncate_to_width(text: &str, width: usize) -> String {
@@ -293,7 +206,7 @@ fn status_line(app: &App, width: u16) -> Option<Line<'static>> {
         crate::app::Status::Working | crate::app::Status::Executing => (width > 0)
             .then(|| Line::from(Span::styled("esc to interrupt", composer_secondary_style()))),
         crate::app::Status::Error(message) => Some(Line::from(Span::styled(
-            format!("! {message}"),
+            format!("{} {message}", icons::ERROR),
             error_style(),
         ))),
     }
@@ -351,7 +264,7 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         buffer.set_span(
             area.x,
             area.y + 1,
-            &Span::styled("›", warning_style().add_modifier(Modifier::BOLD)),
+            &Span::styled(icons::PROMPT, action_style().add_modifier(Modifier::BOLD)),
             1,
         );
         buffer.set_span(
@@ -402,13 +315,11 @@ mod tests {
     use crate::app::App;
     use crate::runtime::ContextUsage;
     use crate::runtime::RuntimeEvent;
-    use crate::ui_consts::bottom_pane_inner_area;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use std::path::Path;
 
     fn workspace_row(app: &App, width: u16) -> String {
-        let area = bottom_pane_inner_area(Rect::new(0, 0, width, 1));
+        let area = Rect::new(0, 0, width, 1);
         let mut buffer = Buffer::empty(area);
         super::render(app, area, &mut buffer);
         buffer
@@ -427,70 +338,53 @@ mod tests {
         });
     }
 
-    #[test]
-    fn workspace_label_prefers_the_home_form_and_only_elides_when_it_must() {
-        let workspace = Path::new("/home/kyle/projetos/Atlas");
-        let home = Some(Path::new("/home/kyle"));
-
-        assert_eq!(
-            super::workspace_label(workspace, home, 40).as_deref(),
-            Some("~/projetos/Atlas")
-        );
-        assert_eq!(
-            super::workspace_label(workspace, home, 16).as_deref(),
-            Some("~/projetos/Atlas")
-        );
-        assert_eq!(
-            super::workspace_label(workspace, home, 15).as_deref(),
-            Some("…/Atlas")
-        );
-        assert_eq!(
-            super::workspace_label(workspace, home, 7).as_deref(),
-            Some("…/Atlas")
-        );
-        assert_eq!(super::workspace_label(workspace, home, 6), None);
+    fn with_session(app: &mut App) {
+        app.handle_runtime_event(RuntimeEvent::SessionUpdated {
+            model: "gpt-5.6-luna".to_owned(),
+            provider: "opencode-go".to_owned(),
+        });
     }
 
     #[test]
-    fn workspace_label_keeps_absolute_paths_outside_the_home_directory() {
-        let workspace = Path::new("/opt/projetos/Atlas");
-        let home = Some(Path::new("/home/kyle"));
-
-        assert_eq!(
-            super::workspace_label(workspace, home, 40).as_deref(),
-            Some("/opt/projetos/Atlas")
-        );
-        assert_eq!(
-            super::workspace_label(workspace, home, 10).as_deref(),
-            Some("…/Atlas")
-        );
-    }
-
-    #[test]
-    fn renders_workspace_hint_and_context_inside_the_shared_inset() {
-        let mut app = App::new("footer-workspace".to_owned());
-        app.set_display_paths("/home/kyle/projetos/Atlas", "/home/kyle");
+    fn renders_hint_and_context_inside_the_shared_inset() {
+        let mut app = App::new("footer-context".to_owned());
+        with_session(&mut app);
         with_context(&mut app);
 
         let row = workspace_row(&app, 80);
 
-        assert!(row.starts_with("~/projetos/Atlas · ? shortcuts"));
-        assert!(row.ends_with("2.6k/256k · 98% left"));
+        assert!(row.starts_with("? shortcuts"));
+        assert!(row.ends_with("gpt-5.6-luna · 2.6k/256k · 98% left"));
+        assert!(!row.contains("Atlas"));
     }
 
     #[test]
-    fn drops_the_workspace_before_the_hint_on_narrow_terminals() {
+    fn keeps_the_hint_when_context_does_not_fit() {
         let mut app = App::new("footer-narrow".to_owned());
-        app.set_display_paths("/home/kyle/projetos/Atlas", "/home/kyle");
+        with_session(&mut app);
         with_context(&mut app);
 
         let narrow = workspace_row(&app, 40);
-        assert!(narrow.starts_with("? shortcuts"));
-        assert!(narrow.ends_with("2.6k/256k · 98% left"));
+        assert!(narrow.contains("? shortcuts"));
 
         // Sem largura para o contexto, a dica permanece dentro do inset.
         let tiny = workspace_row(&app, 12);
-        assert_eq!(tiny, "? shortc");
+        assert_eq!(tiny, "? shortcuts ");
+    }
+
+    #[test]
+    fn degrades_footer_metadata_from_combined_to_context_then_model() {
+        let mut app = App::new("footer-metadata".to_owned());
+        with_session(&mut app);
+        with_context(&mut app);
+
+        assert!(workspace_row(&app, 80).contains("gpt-5.6-luna · 2.6k/256k · 98% left"));
+        assert!(workspace_row(&app, 36).contains("2.6k/256k · 98% left"));
+        assert!(!workspace_row(&app, 36).contains("gpt-5.6-luna · 2.6k"));
+
+        let mut model_only = App::new("footer-model-only".to_owned());
+        with_session(&mut model_only);
+        assert!(workspace_row(&model_only, 36).contains("gpt-5.6-luna"));
     }
 
     #[test]
@@ -613,7 +507,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(output.contains("! runtime unavailable"));
+        assert!(output.contains("✗ runtime unavailable"));
         assert!(!output.contains("Thinking ("));
     }
 
@@ -631,23 +525,12 @@ mod tests {
     }
 
     #[test]
-    fn renders_session_info_with_model_only() {
-        let mut app = App::new("footer-session-info".to_owned());
-        app.handle_runtime_event(RuntimeEvent::SessionUpdated {
-            model: "gpt-5.6-luna".to_owned(),
-            provider: "opencode-go".to_owned(),
-        });
-        let output = super::session_info(&app);
-        assert_eq!(output.as_deref(), Some("gpt-5.6-luna"));
-        assert!(!output.as_deref().unwrap().contains("opencode-go"));
-    }
-
-    #[test]
-    fn ready_footer_omits_missing_session_metadata() {
+    fn ready_footer_omits_missing_context_metadata() {
         let app = App::new("footer-ready".to_owned());
         let props = super::FooterProps::from_app(&app);
         assert_eq!(props.mode, FooterMode::ComposerEmpty);
         assert_eq!(props.left, "? shortcuts");
-        assert!(props.session.is_none());
+        assert!(props.model.is_none());
+        assert!(props.context.is_none());
     }
 }

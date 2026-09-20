@@ -10,12 +10,11 @@ use crate::bottom_pane::footer;
 use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::bottom_pane::selection_popup::SelectionPopupState;
 use crate::bottom_pane::textarea::TextArea;
+use crate::icons;
 use crate::ui_consts::BOTTOM_PANE_BOTTOM_PADDING;
 use crate::ui_consts::BOTTOM_PANE_FOOTER_GAP;
-use crate::ui_consts::BOTTOM_PANE_HORIZONTAL_INSET;
 use crate::ui_consts::BOTTOM_PANE_TRANSCRIPT_GAP;
 use crate::ui_consts::action_style;
-use crate::ui_consts::bottom_pane_inner_area;
 use crate::ui_consts::composer_secondary_style;
 use crate::ui_consts::elevated_surface_style;
 use crate::ui_consts::primary_style;
@@ -23,7 +22,6 @@ use crate::ui_consts::surface_style;
 use crate::wrapping::display_width;
 use crate::wrapping::wrap_text;
 
-const PROMPT: &str = "›";
 const COMPOSER_INPUT_INSET: u16 = 2;
 const COMPOSER_PROMPT_OFFSET: u16 = 2;
 const COMPOSER_VERTICAL_PADDING: u16 = 1;
@@ -78,7 +76,7 @@ pub(crate) fn desired_height(app: &App, width: u16) -> u16 {
         return SHORTCUT_HEIGHT;
     }
     let input_rows = input_rows(app, width);
-    let popup_height = completion_popup_height(app, inner_width(width));
+    let popup_height = completion_popup_height(app, width);
     COMPOSER_VERTICAL_PADDING
         .saturating_mul(2)
         .saturating_add(input_rows)
@@ -96,7 +94,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
     }
     buffer.set_style(area, surface_style());
     if app.bottom_pane().shortcuts_open() {
-        footer::render(app, bottom_pane_inner_area(area), buffer);
+        footer::render(app, area, buffer);
         return;
     }
 
@@ -107,7 +105,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         buffer.set_span(
             input_area.x.saturating_sub(COMPOSER_PROMPT_OFFSET),
             input_area.y,
-            &Span::styled(PROMPT, prompt_style),
+            &Span::styled(icons::PROMPT, prompt_style),
             1,
         );
     }
@@ -137,26 +135,20 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
     footer::render(app, footer_area, buffer);
 }
 
-/// Largura interna do painel inferior, livre do padding dos dois lados.
-fn inner_width(width: u16) -> u16 {
-    width.saturating_sub(BOTTOM_PANE_HORIZONTAL_INSET.saturating_mul(2))
-}
-
 /// Largura util do input: a identidade e o contexto ficam exclusivamente no footer.
 fn input_width(width: u16) -> u16 {
     width.saturating_sub(COMPOSER_INPUT_INSET)
 }
 
 fn input_rows(app: &App, width: u16) -> u16 {
-    let input_width = usize::from(input_width(inner_width(width))).max(1);
+    let input_width = usize::from(input_width(width)).max(1);
     app.textarea()
         .desired_height(u16::try_from(input_width).unwrap_or(u16::MAX))
         .max(1)
 }
 
 fn layout_areas(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let inner = bottom_pane_inner_area(area);
-    let popup_height = completion_popup_height(app, inner.width);
+    let popup_height = completion_popup_height(app, area.width);
     let requested_footer_height = if area.height < 4 {
         1
     } else {
@@ -201,9 +193,9 @@ fn layout_areas(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
     let composer_bottom = footer_y.saturating_sub(footer_gap);
     let composer_y = area.y.saturating_add(transcript_gap);
     let composer_frame = Rect::new(
-        inner.x,
+        area.x,
         composer_y,
-        inner.width,
+        area.width,
         composer_bottom.saturating_sub(composer_y),
     );
     let popup_y = composer_frame.bottom().saturating_sub(popup_height);
@@ -226,8 +218,8 @@ fn layout_areas(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
             .saturating_sub(COMPOSER_VERTICAL_PADDING)
             .saturating_sub(input_bottom_padding),
     );
-    let popup_area = Rect::new(inner.x, popup_y, inner.width, popup_height);
-    let footer_area = Rect::new(inner.x, footer_y, inner.width, footer_height);
+    let popup_area = Rect::new(area.x, popup_y, area.width, popup_height);
+    let footer_area = Rect::new(area.x, footer_y, area.width, footer_height);
     (input_area, popup_area, footer_area, composer_frame)
 }
 
@@ -435,8 +427,8 @@ mod tests {
             .lines()
             .find(|line| line.contains("? shortcuts"))
             .expect("workspace row");
-        assert!(workspace_row.starts_with("  ~/projetos/Atlas · ? shortcuts"));
-        assert!(workspace_row.ends_with("gpt-5.6-luna · 2.6k/256k · 98% left  "));
+        assert!(workspace_row.starts_with("? shortcuts"));
+        assert!(workspace_row.ends_with("2.6k/256k · 98% left"));
     }
 
     fn input_row(output: &str) -> &str {
@@ -519,7 +511,7 @@ mod tests {
         terminal
             .draw(|frame| render(&app, frame.area(), frame.buffer_mut()))
             .unwrap();
-        assert_eq!(terminal.backend().buffer()[(2, 1)].symbol(), "›");
+        assert_eq!(terminal.backend().buffer()[(0, 1)].symbol(), "›");
     }
 
     #[test]
@@ -533,7 +525,7 @@ mod tests {
         let input = input_row(&output);
         assert!(!input.contains("gpt-5.6-luna"));
         assert!(!input.contains("opencode-go"));
-        assert!(output.contains("gpt-5.6-luna · 2.6k/256k · 98% left"));
+        assert!(output.contains("2.6k/256k · 98% left"));
     }
 
     #[test]
@@ -580,10 +572,14 @@ mod tests {
         let (_, _, footer_area, composer_frame) =
             super::layout_areas(&app, terminal.backend().buffer().area);
 
-        assert_eq!(composer_frame.x, 2);
-        assert_eq!(composer_frame.right(), 98);
-        assert_eq!(footer_area.x, 2);
+        assert_eq!(composer_frame.x, 0);
+        assert_eq!(composer_frame.right(), 100);
+        assert_eq!(footer_area.x, 0);
         assert!(composer_frame.bottom() < footer_area.y);
+        assert_eq!(
+            footer_area.bottom(),
+            terminal.backend().buffer().area.bottom()
+        );
         assert_eq!(
             terminal.backend().buffer()[(20, composer_frame.y)].bg,
             COLOR_SURFACE_ELEVATED

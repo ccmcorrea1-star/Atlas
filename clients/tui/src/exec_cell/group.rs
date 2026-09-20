@@ -8,8 +8,10 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 
 use super::model::ExecCell;
+use crate::animation::tool_frame;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
+use crate::icons;
 use crate::ui_consts::error_style;
 use crate::ui_consts::running_style;
 use crate::ui_consts::secondary_style;
@@ -42,6 +44,12 @@ impl RunningGroupCell {
     pub(crate) fn abort_all(&mut self) {
         for exec in &mut self.execs {
             exec.abort();
+        }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        for exec in &mut self.execs {
+            exec.tick();
         }
     }
 
@@ -83,6 +91,13 @@ impl HistoryCell for RunningGroupCell {
         plain_lines(self.display_lines_inner(u16::MAX))
     }
 
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.execs
+            .iter()
+            .find(|exec| exec.is_running())
+            .map(|exec| exec.frame() as u64)
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -109,8 +124,21 @@ fn group_lines(execs: &[ExecCell], width: u16) -> Vec<Line<'static>> {
     } else {
         running_style()
     };
+    let active_exec = execs
+        .iter()
+        .find(|exec| exec.is_running())
+        .or_else(|| execs.first());
     let mut lines = vec![Line::from(vec![
-        Span::styled("•", marker_style),
+        Span::styled(
+            active_exec.map_or(icons::SUCCESS, |exec| {
+                if running > 0 {
+                    tool_frame("shell.exec", exec.frame())
+                } else {
+                    icons::SUCCESS
+                }
+            }),
+            marker_style,
+        ),
         Span::raw(" "),
         Span::styled(title, marker_style),
     ])];
@@ -119,11 +147,11 @@ fn group_lines(execs: &[ExecCell], width: u16) -> Vec<Line<'static>> {
         let branch = if last { "  └ " } else { "  ├ " };
         let continuation = if last { "    " } else { "  │ " };
         let (result, result_style) = if exec.is_running() {
-            ("•", running_style())
+            (tool_frame("shell.exec", exec.frame()), running_style())
         } else if exec.succeeded() {
-            ("✓", success_style())
+            (icons::SUCCESS, success_style())
         } else {
-            ("✗", error_style())
+            (icons::ERROR, error_style())
         };
         let command = if let Some(duration_ms) = exec.duration_ms() {
             format!(
@@ -198,7 +226,7 @@ mod tests {
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
-        assert_eq!(rendered, ["• Running npm test"]);
+        assert_eq!(rendered, ["░ Running npm test"]);
     }
 
     #[test]
@@ -215,10 +243,10 @@ mod tests {
         assert_eq!(
             rendered,
             [
-                "• Running 3 commands",
-                "  ├ • npm test",
-                "  ├ • npm run lint",
-                "  └ • npm run typecheck",
+                "░ Running 3 commands",
+                "  ├ ░ npm test",
+                "  ├ ░ npm run lint",
+                "  └ ░ npm run typecheck",
             ]
         );
         assert_eq!(
@@ -255,7 +283,7 @@ mod tests {
             .map(line_text)
             .collect::<Vec<_>>();
         assert!(group.all_completed());
-        assert_eq!(rendered[0], "• Ran 2 commands");
+        assert_eq!(rendered[0], "✓ Ran 2 commands");
         assert_eq!(
             rendered
                 .iter()

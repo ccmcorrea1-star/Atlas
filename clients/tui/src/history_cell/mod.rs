@@ -2,6 +2,7 @@ mod base;
 mod exec;
 mod markdown_render_cache;
 mod messages;
+mod session_header;
 
 use std::any::Any;
 
@@ -21,6 +22,7 @@ pub(crate) use messages::AgentMessageCell;
 pub(crate) use messages::CancelledCell;
 pub(crate) use messages::ThoughtCell;
 pub(crate) use messages::UserHistoryCell;
+pub(crate) use session_header::SessionHeaderCell;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

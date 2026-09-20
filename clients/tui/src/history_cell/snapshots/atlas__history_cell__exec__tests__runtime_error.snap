@@ -2,4 +2,4 @@
 source: src/history_cell/exec.rs
 expression: "cell.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\")"
 ---
-! Runtime connection failed
+✗ Runtime connection failed

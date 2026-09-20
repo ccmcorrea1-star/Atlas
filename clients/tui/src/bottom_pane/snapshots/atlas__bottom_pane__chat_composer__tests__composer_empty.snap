@@ -4,7 +4,7 @@ expression: "rows(&empty, 100, 14)"
 ---
                                                                                                     
                                                                                                     
-  › Ask Atlas to do anything                                                                        
+› Ask Atlas to do anything                                                                          
                                                                                                     
                                                                                                     
                                                                                                     
@@ -14,4 +14,5 @@ expression: "rows(&empty, 100, 14)"
                                                                                                     
                                                                                                     
                                                                                                     
-  ~/projetos/Atlas · ? shortcuts                                              2.6k/256k · 98% left
+                                                                                                    
+? shortcuts                                                                     2.6k/256k · 98% left

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::env;
 use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -60,23 +60,7 @@ pub struct App {
     external_editor_requested: bool,
     runtime_connected: bool,
     session_model: Option<String>,
-    /// Raiz do workspace exibida no footer; resolvida uma vez na construcao.
-    workspace: Option<PathBuf>,
-    /// Home do usuario, usada para compactar o caminho do workspace em `~/`.
-    home: Option<PathBuf>,
     thought_hit_regions: Vec<(u16, u16, bool, usize)>,
-}
-
-/// Raiz do workspace do Runtime, com o diretorio atual como reserva.
-fn workspace_root() -> Option<PathBuf> {
-    env::var_os("ATLAS_RUNTIME_CWD")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| env::current_dir().ok())
-}
-
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from)
 }
 
 fn sanitize_paste_text(text: &str) -> String {
@@ -143,8 +127,6 @@ impl App {
             // Runtime confirma a sessão sem bloquear o composer.
             runtime_connected: true,
             session_model: None,
-            workspace: workspace_root(),
-            home: home_dir(),
             thought_hit_regions: Vec::new(),
         }
     }
@@ -206,18 +188,8 @@ impl App {
         self.chatwidget.context_usage()
     }
 
-    pub(crate) fn session_model(&self) -> Option<&str> {
+    pub fn session_model(&self) -> Option<&str> {
         self.session_model.as_deref()
-    }
-
-    /// Caminho do workspace exibido no footer.
-    pub(crate) fn workspace(&self) -> Option<&Path> {
-        self.workspace.as_deref()
-    }
-
-    /// Home do usuario, usada para compactar o caminho do workspace.
-    pub(crate) fn home(&self) -> Option<&Path> {
-        self.home.as_deref()
     }
 
     /// Fixa os caminhos exibidos para snapshots deterministas.
@@ -227,8 +199,9 @@ impl App {
         workspace: impl Into<PathBuf>,
         home: impl Into<PathBuf>,
     ) {
-        self.workspace = Some(workspace.into());
-        self.home = Some(home.into());
+        let workspace = workspace.into();
+        let home = home.into();
+        self.chatwidget.set_display_paths(&workspace, Some(&home));
     }
 
     pub(crate) fn runtime_connected(&self) -> bool {
@@ -609,8 +582,9 @@ impl App {
 
     pub fn handle_runtime_event(&mut self, event: RuntimeEvent) {
         self.runtime_connected = true;
-        if let RuntimeEvent::SessionUpdated { model, provider: _ } = event {
-            self.session_model = Some(model);
+        if let RuntimeEvent::SessionUpdated { model, provider } = event {
+            self.session_model = Some(model.clone());
+            self.chatwidget.set_session_metadata(model, provider);
             return;
         }
         let terminal = event.is_terminal();
@@ -1126,7 +1100,7 @@ mod tests {
             message_id: "message-1".to_owned(),
             delta: "partial".to_owned(),
         });
-        assert!(app.cells().is_empty());
+        assert_eq!(app.cells().len(), 1);
         assert_eq!(app.active_cells().len(), 1);
 
         app.handle_runtime_event(RuntimeEvent::MessageCompleted {
@@ -1134,7 +1108,7 @@ mod tests {
             content: "complete".to_owned(),
         });
         assert!(app.active_cells().is_empty());
-        assert_eq!(app.cells().len(), 1);
+        assert_eq!(app.cells().len(), 2);
     }
 
     #[test]
@@ -1154,7 +1128,7 @@ mod tests {
             context: None,
         });
 
-        assert_eq!(app.cells().len(), 1);
+        assert_eq!(app.cells().len(), 2);
     }
 
     #[test]
@@ -1164,7 +1138,7 @@ mod tests {
         assert_eq!(app.submit_input().as_deref(), Some("first"));
         app.insert_text("second");
         assert_eq!(app.submit_input(), None);
-        assert_eq!(app.cells().len(), 1);
+        assert_eq!(app.cells().len(), 2);
 
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
         app.handle_runtime_event(RuntimeEvent::TurnCompleted {
@@ -1173,7 +1147,7 @@ mod tests {
             context: None,
         });
         assert_eq!(app.take_queued_input().as_deref(), Some("second"));
-        assert_eq!(app.cells().len(), 3);
+        assert_eq!(app.cells().len(), 4);
     }
 
     #[test]
@@ -1402,7 +1376,7 @@ mod tests {
         );
         assert_eq!(app.input(), "/help");
         assert!(!app.shortcuts_open());
-        assert!(app.cells().is_empty());
+        assert_eq!(app.cells().len(), 1);
     }
 
     #[test]
@@ -1548,7 +1522,7 @@ mod tests {
             .is_none()
         );
         assert_eq!(app.input(), "@Cargo.toml ");
-        assert!(app.cells().is_empty());
+        assert_eq!(app.cells().len(), 1);
     }
 
     #[test]

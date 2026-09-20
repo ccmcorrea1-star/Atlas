@@ -424,7 +424,7 @@ mod tests {
 
         let cache = overlay.committed_cache.borrow();
         let cache = cache.as_ref().expect("committed transcript cache");
-        assert_eq!(cache.cell_count, 1);
+        assert_eq!(cache.cell_count, 2);
         assert_eq!(cache.cell_heights.iter().sum::<usize>(), cache.lines.len());
 
         let rows = (area.y..area.bottom())
@@ -494,7 +494,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(rows.iter().any(|row| row.contains("line-0")));
+        assert!(rows.iter().any(|row| row.contains("█████")));
         assert!(!rows.iter().any(|row| row.contains("new tail")));
     }
 

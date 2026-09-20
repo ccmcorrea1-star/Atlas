@@ -2,4 +2,4 @@
 source: src/history_cell/exec.rs
 expression: "rendered(&running, 60).join(\"\\n\")"
 ---
-• Search src
+◎ Search src

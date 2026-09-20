@@ -3,11 +3,11 @@ source: src/pager_overlay.rs
 expression: "rows.join(\"\\n\")"
 ---
 / T R A N S C R I P T / / / / / / / / / 
-answer                                  
-~                                       
-~                                       
-~                                       
-~                                       
-────────────────────────────────── 100% 
+ █████╗ ████████╗██╗      █████╗        
+███████╗                                
+██╔══██╗╚══██╔══╝██║                    
+██╔══██╗██╔════╝                        
+███████║   ██║   ██║                    
+────────────────────────────────── 0% ──
  ↑/↓ to scroll   pgup/pgdn to page   ctr
  q close   esc to edit prev

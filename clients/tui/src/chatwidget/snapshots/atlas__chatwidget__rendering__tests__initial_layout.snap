@@ -2,14 +2,15 @@
 source: src/chatwidget/rendering.rs
 expression: "screen_rows(&mut app, 80, 12).join(\"\\n\")"
 ---
+   █████╗ ████████╗██╗      █████╗ ███████╗                                     
+  ██╔══██╗╚══██╔══╝██║     ██╔══██╗██╔════╝                                     
+  ███████║   ██║   ██║     ███████║███████╗                                     
+  ██╔══██║   ██║   ██║     ██╔══██║╚════██║                                     
+  ██║  ██║   ██║   ███████╗██║  ██║███████║                                     
+  ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝                                     
                                                                                 
                                                                                 
+  › Ask Atlas to do anything                                                    
                                                                                 
                                                                                 
-                                                                                
-                                                                                
-                                                                                
-    › Ask Atlas to do anything                                                  
-                                                                                
-                                                                                
-    ~/projetos/Atlas · ? shortcuts
+  ? shortcuts

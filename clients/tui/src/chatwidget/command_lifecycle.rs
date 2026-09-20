@@ -187,7 +187,7 @@ mod tests {
             context: None,
         });
         assert!(matches!(widget.status(), Status::Ready));
-        assert_eq!(widget.cells().len(), 1);
+        assert_eq!(widget.cells().len(), 2);
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
 
         assert!(widget.active_cells().is_empty());
         assert!(matches!(widget.status(), Status::Working));
-        assert_eq!(widget.cells().len(), 1);
+        assert_eq!(widget.cells().len(), 2);
     }
 
     #[test]
@@ -235,7 +235,7 @@ mod tests {
             });
         }
 
-        assert_eq!(widget.cells().len(), 1);
+        assert_eq!(widget.cells().len(), 2);
         assert_eq!(
             widget
                 .cells()
@@ -283,7 +283,7 @@ mod tests {
                 .iter()
                 .any(|cell| { cell.as_any().downcast_ref::<AgentMessageCell>().is_some() })
         );
-        assert_eq!(widget.cells().len(), 1);
+        assert_eq!(widget.cells().len(), 2);
     }
 
     #[test]
