@@ -232,6 +232,47 @@ void testLoader(const std::filesystem::path& directory) {
       "loaded capability should appear in Discovery search");
 
   const std::filesystem::path localSkills = directory / ".atlas" / "skills";
+  {
+    SkillRegistry blockRegistry;
+    SkillLoader blockLoader(blockRegistry);
+    const auto scanRoot = directory / "block-skills";
+    const auto blockPath = scanRoot / "valid" / "SKILL.md";
+    std::filesystem::create_directories(scanRoot / "empty");
+    std::filesystem::create_directories(blockPath.parent_path());
+    writeManifest(blockPath,
+        "---\nname: block\ndescription: >\n  Review code\n  and tests.\n---\nInstructions.\n");
+    require(blockLoader.scan(scanRoot, SkillSource::project),
+        "scan should ignore directories without SKILL.md and load folded descriptions");
+    const auto block = blockRegistry.get("block");
+    require(block.has_value() && block->summary == "Review code and tests.\n" &&
+        block->instructions == "Instructions.\n", "folding must preserve the skill body");
+
+    writeManifest(blockPath,
+        "---\r\nname: block\r\ndescription: |-\r\n  First: line\r\n  Second line\r\n"
+        "metadata: ignored\r\n---\r\nBody\r\n");
+    require(blockLoader.reload("block"), "literal descriptions with CRLF should reload");
+    require(blockRegistry.get("block")->summary == "First: line\nSecond line",
+        "literal block should retain line breaks and strip the final newline");
+
+    writeManifest(blockPath,
+        "---\nname: block\ndescription: >-\n  First paragraph\n  continues\n\n"
+        "  Second paragraph\n---\nBody");
+    require(blockLoader.reload("block"), "folded paragraphs should reload");
+    require(blockRegistry.get("block")->summary == "First paragraph continues\nSecond paragraph",
+        "folding should preserve paragraph breaks");
+
+    writeManifest(blockPath,
+        "---\nname: block\ndescription: |+\n  First\n\n---\nBody");
+    require(blockLoader.reload("block"), "keep chomping should reload");
+    require(blockRegistry.get("block")->summary == "First\n\n",
+        "keep chomping should preserve trailing newlines");
+
+    writeManifest(blockPath, "---\nname: block\ndescription: >\n---\nBody");
+    require(!blockLoader.reload("block"), "empty block descriptions should be rejected");
+    writeManifest(blockPath,
+        "---\nname: block\ndescription: >\n  First\ndescription: duplicate\n---\nBody");
+    require(!blockLoader.reload("block"), "duplicate descriptions after a block should be rejected");
+  }
   const std::filesystem::path localSkill = localSkills / "procedure" / "SKILL.md";
   std::filesystem::create_directories(localSkill.parent_path());
   writeManifest(

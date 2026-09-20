@@ -33,6 +33,52 @@ std::string frontmatterValue(std::string_view value) {
   return result;
 }
 
+std::string blockValue(std::string_view contents, std::size_t& position, std::string_view header) {
+  std::vector<std::string> lines;
+  std::size_t indentation = std::string::npos;
+  while (position < contents.size()) {
+    const std::size_t end = contents.find('\n', position);
+    std::string_view line = contents.substr(
+        position, end == std::string::npos ? contents.size() - position : end - position);
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    const std::size_t first = line.find_first_not_of(' ');
+    if (first != std::string::npos) {
+      if (first == 0 || (indentation != std::string::npos && first < indentation)) {
+        break;
+      }
+      if (indentation == std::string::npos) {
+        indentation = first;
+      }
+    }
+    lines.emplace_back(first == std::string::npos ? "" : line.substr(indentation));
+    position = end == std::string::npos ? contents.size() : end + 1;
+  }
+
+  std::string result;
+  for (std::size_t index = 0; index < lines.size(); ++index) {
+    result += lines[index];
+    const bool hasNext = index + 1 < lines.size();
+    const bool ordinary = !lines[index].empty() && lines[index].front() != ' ';
+    const bool nextOrdinary = hasNext && !lines[index + 1].empty() && lines[index + 1].front() != ' ';
+    if (header.front() == '>' && ordinary && nextOrdinary) {
+      result += ' ';
+    } else if (!(header.front() == '>' && lines[index].empty() && nextOrdinary && index > 0)) {
+      result += '\n';
+    }
+  }
+  if (header.back() != '+') {
+    while (!result.empty() && result.back() == '\n') {
+      result.pop_back();
+    }
+    if (header.back() != '-' && !result.empty()) {
+      result += '\n';
+    }
+  }
+  return result;
+}
+
 }  // namespace
 
 bool SkillLoader::parse(
@@ -66,6 +112,7 @@ bool SkillLoader::parse(
   std::size_t instructionsStart = std::string::npos;
   while (position <= contents.size()) {
     const std::size_t lineEnd = contents.find('\n', position);
+    std::size_t nextPosition = lineEnd == std::string::npos ? contents.size() + 1 : lineEnd + 1;
     std::string_view line(
         contents.data() + position,
         lineEnd == std::string::npos ? contents.size() - position : lineEnd - position);
@@ -85,16 +132,21 @@ bool SkillLoader::parse(
         return false;
       }
       const std::string key = trim(std::string_view(metadata).substr(0, separator));
-      const std::string value = frontmatterValue(std::string_view(metadata).substr(separator + 1));
+      const std::string rawValue = trim(std::string_view(metadata).substr(separator + 1));
+      const bool isBlock = rawValue == ">" || rawValue == "|" || rawValue == ">-" ||
+          rawValue == "|-" || rawValue == ">+" || rawValue == "|+";
+      const std::string value = isBlock
+          ? blockValue(contents, nextPosition, rawValue)
+          : frontmatterValue(rawValue);
       if (key == "name") {
-        if (hasName || value.empty()) {
+        if (hasName || trim(value).empty()) {
           error = "frontmatter field 'name' must be present once and non-empty";
           return false;
         }
         skill.id = value;
         hasName = true;
       } else if (key == "description") {
-        if (hasDescription || value.empty()) {
+        if (hasDescription || trim(value).empty()) {
           error = "frontmatter field 'description' must be present once and non-empty";
           return false;
         }
@@ -106,7 +158,7 @@ bool SkillLoader::parse(
     if (lineEnd == std::string::npos) {
       break;
     }
-    position = lineEnd + 1;
+    position = nextPosition;
   }
 
   if (instructionsStart == std::string::npos) {
@@ -211,7 +263,7 @@ bool SkillLoader::scan(const std::filesystem::path& directory, SkillSource sourc
       std::error_code skillError;
       if (std::filesystem::is_regular_file(skill, skillError)) {
         skills.push_back(skill);
-      } else if (skillError) {
+      } else if (skillError && skillError != std::errc::no_such_file_or_directory) {
         return fail("cannot inspect skill '" + skill.string() + "': " + skillError.message());
       }
     } else if (entryError) {
