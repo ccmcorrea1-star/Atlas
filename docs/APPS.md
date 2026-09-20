@@ -113,6 +113,16 @@ Seu objetivo é permitir que Atlas e usuário compartilhem o mesmo contexto de n
 
 Ele utiliza o Atlas Runtime e suas capabilities, sem implementar um Agent separado.
 
+## Atlas Torrent
+
+O **Atlas Torrent** é o cliente BitTorrent do ecossistema Atlas.
+
+Ele oferece as funções normais de um cliente torrent, incluindo downloads, uploads, fila, seleção de arquivos, peers, trackers, limites de velocidade e prioridades.
+
+A integração com o Atlas permite controlar transferências por linguagem natural e conectá-las a outras capacidades do Runtime, como filesystem, automações e notificações. O usuário pode, por exemplo, alterar prioridades, definir limites temporários, acompanhar transferências ou organizar arquivos concluídos sem navegar manualmente pela interface.
+
+A implementação deve reutilizar uma engine BitTorrent existente e manter protocolo, transferência e gerenciamento de peers fora do Agent. O Atlas Runtime orquestra ações e contexto; o cliente continua responsável pela experiência de gerenciamento das transferências.
+
 ## Atlas Mobile
 
 O **Atlas Mobile** é o companion móvel do Atlas.
@@ -157,8 +167,8 @@ Atlas Web não representa um Runtime diferente nem uma versão independente do A
         ├──────── Terminal ───────────────┤
         │                │                │
       Mobile           Browser           Web
-        │
-     Telegram
+        │                │
+     Telegram         Torrent
 ```
 
 Os apps podem apresentar diferentes partes do mesmo estado, mas a fonte de verdade permanece no Runtime.
@@ -176,6 +186,7 @@ Atlas Knowledge     → app
 Atlas Code          → app
 Atlas Terminal      → app
 Atlas Telegram      → app
+Atlas Torrent       → app
 
 GitHub              → integração
 Google Drive        → integração
