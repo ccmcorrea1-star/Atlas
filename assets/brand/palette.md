@@ -2,14 +2,14 @@
 
 Fonte: `assets/brand/atlas-logo.svg` e `assets/brand/atlas-banner.svg`.
 
-A identidade visual do Atlas usa uma base escura, neutra e fria, com contraste em branco/cinza. A paleta deve ser usada de forma econômica em interfaces de terminal e aplicações gráficas.
+A identidade visual do Atlas usa uma base escura e fria, off-white e acentos discretos em ciano e azul-violeta. A estética é minimalista e retrofuturista; efeitos CRT/VHS pertencem às aplicações da marca, não à geometria do símbolo.
 
 ## Cores
 
 | Nome             | Hex       | Uso                                        |
 | ---------------- | --------- | ------------------------------------------ |
 | Fundo profundo   | `#050607` | Fundo principal do banner                  |
-| Fundo Atlas      | `#070809` | Fundo principal do logo                    |
+| Fundo Atlas      | `#090C10` | Fundo principal do logo                    |
 | Fundo elevado    | `#0A0B0D` | Superfícies discretamente elevadas         |
 | Fundo painel     | `#111316` | Painéis e áreas de conteúdo                |
 | Fundo agente     | `#181B1F` | Background das mensagens do Atlas na TUI   |
@@ -18,15 +18,17 @@ A identidade visual do Atlas usa uma base escura, neutra e fria, com contraste e
 | Cinza orbital    | `#858B92` | Texto auxiliar e metadados                 |
 | Cinza descritivo | `#8F969E` | Elementos gráficos secundários             |
 | Cinza texto      | `#C4C8CD` | Texto secundário com boa leitura           |
-| Cinza claro      | `#CBD1D7` | Linhas, bordas e realces suaves            |
-| Branco Atlas     | `#FFFFFF` | Marca e texto de maior destaque            |
+| Off-white Atlas  | `#F1EEE3` | Wordmark e realces principais              |
+| Ciano orbital    | `#78D9E6` | Órbita e acentos tecnológicos              |
+| Azul-violeta     | `#7775C9` | Aberração cromática e detalhe secundário   |
 
 ## Gradientes dos assets
 
-- `bg` do logo: `#070809` → `#111316`.
+- Fundo do logo: `#090C10`.
 - `bg` do banner: `#050607` → `#0A0B0D` → `#141619`.
-- `planet`: `#34383D` → `#181B1F` → `#070809`.
-- Texto principal (`white`/`mark`): `#FFFFFF` → `#D7DBE0`.
+- `planet`: `#F1EEE3` → `#4D8998` → `#0B1117`.
+- `orbit`: `#78D9E6` → `#728BD8`.
+- Wordmark: `#F1EEE3`, com aberração cromática discreta em ciano e azul-violeta.
 
 ## Aplicação na TUI
 
@@ -35,7 +37,7 @@ A TUI usa fundos sólidos derivados da paleta para separar semanticamente as men
 - **Usuário:** `#34383D`, o grafite de maior contraste da paleta.
 - **Atlas:** `#181B1F`, um grafite escuro intermediário.
 - **Superfícies:** `#0A0B0D` no estado normal e `#111316` no painel focado, sem bordas externas.
-- **Seleção/foco:** realces ciano existentes podem continuar sendo usados apenas para interação e estado, não como identidade de fundo.
+- **Seleção/foco:** ciano pode ser usado de forma econômica em interação, estado e detalhes alinhados à identidade orbital.
 - **Erro:** vermelho continua reservado para falhas operacionais.
 
 Os backgrounds devem preencher a largura útil da linha, manter contraste suficiente com o texto e permanecer discretos em terminais escuros.
