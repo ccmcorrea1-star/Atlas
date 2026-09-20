@@ -198,6 +198,16 @@ export class AtlasRuntimeServer {
     publish(runtimeEvent(request, 'turn.started'));
 
     let messageId: string | undefined;
+    const messageContents = new Map<string, string>();
+    const publishCancelled = () => {
+      const content = messageId === undefined ? '' : (messageContents.get(messageId) ?? '');
+      publish(
+        runtimeEvent(request, 'turn.cancelled', {
+          content,
+          ...(messageId === undefined ? {} : { message_id: messageId }),
+        }),
+      );
+    };
     try {
       if (abortSignal.aborted) {
         throw new Error('turn cancelled by client');
@@ -210,9 +220,21 @@ export class AtlasRuntimeServer {
         conversationId: request.conversation_id,
         onEvent: (event) => {
           messageId = eventMessageId(event) ?? messageId;
+          if (event.type === 'message.delta') {
+            messageContents.set(
+              event.messageId,
+              `${messageContents.get(event.messageId) ?? ''}${event.delta}`,
+            );
+          } else if (event.type === 'message.completed') {
+            messageContents.set(event.messageId, event.content);
+          }
           publish(atlasEvent(request, event));
         },
       });
+      if (abortSignal.aborted) {
+        publishCancelled();
+        return;
+      }
       const content =
         typeof result.finalOutput === 'string'
           ? result.finalOutput
@@ -235,6 +257,10 @@ export class AtlasRuntimeServer {
       };
       publish(runtimeEvent(request, 'turn.completed', completedData));
     } catch (error) {
+      if (abortSignal.aborted) {
+        publishCancelled();
+        return;
+      }
       publish(runtimeErrorEvent(error instanceof Error ? error.message : String(error), request));
     }
   }

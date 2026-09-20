@@ -32,6 +32,7 @@ export type RuntimeEventType =
   | 'execution.output.delta'
   | 'execution.completed'
   | 'turn.completed'
+  | 'turn.cancelled'
   | 'error';
 
 export type RuntimeContextUsage = {
@@ -54,6 +55,11 @@ export type RuntimeTurnCompletedData = {
   content: string;
   message_id?: string;
   context?: RuntimeContextUsage;
+};
+
+export type RuntimeTurnCancelledData = {
+  content: string;
+  message_id?: string;
 };
 
 export type RuntimeExecutionStartedData = {

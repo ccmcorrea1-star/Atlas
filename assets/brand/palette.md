@@ -6,22 +6,22 @@ A identidade usa uma base escura e fria, com azul-petróleo, ciano dessaturado e
 
 ## Paleta principal
 
-| Nome            | Hex       | Uso                                  |
-| --------------- | --------- | ------------------------------------ |
-| Fundo            | `#090B0B` | Fundo principal                      |
-| Superfície       | `#142328` | Painéis e superfícies elevadas       |
-| Azul Atlas       | `#314A50` | Cor estrutural da identidade         |
-| Acento orbital   | `#77B0B8` | Órbita, foco e detalhes tecnológicos |
-| Off-white        | `#EBEDDF` | Wordmark, ícones e texto em destaque |
+| Nome           | Hex       | Uso                                  |
+| -------------- | --------- | ------------------------------------ |
+| Fundo          | `#090B0B` | Fundo principal                      |
+| Superfície     | `#142328` | Painéis e superfícies elevadas       |
+| Azul Atlas     | `#314A50` | Cor estrutural da identidade         |
+| Acento orbital | `#77B0B8` | Órbita, foco e detalhes tecnológicos |
+| Off-white      | `#EBEDDF` | Wordmark, ícones e texto em destaque |
 
 ## Tons auxiliares
 
-| Nome         | Hex       | Uso                              |
-| ------------ | --------- | -------------------------------- |
-| Fundo frio   | `#0B1214` | Variação de fundo                |
-| Azul escuro  | `#142328` | Profundidade e contraste         |
-| Azul médio   | `#557C85` | Elementos secundários            |
-| Ciano claro  | `#A7DBDF` | Realces pontuais                 |
+| Nome        | Hex       | Uso                      |
+| ----------- | --------- | ------------------------ |
+| Fundo frio  | `#0B1214` | Variação de fundo        |
+| Azul escuro | `#142328` | Profundidade e contraste |
+| Azul médio  | `#557C85` | Elementos secundários    |
+| Ciano claro | `#A7DBDF` | Realces pontuais         |
 
 ## Aplicação
 

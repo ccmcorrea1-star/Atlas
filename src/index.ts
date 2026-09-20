@@ -47,4 +47,8 @@ export type {
   OpenCodeGoProviderOptions,
 } from './opencode-go.js';
 
-export type { RuntimeContextUsage, RuntimeTurnCompletedData } from './runtime/protocol.js';
+export type {
+  RuntimeContextUsage,
+  RuntimeTurnCancelledData,
+  RuntimeTurnCompletedData,
+} from './runtime/protocol.js';

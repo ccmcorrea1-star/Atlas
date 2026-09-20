@@ -17,6 +17,7 @@
     { "$ref": "#/$defs/executionOutputDelta" },
     { "$ref": "#/$defs/executionCompleted" },
     { "$ref": "#/$defs/turnCompleted" },
+    { "$ref": "#/$defs/turnCancelled" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -302,6 +303,26 @@
                 "content": { "type": "string" },
                 "message_id": { "type": "string", "minLength": 1 },
                 "context": { "$ref": "#/$defs/context" }
+              },
+              "required": ["content"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "turnCancelled": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "turn.cancelled" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "content": { "type": "string" },
+                "message_id": { "type": "string", "minLength": 1 }
               },
               "required": ["content"],
               "additionalProperties": true

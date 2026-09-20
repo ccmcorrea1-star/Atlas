@@ -80,6 +80,16 @@ test('carries Runtime-provided context usage on the completed turn', () => {
   });
 });
 
+test('serializes cancellation as a terminal turn event', () => {
+  const cancelled = runtimeEvent(request, 'turn.cancelled', {
+    content: 'partial response',
+    message_id: 'message-1',
+  });
+
+  assert.deepEqual(JSON.parse(serializeRuntimeMessage(cancelled)), cancelled);
+  assert.equal(cancelled.type, 'turn.cancelled');
+});
+
 test('serializes context updates as public events', () => {
   const updated = runtimeEvent(request, 'context.updated', {
     used_tokens: 6600,

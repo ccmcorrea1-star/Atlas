@@ -505,10 +505,51 @@ async function startHangingModelServer(): Promise<{
   };
 }
 
+async function startPartialHangingModelServer(): Promise<{
+  baseURL: string;
+  close: () => Promise<void>;
+}> {
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Consome o request antes de deixar o stream aberto.
+    }
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of messageStream('partial')) {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === 'response.output_text.delta') {
+        break;
+      }
+    }
+    request.on('aborted', () => response.destroy());
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Partial hanging model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    close: () =>
+      new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => (error ? rejectClose(error) : resolveClose()));
+      }),
+  };
+}
+
 function sendTurnAndCancel(
   socketPath: string,
   conversationId: string,
   cancelConversationId = conversationId,
+  cancelAfterEvent = 'turn.started',
 ): Promise<{ events: WireMessage[]; cancelEvents: WireMessage[] }> {
   return new Promise((resolveTurn, rejectTurn) => {
     const requestId = 'tui-cancel-request';
@@ -540,7 +581,7 @@ function sendTurnAndCancel(
         if (line) {
           const event = JSON.parse(line) as WireMessage;
           events.push(event);
-          if (event.type === 'turn.started' && !cancelSent) {
+          if (event.type === cancelAfterEvent && !cancelSent) {
             cancelSent = true;
             const cancelSocket = createConnection(socketPath, () => {
               cancelSocket.end(
@@ -573,7 +614,7 @@ function sendTurnAndCancel(
               });
             }
           }
-          if (event.type === 'error') {
+          if (event.type === 'turn.cancelled' || event.type === 'error') {
             socket.destroy();
             resolveTurn({ events, cancelEvents });
             return;
@@ -585,7 +626,7 @@ function sendTurnAndCancel(
   });
 }
 
-test('cancels an active Unix runtime turn and emits a terminal error', async () => {
+test('cancels an active Unix runtime turn as a normal terminal event', async () => {
   const model = await startHangingModelServer();
   const socketPath = `/tmp/atlas-runtime-cancel-${randomUUID()}.sock`;
   const runtime = new AtlasRuntimeServer({
@@ -603,10 +644,10 @@ test('cancels an active Unix runtime turn and emits a terminal error', async () 
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ['session.updated', 'turn.started', 'error'],
+      ['session.updated', 'turn.started', 'turn.cancelled'],
     );
     assert.equal(events.at(-1)?.request_id, 'tui-cancel-request');
-    assert.equal((events.at(-1)?.data as WireMessage).message, 'turn cancelled by client');
+    assert.deepEqual(events.at(-1)?.data, { content: '' });
   } finally {
     await runtime.close();
     await model.close();
@@ -635,7 +676,7 @@ test('does not cancel a turn when conversation identity does not match', async (
 
     assert.deepEqual(
       result.events.map((event) => event.type),
-      ['session.updated', 'turn.started', 'error'],
+      ['session.updated', 'turn.started', 'turn.cancelled'],
     );
     assert.deepEqual(
       result.cancelEvents.map((event) => event.type),
@@ -645,6 +686,41 @@ test('does not cancel a turn when conversation identity does not match', async (
       String((result.cancelEvents[0]?.data as WireMessage).message),
       /No active turn exists/,
     );
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
+test('preserves streamed response content when cancelling a turn', async () => {
+  const model = await startPartialHangingModelServer();
+  const socketPath = `/tmp/atlas-runtime-cancel-partial-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: '[REDACTED]',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const { events } = await sendTurnAndCancel(
+      socketPath,
+      'cancel-partial-conversation',
+      'cancel-partial-conversation',
+      'message.delta',
+    );
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['session.updated', 'turn.started', 'message.delta', 'turn.cancelled'],
+    );
+    assert.deepEqual(events.at(-1)?.data, {
+      content: 'partial',
+      message_id: 'runtime-execution-message',
+    });
   } finally {
     await runtime.close();
     await model.close();
@@ -684,7 +760,11 @@ function sendTurn(
         if (line) {
           const event = JSON.parse(line) as WireMessage;
           events.push(event);
-          if (event.type === 'turn.completed' || event.type === 'error') {
+          if (
+            event.type === 'turn.completed' ||
+            event.type === 'turn.cancelled' ||
+            event.type === 'error'
+          ) {
             socket.destroy();
             resolveTurn(events);
             return;
