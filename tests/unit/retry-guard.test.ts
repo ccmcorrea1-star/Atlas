@@ -12,6 +12,7 @@ import {
   type CapabilityExecutionResult,
   type CapabilityRuntime,
 } from '../../src/capability-runtime.js';
+import { DEFAULT_ATLAS_WEB_CONFIG } from '../../src/config/index.js';
 import { runAtlas } from '../../src/index.js';
 
 type RequestBody = Record<string, unknown>;
@@ -288,7 +289,16 @@ test('allows the same failing call again in a new turn', async () => {
 });
 
 test('executes web.search without provider once and blocks the identical retry', async () => {
-  const native = new NativeCapabilityRuntime();
+  const native = new NativeCapabilityRuntime({
+    webConfig: {
+      ...DEFAULT_ATLAS_WEB_CONFIG,
+      search: {
+        ...DEFAULT_ATLAS_WEB_CONFIG.search,
+        provider: 'missing-test-provider',
+        fallbackProviders: [],
+      },
+    },
+  });
   let executions = 0;
   const capabilityRuntime: CapabilityRuntime = {
     discover: (request) => native.discover(request),

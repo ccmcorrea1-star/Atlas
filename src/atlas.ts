@@ -708,9 +708,15 @@ async function publishRunEvent(
         const reasoningId = stringValue(modelEvent?.id) ?? 'default';
         const state = reasoningStreamState.get(reasoningId);
         if (reasoningType === 'reasoning-start') {
+          if (state !== undefined) {
+            return;
+          }
           reasoningStreamState.set(reasoningId, 'active');
           await onEvent({ type: 'reasoning-start', reasoningId });
         } else if (reasoningType === 'reasoning-delta') {
+          if (state === 'ended') {
+            return;
+          }
           if (state !== 'active') {
             await onEvent({ type: 'reasoning-start', reasoningId });
           }
@@ -721,6 +727,9 @@ async function publishRunEvent(
             await onEvent({ type: 'reasoning-delta', reasoningId, delta });
           }
         } else {
+          if (state === 'ended') {
+            return;
+          }
           if (state === undefined) {
             await onEvent({ type: 'reasoning-start', reasoningId });
           }
