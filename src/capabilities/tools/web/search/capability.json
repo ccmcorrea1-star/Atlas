@@ -1,8 +1,8 @@
 {
   "id": "web.search",
   "type": "tool",
-  "summary": "pesquisar na web por tutoriais, documentacao ou respostas",
-  "description": "consultar a internet por documentacao, tutoriais e resultados atualizados; sem provider configurado retorna unavailable",
+  "summary": "descobrir resultados na web por consulta, noticias ou fontes",
+  "description": "descobre resultados atualizados na web para tutoriais, documentacao, noticias e outras fontes; para noticias atuais, faca uma busca ampla inicial com category=news, timeRange=day e limit=8, sem dividir por subtemas; pesquise novamente somente se os resultados forem insuficientes ou conflitantes; use web.fetch em 2 ou 3 URLs especificas para validar conteudo e data, nunca a pagina inicial quando houver um artigo especifico; cite as URLs exatas das fontes consultadas; sem provider configurado retorna unavailable",
   "schema": {
     "type": "object",
     "properties": {
@@ -13,7 +13,25 @@
       "limit": {
         "type": "integer",
         "minimum": 1,
-        "description": "número máximo de resultados (padrão 5, máximo 20)"
+        "description": "número máximo de resultados (padrão 5, máximo 20); para resumos amplos, prefira 8"
+      },
+      "category": {
+        "type": "string",
+        "enum": ["general", "news"],
+        "description": "categoria da busca; use news para noticias e general para pesquisas amplas"
+      },
+      "timeRange": {
+        "type": "string",
+        "enum": ["day", "week", "month"],
+        "description": "janela de atualidade; use day para noticias de hoje, week para os ultimos dias e month para um periodo mensal"
+      },
+      "domains": {
+        "type": "array",
+        "description": "dominios para restringir a busca usando filtros de site; use somente quando houver uma preferencia de fonte",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "required": ["query"],

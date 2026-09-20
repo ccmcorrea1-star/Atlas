@@ -7,6 +7,8 @@ export interface SearchResult {
   url: string;
   snippet?: string;
   source?: string;
+  publishedAt?: string;
+  score?: number;
 }
 
 export interface SearchOutcome {
@@ -23,8 +25,22 @@ export interface SearchConfig {
   providers?: Record<string, { endpoint?: string; apiKey?: string }>;
 }
 
+export type SearchCategory = 'general' | 'news';
+export type SearchTimeRange = 'day' | 'week' | 'month';
+
+export interface SearchOptions {
+  category?: SearchCategory;
+  timeRange?: SearchTimeRange;
+  domains?: string[];
+}
+
 export interface SearchProvider {
-  search(query: string, limit: number, config: SearchConfig): Promise<unknown>;
+  search(
+    query: string,
+    limit: number,
+    config: SearchConfig,
+    options?: SearchOptions,
+  ): Promise<unknown>;
 }
 
 export type SearchProviderFactory = (config: SearchConfig) => SearchProvider;
@@ -39,14 +55,22 @@ const providerFactories = new Map<string, SearchProviderFactory>();
 class ProviderError extends Error {}
 
 class SearXNGProvider implements SearchProvider {
-  public async search(query: string, limit: number, config: SearchConfig): Promise<unknown> {
+  public async search(
+    query: string,
+    limit: number,
+    config: SearchConfig,
+    options: SearchOptions = {},
+  ): Promise<unknown> {
     const endpoint = config.endpoint ?? DEFAULT_ENDPOINT;
     const url = new URL(
       endpoint.endsWith('/search') ? endpoint : `${endpoint.replace(/\/$/, '')}/search`,
     );
-    url.searchParams.set('q', query);
+    url.searchParams.set('q', queryWithDomains(query, options.domains));
     url.searchParams.set('format', 'json');
-    url.searchParams.set('categories', 'general');
+    url.searchParams.set('categories', options.category ?? 'general');
+    if (options.timeRange !== undefined) {
+      url.searchParams.set('time_range', options.timeRange);
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -59,18 +83,7 @@ class SearXNGProvider implements SearchProvider {
       if (!Array.isArray(payload.results)) {
         throw new ProviderError('SearXNG returned an invalid result envelope');
       }
-      return payload.results.slice(0, limit).map((entry) => {
-        if (entry === null || typeof entry !== 'object') {
-          return entry;
-        }
-        const result = entry as Record<string, unknown>;
-        return {
-          title: result.title,
-          url: result.url,
-          snippet: result.content,
-          source: result.engine,
-        };
-      });
+      return sanitizeResults(payload.results.map(normalizeSearXNGResult)).slice(0, limit);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new ProviderError('SearXNG request timed out');
@@ -80,6 +93,46 @@ class SearXNGProvider implements SearchProvider {
       clearTimeout(timeout);
     }
   }
+}
+
+function queryWithDomains(query: string, domains: string[] | undefined): string {
+  if (domains === undefined || domains.length === 0) {
+    return query;
+  }
+  const filters = domains.map((domain) => `site:${domain}`).join(' OR ');
+  return `${query} (${filters})`;
+}
+
+function normalizeSearXNGResult(entry: unknown): unknown {
+  if (entry === null || typeof entry !== 'object') {
+    return entry;
+  }
+  const result = entry as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {
+    title: result.title,
+    url: result.url,
+  };
+  const snippet = typeof result.content === 'string' ? result.content : result.snippet;
+  if (typeof snippet === 'string') {
+    normalized.snippet = snippet;
+  }
+  const source = typeof result.engine === 'string' ? result.engine : result.source;
+  if (typeof source === 'string') {
+    normalized.source = source;
+  }
+  const publishedAt =
+    typeof result.publishedDate === 'string'
+      ? result.publishedDate
+      : typeof result.publishedAt === 'string'
+        ? result.publishedAt
+        : result.published_at;
+  if (typeof publishedAt === 'string') {
+    normalized.publishedAt = publishedAt;
+  }
+  if (typeof result.score === 'number' && Number.isFinite(result.score)) {
+    normalized.score = result.score;
+  }
+  return normalized;
 }
 
 providerFactories.set('searxng', () => new SearXNGProvider());
@@ -97,7 +150,14 @@ export function unregisterSearchProvider(name: string): void {
   }
 }
 
-export function parseRequest(text: string): { target: string; query: string; limit: number } {
+export function parseRequest(text: string): {
+  target: string;
+  query: string;
+  limit: number;
+  category?: SearchCategory;
+  timeRange?: SearchTimeRange;
+  domains?: string[];
+} {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -121,7 +181,38 @@ export function parseRequest(text: string): { target: string; query: string; lim
     }
     limit = Math.min(record.limit, MAX_LIMIT);
   }
-  return { target: record.target, query: record.query.trim(), limit };
+  let category: SearchCategory | undefined;
+  if (record.category !== undefined) {
+    if (record.category !== 'general' && record.category !== 'news') {
+      throw new Error("field 'category' must be 'general' or 'news'");
+    }
+    category = record.category;
+  }
+  let timeRange: SearchTimeRange | undefined;
+  if (record.timeRange !== undefined) {
+    if (record.timeRange !== 'day' && record.timeRange !== 'week' && record.timeRange !== 'month') {
+      throw new Error("field 'timeRange' must be 'day', 'week' or 'month'");
+    }
+    timeRange = record.timeRange;
+  }
+  let domains: string[] | undefined;
+  if (record.domains !== undefined) {
+    if (
+      !Array.isArray(record.domains) ||
+      record.domains.some((domain) => typeof domain !== 'string' || domain.trim() === '')
+    ) {
+      throw new Error("field 'domains' must be an array of non-empty strings");
+    }
+    domains = record.domains.map((domain) => domain.trim());
+  }
+  return {
+    target: record.target,
+    query: record.query.trim(),
+    limit,
+    ...(category === undefined ? {} : { category }),
+    ...(timeRange === undefined ? {} : { timeRange }),
+    ...(domains === undefined ? {} : { domains }),
+  };
 }
 
 export function sanitizeResults(value: unknown): SearchResult[] {
@@ -129,6 +220,7 @@ export function sanitizeResults(value: unknown): SearchResult[] {
     throw new Error('search provider returned invalid JSON: expected an array');
   }
   const results: SearchResult[] = [];
+  const seenUrls = new Set<string>();
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null) {
       continue;
@@ -140,12 +232,28 @@ export function sanitizeResults(value: unknown): SearchResult[] {
     if (typeof record.url !== 'string' || record.url === '') {
       continue;
     }
+    if (seenUrls.has(record.url)) {
+      continue;
+    }
+    seenUrls.add(record.url);
     const result: SearchResult = { title: record.title, url: record.url };
     if (typeof record.snippet === 'string' && record.snippet !== '') {
       result.snippet = record.snippet;
     }
     if (typeof record.source === 'string' && record.source !== '') {
       result.source = record.source;
+    }
+    const publishedAt =
+      typeof record.publishedAt === 'string'
+        ? record.publishedAt
+        : typeof record.publishedDate === 'string'
+          ? record.publishedDate
+          : undefined;
+    if (publishedAt !== undefined && publishedAt !== '') {
+      result.publishedAt = publishedAt;
+    }
+    if (typeof record.score === 'number' && Number.isFinite(record.score)) {
+      result.score = record.score;
     }
     results.push(result);
   }
@@ -179,6 +287,7 @@ export async function runSearch(
   limit: number,
   config: SearchConfig = searchConfigFromEnvironment(),
   providers: ReadonlyMap<string, SearchProviderFactory> = providerFactories,
+  options: SearchOptions = {},
 ): Promise<SearchOutcome> {
   const names = [config.provider ?? 'searxng', ...(config.fallbackProviders ?? [])];
   const attempted = new Set<string>();
@@ -195,7 +304,7 @@ export async function runSearch(
       continue;
     }
     try {
-      const raw = await factory(config).search(query, limit, config);
+      const raw = await factory(config).search(query, limit, config, options);
       return { status: 'success', error: '', results: sanitizeResults(raw).slice(0, limit) };
     } catch (error) {
       lastError = `${name}: ${error instanceof Error ? error.message : String(error)}`;
@@ -217,7 +326,7 @@ async function main(): Promise<void> {
   }
   try {
     const request = parseRequest(input);
-    const outcome = await runSearch(request.query, request.limit);
+    const outcome = await runSearch(request.query, request.limit, undefined, undefined, request);
     process.stdout.write(`${JSON.stringify({ target: request.target, ...outcome })}\n`);
   } catch (error) {
     process.stdout.write(
