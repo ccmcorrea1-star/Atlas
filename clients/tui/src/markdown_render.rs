@@ -17,6 +17,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui_consts::action_style;
 use crate::ui_consts::primary_style;
@@ -27,6 +28,23 @@ mod math;
 
 const ESC: char = '\x1b';
 const ANSI_MARKER: &str = "␛";
+// Mantem a metadata do link no mesmo grapheme sem expor controles ao ratatui.
+const HYPERLINK_START: char = '\u{e0100}';
+const HYPERLINK_DATA_START: u32 = 0xe0101;
+const HYPERLINK_DATA_END: u32 = 0xe0110;
+const HYPERLINK_END: char = '\u{e0111}';
+const HYPERLINK_CONTINUE: char = '\u{e0112}';
+
+#[derive(Debug)]
+pub(crate) enum TerminalHyperlinkPart<'a> {
+    Start {
+        destination: String,
+        visible: &'a str,
+    },
+    Continue {
+        visible: &'a str,
+    },
+}
 
 pub(crate) fn sanitize_terminal_text(text: &str) -> String {
     ansi_spans(text, Style::default())
@@ -42,6 +60,10 @@ pub(crate) fn ansi_spans(text: &str, base: Style) -> Vec<Span<'static>> {
     let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
+        if let Some(end) = hyperlink_metadata_end(text, index) {
+            index = end;
+            continue;
+        }
         if (bytes[index] == ESC as u8 || text[index..].starts_with(ANSI_MARKER))
             && let Some((end, parameters, is_sgr)) = ansi_sequence(text, index)
         {
@@ -170,6 +192,99 @@ fn push_chunk(spans: &mut Vec<Span<'static>>, chunk: &mut String, style: Style) 
     if !chunk.is_empty() {
         spans.push(Span::styled(std::mem::take(chunk), style));
     }
+}
+
+pub(crate) fn encode_terminal_hyperlink(destination: &str, text: &str) -> String {
+    let visible = if text.is_empty() { destination } else { text };
+    let mut encoded = String::with_capacity(visible.len() + destination.len() * 2 + 8);
+    for (index, grapheme) in visible.graphemes(true).enumerate() {
+        encoded.push_str(grapheme);
+        if index == 0 {
+            encoded.push(HYPERLINK_START);
+            for byte in destination.as_bytes() {
+                encoded.push(
+                    char::from_u32(HYPERLINK_DATA_START + u32::from(byte >> 4))
+                        .expect("hyperlink data marker is a valid variation selector"),
+                );
+                encoded.push(
+                    char::from_u32(HYPERLINK_DATA_START + u32::from(byte & 0x0f))
+                        .expect("hyperlink data marker is a valid variation selector"),
+                );
+            }
+            encoded.push(HYPERLINK_END);
+        } else {
+            encoded.push(HYPERLINK_CONTINUE);
+        }
+    }
+    encoded
+}
+
+pub(crate) fn terminal_hyperlink_parts(symbol: &str) -> Option<TerminalHyperlinkPart<'_>> {
+    if let Some(marker_index) = symbol.find(HYPERLINK_START) {
+        let visible = &symbol[..marker_index];
+        let marker_end = hyperlink_metadata_end(symbol, marker_index)?;
+        if marker_end != symbol.len() {
+            return None;
+        }
+
+        let metadata = &symbol[marker_index..marker_end];
+        let mut chars = metadata.chars();
+        chars.next();
+        let mut bytes = Vec::new();
+        loop {
+            let high = chars.next()?;
+            if high == HYPERLINK_END {
+                break;
+            }
+            let low = chars.next()?;
+            if !is_hyperlink_data(high) || !is_hyperlink_data(low) {
+                return None;
+            }
+            bytes.push(
+                ((high as u32 - HYPERLINK_DATA_START) << 4 | (low as u32 - HYPERLINK_DATA_START))
+                    as u8,
+            );
+        }
+        if chars.next().is_some() || bytes.is_empty() {
+            return None;
+        }
+
+        return Some(TerminalHyperlinkPart::Start {
+            destination: String::from_utf8(bytes).ok()?,
+            visible,
+        });
+    }
+
+    symbol
+        .strip_suffix(HYPERLINK_CONTINUE)
+        .map(|visible| TerminalHyperlinkPart::Continue { visible })
+}
+
+fn hyperlink_metadata_end(text: &str, start: usize) -> Option<usize> {
+    let mut chars = text[start..].char_indices();
+    let (_, marker) = chars.next()?;
+    if marker == HYPERLINK_CONTINUE {
+        return Some(start + marker.len_utf8());
+    }
+    if marker != HYPERLINK_START {
+        return None;
+    }
+
+    let mut expect_low = false;
+    for (offset, character) in chars {
+        if character == HYPERLINK_END && !expect_low {
+            return Some(start + offset + character.len_utf8());
+        }
+        if !is_hyperlink_data(character) {
+            return None;
+        }
+        expect_low = !expect_low;
+    }
+    None
+}
+
+fn is_hyperlink_data(character: char) -> bool {
+    (HYPERLINK_DATA_START..=HYPERLINK_DATA_END).contains(&(character as u32))
 }
 
 fn ansi_sequence(text: &str, start: usize) -> Option<(usize, &str, bool)> {
@@ -687,7 +802,7 @@ mod writer {
                 if let Some(Some(destination)) = self.link_destinations.last().cloned() {
                     self.ensure_prefix();
                     self.current.push(Span::styled(
-                        format!("\x1b]8;;{destination}\x07{part}\x1b]8;;\x07"),
+                        encode_terminal_hyperlink(&destination, &sanitize_terminal_text(part)),
                         style,
                     ));
                 } else {
@@ -738,15 +853,6 @@ mod writer {
         }
 
         fn push_wrapped(&mut self, line: Line<'static>) {
-            if line
-                .spans
-                .iter()
-                .any(|span| span.content.contains("\x1b]8;;"))
-            {
-                // Os marcadores OSC-8 devem permanecer pareados entre as linhas.
-                self.lines.push(line);
-                return;
-            }
             let Some(width) = self.width.filter(|width| *width > 0) else {
                 self.lines.push(line);
                 return;
@@ -1317,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn links_preserve_the_destination_as_terminal_hyperlink_metadata() {
+    fn links_do_not_leak_osc8_sequences_into_transcript_text() {
         let rendered = super::render_markdown_text("[Atlas](https://example.com/atlas)");
         let text = rendered.lines[0]
             .spans
@@ -1325,8 +1431,16 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
 
-        assert!(text.contains("\x1b]8;;https://example.com/atlas\x07"));
-        assert!(text.contains("Atlas"));
-        assert!(text.contains("\x1b]8;;\x07"));
+        assert_eq!(super::sanitize_terminal_text(&text), "Atlas");
+        assert!(!text.contains("]8;;"));
+        assert!(!text.chars().any(char::is_control));
+        assert_eq!(crate::wrapping::display_width(&text), 5);
+    }
+
+    #[test]
+    fn ansi_sanitizer_keeps_link_text_and_removes_osc8_controls() {
+        let raw = "\x1b]8;;https://example.com/atlas\x07Atlas\x1b]8;;\x07";
+
+        assert_eq!(super::sanitize_terminal_text(raw), "Atlas");
     }
 }

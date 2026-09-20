@@ -54,17 +54,6 @@ mod cursor;
 #[path = "custom_terminal_test_support.rs"]
 pub(crate) mod test_support;
 
-fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
-    let content = symbol.strip_prefix("\x1b]8;;")?;
-    let destination_end = content.find('\x07')?;
-    let destination = &content[..destination_end];
-    if destination.is_empty() {
-        return None;
-    }
-    let visible = content[destination_end + 1..].strip_suffix("\x1b]8;;\x07")?;
-    Some((destination, visible))
-}
-
 pub struct Frame<'a> {
     /// Where should the cursor be after drawing this frame?
     ///
@@ -591,6 +580,8 @@ where
     }
 }
 
+use crate::markdown_render::TerminalHyperlinkPart;
+use crate::markdown_render::terminal_hyperlink_parts;
 use ratatui::buffer::Cell;
 
 #[derive(Debug, IsVariant)]
@@ -725,10 +716,22 @@ where
             DrawCommand::ClearToEnd { x, y, .. } => (x, y),
         };
         let hyperlink = match &command {
-            DrawCommand::Put { cell, .. } => osc8_hyperlink_parts(cell.symbol()),
+            DrawCommand::Put { cell, .. } => terminal_hyperlink_parts(cell.symbol()),
             DrawCommand::ClearToEnd { .. } => None,
         };
-        let destination = hyperlink.map(|(destination, _)| destination);
+        let (symbol, destination) = match hyperlink.as_ref() {
+            Some(TerminalHyperlinkPart::Start {
+                destination,
+                visible,
+            }) => (*visible, Some(destination.as_str())),
+            Some(TerminalHyperlinkPart::Continue { visible }) => {
+                (*visible, active_hyperlink.as_deref())
+            }
+            None => match &command {
+                DrawCommand::Put { cell, .. } => (cell.symbol(), None),
+                DrawCommand::ClearToEnd { .. } => ("", None),
+            },
+        };
         let hyperlink_changed = active_hyperlink.as_deref() != destination;
         if hyperlink_changed && active_hyperlink.is_some() {
             queue!(writer, Print("\x1b]8;;\x07"))?;
@@ -763,7 +766,6 @@ where
                 if hyperlink_changed && let Some(destination) = destination {
                     queue!(writer, Print(format!("\x1b]8;;{destination}\x07")))?;
                 }
-                let symbol = hyperlink.map_or_else(|| cell.symbol(), |(_, visible)| visible);
                 queue!(writer, Print(symbol))?;
             }
             DrawCommand::ClearToEnd { bg: clear_bg, .. } => {
@@ -863,6 +865,8 @@ impl ModifierDiff {
 mod tests {
     use super::DrawCommand;
     use super::diff_buffers;
+    use super::draw;
+    use crate::markdown_render::encode_terminal_hyperlink;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
@@ -878,6 +882,41 @@ mod tests {
             matches!(command, DrawCommand::Put { x: 2, cell, .. } if cell.symbol() == "h")
         });
         assert!(rendered, "text cells must survive the terminal diff");
+    }
+
+    #[test]
+    fn draw_converts_safe_link_metadata_to_terminal_osc8() {
+        let encoded = encode_terminal_hyperlink("https://example.test", "Atlas");
+        let buffer = Buffer::with_lines([encoded.clone()]);
+        let start = buffer[(0, 0)].clone();
+        assert!(
+            crate::markdown_render::terminal_hyperlink_parts(start.symbol()).is_some(),
+            "invalid hyperlink marker: {:?}",
+            start.symbol()
+        );
+        let mut output = Vec::new();
+
+        draw(
+            &mut output,
+            (0..5).map(|x| DrawCommand::Put {
+                x,
+                y: 0,
+                cell: if x == 0 {
+                    start.clone()
+                } else {
+                    buffer[(x, 0)].clone()
+                },
+            }),
+        )
+        .unwrap();
+
+        let output = String::from_utf8_lossy(&output);
+        assert!(
+            output.contains("\x1b]8;;https://example.test\x07"),
+            "terminal output: {output:?}"
+        );
+        assert!(output.contains("Atlas"), "terminal output: {output:?}");
+        assert!(!output.contains(&encoded));
     }
 }
 
