@@ -12,6 +12,12 @@ export type CrawlConfig = {
   provider?: 'crawl4ai';
   endpoint?: string;
   timeoutMs?: number;
+  apiKey?: string;
+};
+
+type WebEnvironmentConfig = {
+  crawl?: CrawlConfig;
+  providers?: Record<string, { apiKey?: string }>;
 };
 
 export function parseRequest(text: string): { target: string; request: CrawlRequest } {
@@ -53,18 +59,23 @@ export function parseRequest(text: string): { target: string; request: CrawlRequ
 export function crawlConfigFromEnvironment(env: NodeJS.ProcessEnv = process.env): CrawlConfig {
   try {
     if (env.ATLAS_WEB_CONFIG_JSON) {
-      return (JSON.parse(env.ATLAS_WEB_CONFIG_JSON) as { crawl?: CrawlConfig }).crawl ?? {};
+      const config = JSON.parse(env.ATLAS_WEB_CONFIG_JSON) as WebEnvironmentConfig;
+      return withProviderApiKey(config.crawl ?? {}, config.providers?.crawl4ai?.apiKey);
     }
     if (env.ATLAS_CONFIG) {
       const config = JSON.parse(readFileSync(env.ATLAS_CONFIG, 'utf8')) as {
-        web?: { crawl?: CrawlConfig };
+        web?: WebEnvironmentConfig;
       };
-      return config.web?.crawl ?? {};
+      return withProviderApiKey(config.web?.crawl ?? {}, config.web?.providers?.crawl4ai?.apiKey);
     }
   } catch {
     return {};
   }
   return {};
+}
+
+function withProviderApiKey(config: CrawlConfig, apiKey: string | undefined): CrawlConfig {
+  return apiKey === undefined ? config : { ...config, apiKey };
 }
 
 export async function runCrawl(
@@ -80,13 +91,19 @@ export async function runCrawl(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 30000);
   try {
+    const crawlerConfig = {
+      ...(request.maxPages === undefined ? {} : { max_pages: request.maxPages }),
+      ...(request.maxDepth === undefined ? {} : { max_depth: request.maxDepth }),
+    };
     const response = await fetch(config.endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(config.apiKey === undefined ? {} : { authorization: `Bearer ${config.apiKey}` }),
+      },
       body: JSON.stringify({
-        url: request.url,
-        max_pages: request.maxPages,
-        max_depth: request.maxDepth,
+        urls: [request.url],
+        ...(Object.keys(crawlerConfig).length === 0 ? {} : { crawler_config: crawlerConfig }),
       }),
       signal: controller.signal,
     });

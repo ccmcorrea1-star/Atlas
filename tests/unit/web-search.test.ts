@@ -151,6 +151,58 @@ test('SearXNG é o backend local default e normaliza o envelope', async () => {
   }
 });
 
+test('SearXNG expõe engines indisponíveis em resultados parciais', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({
+        results: [{ title: 'T', url: 'https://x.test' }],
+        unresponsive_engines: [
+          ['brave', 'Suspended: too many requests'],
+          ['duckduckgo', 'CAPTCHA'],
+        ],
+      }),
+    );
+  });
+  const testServer = await listen(server);
+  try {
+    const outcome = await runSearch('atlas', 5, { endpoint: testServer.endpoint });
+    assert.deepEqual(outcome, {
+      status: 'success',
+      error: '',
+      results: [{ title: 'T', url: 'https://x.test' }],
+      warnings: ['brave: Suspended: too many requests', 'duckduckgo: CAPTCHA'],
+    });
+  } finally {
+    await testServer.close();
+  }
+});
+
+test('SearXNG falha explicitamente quando engines indisponíveis deixam a busca vazia', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({
+        results: [],
+        unresponsive_engines: [['brave', 'Suspended: too many requests']],
+      }),
+    );
+  });
+  const testServer = await listen(server);
+  try {
+    const outcome = await runSearch('atlas', 5, { endpoint: testServer.endpoint });
+    assert.deepEqual(outcome, {
+      status: 'failed',
+      error:
+        'SearXNG returned no results; unavailable engines: brave: Suspended: too many requests',
+      results: [],
+      warnings: ['brave: Suspended: too many requests'],
+    });
+  } finally {
+    await testServer.close();
+  }
+});
+
 test('SearXNG mapeia noticias, freshness e dominios', async () => {
   let requestedUrl: URL | undefined;
   const server = createServer((request, response) => {

@@ -15,6 +15,7 @@ export interface SearchOutcome {
   status: 'success' | 'failed' | 'unavailable';
   error: string;
   results: SearchResult[];
+  warnings?: string[];
 }
 
 export interface SearchConfig {
@@ -41,6 +42,11 @@ export interface SearchProvider {
     config: SearchConfig,
     options?: SearchOptions,
   ): Promise<unknown>;
+}
+
+interface SearchProviderResponse {
+  results: unknown;
+  warnings?: string[];
 }
 
 export type SearchProviderFactory = (config: SearchConfig) => SearchProvider;
@@ -79,11 +85,18 @@ class SearXNGProvider implements SearchProvider {
       if (!response.ok) {
         throw new ProviderError(`SearXNG returned HTTP ${response.status}`);
       }
-      const payload = (await response.json()) as { results?: unknown };
+      const payload = (await response.json()) as {
+        results?: unknown;
+        unresponsive_engines?: unknown;
+      };
       if (!Array.isArray(payload.results)) {
         throw new ProviderError('SearXNG returned an invalid result envelope');
       }
-      return sanitizeResults(payload.results.map(normalizeSearXNGResult)).slice(0, limit);
+      const warnings = normalizeUnresponsiveEngines(payload.unresponsive_engines);
+      return {
+        results: sanitizeResults(payload.results.map(normalizeSearXNGResult)).slice(0, limit),
+        ...(warnings.length === 0 ? {} : { warnings }),
+      } satisfies SearchProviderResponse;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new ProviderError('SearXNG request timed out');
@@ -133,6 +146,19 @@ function normalizeSearXNGResult(entry: unknown): unknown {
     normalized.score = result.score;
   }
   return normalized;
+}
+
+function normalizeUnresponsiveEngines(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!Array.isArray(entry) || typeof entry[0] !== 'string') {
+      return [];
+    }
+    const reason = typeof entry[1] === 'string' ? entry[1] : 'unknown reason';
+    return [`${entry[0]}: ${reason}`];
+  });
 }
 
 providerFactories.set('searxng', () => new SearXNGProvider());
@@ -305,7 +331,23 @@ export async function runSearch(
     }
     try {
       const raw = await factory(config).search(query, limit, config, options);
-      return { status: 'success', error: '', results: sanitizeResults(raw).slice(0, limit) };
+      const providerResponse = isSearchProviderResponse(raw) ? raw : { results: raw };
+      const results = sanitizeResults(providerResponse.results).slice(0, limit);
+      const warnings = providerResponse.warnings ?? [];
+      if (results.length === 0 && warnings.length > 0) {
+        return {
+          status: 'failed',
+          error: `SearXNG returned no results; unavailable engines: ${warnings.join('; ')}`,
+          results,
+          warnings,
+        };
+      }
+      return {
+        status: 'success',
+        error: '',
+        results,
+        ...(warnings.length === 0 ? {} : { warnings }),
+      };
     } catch (error) {
       lastError = `${name}: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -316,6 +358,14 @@ export async function runSearch(
     error: lastError,
     results: [],
   };
+}
+
+function isSearchProviderResponse(value: unknown): value is SearchProviderResponse {
+  if (typeof value !== 'object' || value === null || !('results' in value)) {
+    return false;
+  }
+  const response = value as { warnings?: unknown };
+  return response.warnings === undefined || Array.isArray(response.warnings);
 }
 
 async function main(): Promise<void> {

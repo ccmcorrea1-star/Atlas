@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { test } from 'node:test';
 
-import { parseRequest, runCrawl } from '../../src/capabilities/tools/web/crawl.js';
+import {
+  crawlConfigFromEnvironment,
+  parseRequest,
+  runCrawl,
+} from '../../src/capabilities/tools/web/crawl.js';
 
 async function listen(server: Server): Promise<{ endpoint: string; close: () => Promise<void> }> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -47,6 +51,34 @@ test('web.crawl usa somente o adapter local configurado', async () => {
   } finally {
     await testServer.close();
   }
+});
+
+test('web.crawl encaminha a credencial do provider local', async () => {
+  const server = createServer(async (request, response) => {
+    assert.equal(request.headers.authorization, 'Bearer crawl-token');
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify([{ url: 'https://example.test' }]));
+  });
+  const testServer = await listen(server);
+  try {
+    const result = await runCrawl(
+      { url: 'https://example.test' },
+      { provider: 'crawl4ai', endpoint: testServer.endpoint, apiKey: 'crawl-token' },
+    );
+    assert.deepEqual(result, { status: 'success', pages: [{ url: 'https://example.test' }] });
+  } finally {
+    await testServer.close();
+  }
+});
+
+test('web.crawl carrega a credencial do provider a partir da configuração web', () => {
+  const config = crawlConfigFromEnvironment({
+    ATLAS_WEB_CONFIG_JSON: JSON.stringify({
+      crawl: { provider: 'crawl4ai', endpoint: 'http://crawl4ai.local/crawl' },
+      providers: { crawl4ai: { apiKey: 'crawl-token' } },
+    }),
+  });
+  assert.equal(config.apiKey, 'crawl-token');
 });
 
 test('web.crawl fica unavailable sem endpoint', async () => {
