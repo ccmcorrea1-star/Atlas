@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,6 +21,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::time::sleep;
 
 const PROTOCOL: &str = "atlas-runtime";
 const VERSION: u8 = 1;
@@ -96,6 +98,16 @@ pub enum RuntimeEvent {
     TurnCancelled {
         content: String,
         message_id: Option<String>,
+    },
+    RuntimeRestarting {
+        reason: String,
+    },
+    RuntimeReady,
+    OperationResuming {
+        operation_id: String,
+    },
+    OperationResumed {
+        operation_id: String,
     },
     Error {
         message: String,
@@ -250,6 +262,36 @@ async fn send_turn(
     input: &str,
     events: RuntimeEventSender,
 ) -> Result<(), RuntimeError> {
+    let mut last_error = None;
+    for attempt in 0..8 {
+        match send_turn_once(
+            socket_path,
+            request_id,
+            conversation_id,
+            input,
+            events.clone(),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error @ RuntimeError::Transport(_)) if attempt < 7 => {
+                last_error = Some(error);
+                sleep(Duration::from_millis(50 * (attempt + 1) as u64)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| RuntimeError::Transport("Runtime reconnect failed".to_owned())))
+}
+
+async fn send_turn_once(
+    socket_path: &str,
+    request_id: &str,
+    conversation_id: &str,
+    input: &str,
+    events: RuntimeEventSender,
+) -> Result<(), RuntimeError> {
     let request = TurnRequest {
         protocol: PROTOCOL,
         version: VERSION,
@@ -279,12 +321,28 @@ async fn send_turn(
                 "unsupported Atlas Runtime protocol version".to_owned(),
             ));
         }
-        if envelope.request_id.as_deref() != Some(request_id) {
+        let lifecycle_event = matches!(
+            envelope.message_type.as_str(),
+            "runtime.restarting" | "runtime.ready" | "operation.resuming" | "operation.resumed"
+        );
+        if !lifecycle_event && envelope.request_id.as_deref() != Some(request_id) {
             return Err(RuntimeError::Protocol(
                 "Runtime event request_id does not match the active turn".to_owned(),
             ));
         }
-        if envelope.conversation_id.as_deref() != Some(conversation_id) {
+        if envelope.request_id.is_some() && envelope.request_id.as_deref() != Some(request_id) {
+            return Err(RuntimeError::Protocol(
+                "Runtime event request_id does not match the active turn".to_owned(),
+            ));
+        }
+        if !lifecycle_event && envelope.conversation_id.as_deref() != Some(conversation_id) {
+            return Err(RuntimeError::Protocol(
+                "Runtime event conversation_id does not match the active conversation".to_owned(),
+            ));
+        }
+        if envelope.conversation_id.is_some()
+            && envelope.conversation_id.as_deref() != Some(conversation_id)
+        {
             return Err(RuntimeError::Protocol(
                 "Runtime event conversation_id does not match the active conversation".to_owned(),
             ));
@@ -458,6 +516,10 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
             | "execution.completed"
             | "turn.completed"
             | "turn.cancelled"
+            | "runtime.restarting"
+            | "runtime.ready"
+            | "operation.resuming"
+            | "operation.resumed"
             | "error"
     );
     if !known {
@@ -602,6 +664,16 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
                 .get("message_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+        })),
+        "runtime.restarting" => Ok(Some(RuntimeEvent::RuntimeRestarting {
+            reason: required_string(&data, "reason")?,
+        })),
+        "runtime.ready" => Ok(Some(RuntimeEvent::RuntimeReady)),
+        "operation.resuming" => Ok(Some(RuntimeEvent::OperationResuming {
+            operation_id: required_string(&data, "operation_id")?,
+        })),
+        "operation.resumed" => Ok(Some(RuntimeEvent::OperationResumed {
+            operation_id: required_string(&data, "operation_id")?,
         })),
         "error" => Err(RuntimeError::Remote(required_string(&data, "message")?)),
         _ => Ok(None),
@@ -824,6 +896,32 @@ mod tests {
             ended,
             RuntimeEvent::ReasoningEnd {
                 reasoning_id: "reasoning-1".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_runtime_handoff_events_without_turn_identity() {
+        let mut restarting = envelope("runtime.restarting", json!({"reason": "handoff"}));
+        restarting.request_id = None;
+        restarting.conversation_id = None;
+        assert_eq!(
+            parse_runtime_event(restarting)
+                .expect("runtime.restarting should parse")
+                .expect("known event"),
+            RuntimeEvent::RuntimeRestarting {
+                reason: "handoff".to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_runtime_event(envelope(
+                "operation.resumed",
+                json!({"operation_id": "operation-1"}),
+            ))
+            .expect("operation.resumed should parse")
+            .expect("known event"),
+            RuntimeEvent::OperationResumed {
+                operation_id: "operation-1".to_owned(),
             }
         );
     }

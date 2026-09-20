@@ -10,6 +10,8 @@ Este documento define onde cada responsabilidade do Atlas deve ficar.
 - [`src/providers/`](../src/providers/) — adapters de provider do Agent.
 - [`src/capabilities/`](../src/capabilities/) — Tools executáveis, Registry, Executor e manifestos.
 - [`src/skills/`](../src/skills/) — SkillRegistry, loader, discovery e tipos de Skill.
+- [`src/runtime/`](../src/runtime/) — protocolo e servidor do Runtime.
+- [`src/host/`](../src/host/) — supervisão operacional do Runtime, builds candidatos, healthcheck, rollback e handoff.
 - [`clients/`](../clients/) — clientes desacoplados do Runtime.
 - [`protocol/`](../protocol/) — contratos compartilhados.
 - [`tests/`](../tests/) — testes.
@@ -25,6 +27,22 @@ O gerenciamento local do processo do Runtime é uma fronteira operacional separa
 do cliente de conversa. Ele pode iniciar, acompanhar e encerrar um comando de
 Runtime configurado, mas não deve interpretar eventos, estado de sessão ou regras
 de domínio.
+
+### Fronteira Host → Runtime
+
+[`src/host/`](../src/host/) é a camada estável de supervisão. Ela não importa o
+Agent nem contém regras de conversa. O Host executa o ciclo
+`MODIFY → VERIFY → CHECKPOINT → HANDOFF → HEALTHCHECK → RESUME`:
+
+- valida o repositório e produz um build candidato sem usar worktrees;
+- mantém os slots `current`, `previous` e `candidate` do Runtime;
+- persiste operações com identidade da conversa, objetivo, commit-base, build candidato e próximo passo;
+- troca o artefato executado, preservando o código e o build que falharam para diagnóstico;
+- confirma a saúde do novo Runtime e restaura o último artefato válido quando necessário.
+
+O Runtime consome somente o estado de retomada necessário para continuar a operação
+com a mesma `conversation_id`. Os clientes observam apenas eventos públicos de
+restart e retomada; detalhes de Git, comandos e builds permanecem no Host.
 
 Integrações externas devem ficar isoladas de regras internas.
 

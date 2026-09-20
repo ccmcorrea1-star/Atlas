@@ -54,7 +54,8 @@ O Runtime aborta a requisição real do modelo quando o provider suporta `AbortS
 
 ## Eventos
 
-Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
+Eventos associados a um turno mantêm o mesmo `request_id` e `conversation_id`. Eventos
+broadcast do Host (`runtime.restarting`/`runtime.ready`) podem omitir essas identidades.
 
 - `turn.started`: o Runtime aceitou o turno.
 - `session.updated`: metadados públicos da sessão, com `data.model` e `data.provider`.
@@ -71,6 +72,10 @@ Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
 - `execution.completed`: execução de `shell.exec` terminou, com `data.execution_id`, `data.capability`, `data.stdout`, `data.stderr`, `data.exit_code`, `data.duration_ms` e `data.status`.
 - `turn.completed`: turno terminou, com `data.content`, `data.message_id` opcional e o snapshot de contexto opcional:
   `{ "used_tokens": 6600, "context_window": 256000 }`.
+- `runtime.restarting`: o Host iniciou a troca do Runtime, sem expor detalhes de build.
+- `runtime.ready`: o novo Runtime está saudável e aceitando conexões.
+- `operation.resuming`: uma operação persistida está sendo retomada na mesma conversa, com `data.operation_id`.
+- `operation.resumed`: a retomada foi aceita pelo Runtime, com `data.operation_id`.
 - `error`: o turno falhou, com `data.code` e `data.message`.
 
 `shell.exec` usa o `call_id` da tool como `execution_id`, permitindo que clientes atualizem a mesma execução do início ao fim.

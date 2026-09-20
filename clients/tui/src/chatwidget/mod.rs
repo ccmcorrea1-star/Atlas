@@ -249,6 +249,10 @@ impl ChatWidget {
             | RuntimeEvent::ToolCompleted { .. }
             | RuntimeEvent::TurnCompleted { .. }
             | RuntimeEvent::TurnCancelled { .. }
+            | RuntimeEvent::RuntimeRestarting { .. }
+            | RuntimeEvent::RuntimeReady
+            | RuntimeEvent::OperationResuming { .. }
+            | RuntimeEvent::OperationResumed { .. }
             | RuntimeEvent::Error { .. } => {
                 self.handle_command_lifecycle_event(event);
             }

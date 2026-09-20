@@ -64,6 +64,8 @@ export type {
   RuntimeAttachmentType,
   RuntimeApprovalRequestedData,
   RuntimeApprovalResolvedData,
+  RuntimeOperationData,
+  RuntimeRestartingData,
   RuntimeApprovalResponse,
   RuntimeCommandCompletedData,
   RuntimeCommandRequest,
@@ -77,8 +79,12 @@ export type {
   RuntimeTurnRequest,
 } from './runtime/protocol.js';
 
+export { HostSupervisor, OperationStore } from './host/index.js';
+export type { HandoffRequest, HostOperation, HostOperationState } from './host/index.js';
+
 export {
   RUNTIME_COMMANDS,
   RUNTIME_PROTOCOL,
   RUNTIME_PROTOCOL_VERSION,
+  runtimeLifecycleEvent,
 } from './runtime/protocol.js';

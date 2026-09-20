@@ -26,6 +26,10 @@
     { "$ref": "#/$defs/commandCompleted" },
     { "$ref": "#/$defs/approvalRequested" },
     { "$ref": "#/$defs/approvalResolved" },
+    { "$ref": "#/$defs/runtimeRestarting" },
+    { "$ref": "#/$defs/runtimeReady" },
+    { "$ref": "#/$defs/operationResuming" },
+    { "$ref": "#/$defs/operationResumed" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -512,6 +516,79 @@
                 "comment": { "type": "string" }
               },
               "required": ["approval_id", "approved"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "runtimeRestarting": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "runtime.restarting" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "reason": { "enum": ["handoff", "rollback", "crash"] }
+              },
+              "required": ["reason"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "runtimeReady": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "runtime.ready" },
+            "data": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "operationResuming": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "operation.resuming" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "operation_id": { "type": "string", "minLength": 1 }
+              },
+              "required": ["operation_id"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "operationResumed": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "operation.resumed" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "operation_id": { "type": "string", "minLength": 1 }
+              },
+              "required": ["operation_id"],
               "additionalProperties": true
             }
           },

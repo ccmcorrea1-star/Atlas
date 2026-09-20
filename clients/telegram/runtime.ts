@@ -66,6 +66,34 @@ export class UnixTelegramRuntime implements TelegramRuntime {
     isTerminal: (event: RuntimeEvent) => boolean,
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent> {
+    return this.exchangeWithRetry(payload, isTerminal, onEvent);
+  }
+
+  private async exchangeWithRetry(
+    payload: Record<string, unknown>,
+    isTerminal: (event: RuntimeEvent) => boolean,
+    onEvent: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return await this.exchangeOnce(payload, isTerminal, onEvent);
+      } catch (error) {
+        lastError = error;
+        if (!isTransientRuntimeError(error) || attempt === 7) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private exchangeOnce(
+    payload: Record<string, unknown>,
+    isTerminal: (event: RuntimeEvent) => boolean,
+    onEvent: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent> {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       let buffer = '';
@@ -84,7 +112,7 @@ export class UnixTelegramRuntime implements TelegramRuntime {
       socket.once('error', fail);
       socket.once('close', () => {
         if (!settled) {
-          reject(new Error('Atlas Runtime socket closed before a terminal event.'));
+          finish(() => reject(new Error('Atlas Runtime socket closed before a terminal event.')));
         }
       });
       socket.setEncoding('utf8');
@@ -121,6 +149,19 @@ export class UnixTelegramRuntime implements TelegramRuntime {
       });
     });
   }
+}
+
+function isTransientRuntimeError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.message.includes('socket closed before a terminal event') ||
+    error.message.includes('ENOENT') ||
+    error.message.includes('ECONNREFUSED') ||
+    error.message.includes('ECONNRESET') ||
+    error.message.includes('EPIPE')
+  );
 }
 
 function isRuntimeEvent(value: unknown): value is RuntimeEvent {

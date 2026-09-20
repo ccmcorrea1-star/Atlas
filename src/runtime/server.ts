@@ -35,6 +35,7 @@ import {
   type RuntimeTurnCompletedData,
   type RuntimeTurnRequest,
 } from './protocol.js';
+import { OperationStore, type HostOperation } from '../host/operations.js';
 import { UnixSocketServer } from './transport/unix/server.js';
 
 export const DEFAULT_RUNTIME_SOCKET_PATH = '/tmp/atlas-runtime.sock';
@@ -149,6 +150,8 @@ export type RuntimeServerOptions = {
   runOptions?: Omit<AtlasRunOptions, 'conversationId' | 'onEvent'>;
   // Configuração global já resolvida pelo loader canônico.
   atlasConfig?: AtlasConfig;
+  operationStore?: OperationStore;
+  operationStorePath?: string;
 };
 
 export class AtlasRuntimeServer {
@@ -159,15 +162,22 @@ export class AtlasRuntimeServer {
   private readonly sessionData: RuntimeSessionUpdatedData;
   private readonly atlasModel: string;
   private readonly atlasConfig: AtlasConfig;
+  private readonly operationStore: OperationStore | undefined;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
+  private readonly recoveryPromises = new Map<string, Promise<HostOperation>>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
     this.runOptions = options.runOptions ?? {};
     // Provider/model da sessão são definidos pela configuração global do Atlas.
     this.atlasConfig = options.atlasConfig ?? DEFAULT_ATLAS_CONFIG;
+    this.operationStore =
+      options.operationStore ??
+      (options.operationStorePath === undefined
+        ? undefined
+        : new OperationStore(options.operationStorePath));
     this.sessionData = atlasRuntimeSessionData(this.atlasConfig);
     this.atlasModel = `${OPENCODE_GO_PROVIDER}/${this.sessionData.model}`;
     // Modelos fora do registro inicial usam o endpoint de responses por padrão.
@@ -188,8 +198,9 @@ export class AtlasRuntimeServer {
     });
   }
 
-  public listen(): Promise<void> {
-    return this.transport.listen();
+  public async listen(): Promise<void> {
+    await this.transport.listen();
+    await this.schedulePendingRecovery();
   }
 
   public close(): Promise<void> {
@@ -334,6 +345,33 @@ export class AtlasRuntimeServer {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
     };
+    const completedOperation = await this.completedOperation(request);
+    if (completedOperation !== undefined) {
+      await this.publishRecoveredOperation(request, completedOperation, publish);
+      return;
+    }
+    const operation = await this.pendingOperation(request);
+    if (operation !== undefined) {
+      await this.operationStore?.update(operation.operation_id, { state: 'resuming' });
+      publish(
+        runtimeEvent(request, 'operation.resuming', {
+          operation_id: operation.operation_id,
+        }),
+      );
+      const recovery = this.recoveryPromises.get(operation.operation_id);
+      if (recovery !== undefined) {
+        try {
+          const recovered = await recovery;
+          await this.publishRecoveredOperation(request, recovered, publish, true);
+        } catch (error) {
+          publish(
+            runtimeErrorEvent(error instanceof Error ? error.message : String(error), request),
+          );
+        }
+        return;
+      }
+    }
+    const input = operation === undefined ? request.input : resumeInput(operation);
     const sessionData: RuntimeSessionUpdatedData = this.sessionData;
     publish(runtimeEvent(request, 'session.updated', sessionData));
     publish(runtimeEvent(request, 'turn.started'));
@@ -353,7 +391,7 @@ export class AtlasRuntimeServer {
       if (abortSignal.aborted) {
         throw new Error('turn cancelled by client');
       }
-      const result = await runAtlas(request.input, {
+      const result = await runAtlas(input, {
         ...this.runOptions,
         abortSignal,
         // O provider é fixo nesta fase; o modelo vem da configuração global.
@@ -400,15 +438,146 @@ export class AtlasRuntimeServer {
         // A UI recebe somente o contexto da última chamada do modelo.
         ...(context === undefined ? {} : { context }),
       };
+      if (operation !== undefined) {
+        await this.operationStore?.update(operation.operation_id, {
+          state: 'resumed',
+          result: {
+            content: completedData.content,
+            ...(messageId === undefined ? {} : { message_id: messageId }),
+          },
+        });
+        publish(
+          runtimeEvent(request, 'operation.resumed', {
+            operation_id: operation.operation_id,
+          }),
+        );
+      }
       publish(runtimeEvent(request, 'turn.completed', completedData));
     } catch (error) {
       if (abortSignal.aborted) {
         publishCancelled();
         return;
       }
+      if (operation !== undefined) {
+        await this.operationStore?.update(operation.operation_id, {
+          state: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       publish(runtimeErrorEvent(error instanceof Error ? error.message : String(error), request));
     }
   }
+
+  private async schedulePendingRecovery(): Promise<void> {
+    if (this.operationStore === undefined) {
+      return;
+    }
+    for (const operation of await this.operationStore.pending()) {
+      const recovery = this.recoverOperation(operation);
+      this.recoveryPromises.set(operation.operation_id, recovery);
+      void recovery.then(
+        () => this.recoveryPromises.delete(operation.operation_id),
+        () => this.recoveryPromises.delete(operation.operation_id),
+      );
+    }
+  }
+
+  private async recoverOperation(operation: HostOperation): Promise<HostOperation> {
+    try {
+      await this.operationStore?.update(operation.operation_id, { state: 'resuming' });
+      const result = await runAtlas(resumeInput(operation), {
+        ...this.runOptions,
+        model: this.atlasModel,
+        atlasConfig: this.atlasConfig,
+        conversationId: operation.conversation_id,
+      });
+      const content =
+        typeof result.finalOutput === 'string'
+          ? result.finalOutput
+          : JSON.stringify(result.finalOutput);
+      await this.operationStore?.update(operation.operation_id, {
+        state: 'resumed',
+        result: { content: content ?? '' },
+      });
+      return (
+        (await this.operationStore?.get(operation.operation_id)) ?? {
+          ...operation,
+          state: 'resumed',
+          result: { content: content ?? '' },
+        }
+      );
+    } catch (error) {
+      await this.operationStore?.update(operation.operation_id, {
+        state: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  private async completedOperation(
+    request: RuntimeTurnRequest,
+  ): Promise<HostOperation | undefined> {
+    const operation = await this.operationStore?.find(request.conversation_id, request.request_id);
+    return operation?.state === 'resumed' && operation.result !== undefined ? operation : undefined;
+  }
+
+  private async publishRecoveredOperation(
+    request: RuntimeTurnRequest,
+    operation: HostOperation,
+    publish: (message: RuntimeEvent) => void,
+    alreadyResuming = false,
+  ): Promise<void> {
+    if (!alreadyResuming) {
+      publish(
+        runtimeEvent(request, 'operation.resuming', {
+          operation_id: operation.operation_id,
+        }),
+      );
+    }
+    publish(runtimeEvent(request, 'session.updated', this.sessionData));
+    publish(runtimeEvent(request, 'turn.started'));
+    const result = operation.result ?? { content: '' };
+    if (result.message_id !== undefined) {
+      publish(
+        runtimeEvent(request, 'message.completed', {
+          message_id: result.message_id,
+          content: result.content,
+        }),
+      );
+    }
+    publish(
+      runtimeEvent(request, 'operation.resumed', {
+        operation_id: operation.operation_id,
+      }),
+    );
+    publish(
+      runtimeEvent(request, 'turn.completed', {
+        ...(result.message_id === undefined ? {} : { message_id: result.message_id }),
+        content: result.content,
+      }),
+    );
+  }
+
+  private async pendingOperation(request: RuntimeTurnRequest): Promise<HostOperation | undefined> {
+    const operation = await this.operationStore?.pending(
+      request.conversation_id,
+      request.request_id,
+    );
+    return operation?.[0];
+  }
+}
+
+function resumeInput(operation: HostOperation): string {
+  return [
+    'Retome a operação persistida após a troca do Runtime.',
+    `Objetivo: ${operation.objective}`,
+    `Próximo passo: ${operation.next_step}`,
+    operation.resume_context === undefined ? '' : `Contexto: ${operation.resume_context}`,
+    'Verifique o estado atual do repositório antes de concluir.',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function eventMessageId(event: AtlasRunEvent): string | undefined {
@@ -493,6 +662,7 @@ async function runServer(): Promise<void> {
   const { apiKey } = atlasApiKey(config, process.env);
   const server = new AtlasRuntimeServer({
     atlasConfig: config,
+    operationStorePath: process.env.ATLAS_HOST_OPERATIONS_FILE,
     runOptions: {
       ...{ apiKey },
       // ATLAS_CORE_TOOLS=0 mantem apenas o caminho generico, para A/B local.

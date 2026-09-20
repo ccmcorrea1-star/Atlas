@@ -96,6 +96,10 @@ export type RuntimeEventType =
   | 'command.completed'
   | 'approval.requested'
   | 'approval.resolved'
+  | 'runtime.restarting'
+  | 'runtime.ready'
+  | 'operation.resuming'
+  | 'operation.resumed'
   | 'error';
 
 export type RuntimeContextUsage = {
@@ -125,6 +129,14 @@ export type RuntimeApprovalResolvedData = {
   approval_id: string;
   approved: boolean;
   comment?: string;
+};
+
+export type RuntimeRestartingData = {
+  reason: 'handoff' | 'rollback' | 'crash';
+};
+
+export type RuntimeOperationData = {
+  operation_id: string;
 };
 
 export type RuntimeToolStartedData = {
@@ -361,6 +373,25 @@ export function runtimeEvent(
     type,
     request_id: request.request_id,
     conversation_id: request.conversation_id,
+    data,
+  };
+}
+
+export function runtimeLifecycleEvent(
+  type: Extract<
+    RuntimeEventType,
+    'runtime.restarting' | 'runtime.ready' | 'operation.resuming' | 'operation.resumed'
+  >,
+  conversationId?: string,
+  data: Record<string, unknown> = {},
+  requestId?: string,
+): RuntimeEvent {
+  return {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type,
+    ...(requestId === undefined ? {} : { request_id: requestId }),
+    ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
     data,
   };
 }

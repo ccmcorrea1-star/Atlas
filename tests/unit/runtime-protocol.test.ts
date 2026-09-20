@@ -7,6 +7,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   parseRuntimeMessage,
   runtimeEvent,
+  runtimeLifecycleEvent,
   serializeRuntimeMessage,
   type RuntimeTurnRequest,
 } from '../../src/runtime/protocol.js';
@@ -109,6 +110,27 @@ test('serializes session metadata as a public event', () => {
 
   assert.equal(updated.type, 'session.updated');
   assert.deepEqual(JSON.parse(serializeRuntimeMessage(updated)), updated);
+});
+
+test('serializes restart and operation resumption as public lifecycle events', () => {
+  const events = [
+    runtimeLifecycleEvent('runtime.restarting', request.conversation_id, { reason: 'handoff' }),
+    runtimeLifecycleEvent('runtime.ready', request.conversation_id),
+    runtimeLifecycleEvent('operation.resuming', request.conversation_id, {
+      operation_id: 'operation-1',
+    }),
+    runtimeLifecycleEvent('operation.resumed', request.conversation_id, {
+      operation_id: 'operation-1',
+    }),
+  ];
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['runtime.restarting', 'runtime.ready', 'operation.resuming', 'operation.resumed'],
+  );
+  assert.equal('reason' in events[0].data ? events[0].data.reason : undefined, 'handoff');
+  assert.equal('base_commit' in events[0].data, false);
+  assert.deepEqual(JSON.parse(serializeRuntimeMessage(events[3])), events[3]);
 });
 
 test('serializes the reasoning lifecycle with a stable reasoning id', () => {
