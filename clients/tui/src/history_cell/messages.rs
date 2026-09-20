@@ -12,9 +12,12 @@ use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
 use crate::render::highlight_streaming::StreamingCodeHighlighter;
 use crate::ui_consts::action_style;
+use crate::ui_consts::primary_style;
 use crate::ui_consts::secondary_style;
+use crate::ui_consts::thinking_style;
+use crate::ui_consts::thought_body_style;
+use crate::ui_consts::thought_style;
 use crate::ui_consts::user_surface_style;
-use crate::ui_consts::warning_style;
 use crate::wrapping::wrap_line;
 use crate::wrapping::wrap_text;
 use std::time::Instant;
@@ -157,6 +160,10 @@ impl ThoughtCell {
         self.duration_ms.is_none()
     }
 
+    pub(crate) fn has_visible_content(&self) -> bool {
+        self.title.is_some() || !self.body.is_empty()
+    }
+
     pub(crate) fn toggle(&mut self) {
         self.expanded = !self.expanded;
     }
@@ -169,19 +176,24 @@ impl HistoryCell for ThoughtCell {
             Line::from(vec![
                 Span::styled(
                     THINKING_FRAMES[self.frame % THINKING_FRAMES.len()],
-                    warning_style(),
+                    thinking_style(),
                 ),
-                Span::styled(" Thinking", warning_style()),
+                Span::styled(" Thinking", thinking_style()),
             ])
         } else {
             let marker = if self.expanded { "- " } else { "+ " };
             Line::from(vec![
-                Span::styled(marker, warning_style()),
-                Span::styled("Thought", warning_style()),
+                Span::styled(marker, thought_style()),
+                Span::styled("Thought", thought_style()),
             ])
         };
         if !title.is_empty() {
-            header.push_span(Span::styled(format!(": {title}"), warning_style()));
+            let style = if self.is_running() {
+                thinking_style()
+            } else {
+                thought_style()
+            };
+            header.push_span(Span::styled(format!(": {title}"), style));
         }
         if !self.is_running() {
             header.push_span(Span::styled(
@@ -198,7 +210,7 @@ impl HistoryCell for ThoughtCell {
             lines.extend(
                 wrap_text(&self.body, content_width)
                     .into_iter()
-                    .map(|line| prefixed_line(Line::from(line), "  ", secondary_style())),
+                    .map(|line| prefixed_line(Line::from(line), "  ", thought_body_style())),
             );
         }
         lines
@@ -226,21 +238,26 @@ fn elapsed_millis(started_at: Instant) -> u64 {
 }
 
 fn reasoning_title(source: &str) -> (Option<String>, Option<(usize, usize)>) {
-    let Some(start) = source.find("**") else {
+    if let Some(start) = source.find("**") {
+        let content_start = start + 2;
+        if let Some(relative_end) = source[content_start..].find("**") {
+            let end = content_start + relative_end + 2;
+            let title = source[content_start..content_start + relative_end]
+                .trim()
+                .to_owned();
+            if !title.is_empty() {
+                return (Some(title), Some((start, end)));
+            }
+        }
         return (None, None);
-    };
-    let content_start = start + 2;
-    let Some(relative_end) = source[content_start..].find("**") else {
-        return (None, None);
-    };
-    let end = content_start + relative_end + 2;
-    let title = source[content_start..content_start + relative_end]
-        .trim()
-        .to_owned();
+    }
+
+    let line_end = source.find('\n').unwrap_or(source.len());
+    let title = source[..line_end].trim();
     if title.is_empty() {
         (None, None)
     } else {
-        (Some(title), Some((start, end)))
+        (Some(title.to_owned()), Some((0, line_end)))
     }
 }
 
@@ -264,77 +281,6 @@ fn format_reasoning_duration(duration_ms: u64) -> String {
             duration_ms / 60_000,
             (duration_ms % 60_000) as f64 / 1_000.0
         )
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ThinkingCell {
-    started_at: Instant,
-    duration_ms: Option<u64>,
-    frame: usize,
-}
-
-impl ThinkingCell {
-    pub(crate) fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            duration_ms: None,
-            frame: 0,
-        }
-    }
-
-    pub(crate) fn finish(&mut self) {
-        if self.duration_ms.is_none() {
-            self.duration_ms = Some(
-                self.started_at
-                    .elapsed()
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            );
-        }
-    }
-
-    pub(crate) fn tick(&mut self) {
-        self.frame = self.frame.wrapping_add(1);
-    }
-}
-
-impl HistoryCell for ThinkingCell {
-    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        let duration_ms = self.duration_ms.unwrap_or_else(|| {
-            self.started_at
-                .elapsed()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX)
-        });
-        let duration = format_thinking_duration(duration_ms);
-        let mut line = if self.duration_ms.is_some() {
-            Line::from(Span::styled("Thinking", secondary_style()))
-        } else {
-            Line::from(vec![
-                Span::styled(
-                    THINKING_FRAMES[self.frame % THINKING_FRAMES.len()],
-                    action_style(),
-                ),
-                Span::styled(" Thinking", secondary_style()),
-            ])
-        };
-        line.push_span(Span::styled(format!(" · {duration}"), secondary_style()));
-        vec![line]
-    }
-
-    fn transcript_animation_tick(&self) -> Option<u64> {
-        self.duration_ms.is_none().then_some(self.frame as u64)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 
@@ -691,6 +637,8 @@ fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static
         let prefix = if first && line_index == 0 { "" } else { "  " };
         let wrap_width = usable_width.saturating_sub(prefix.width()).max(1);
         for (part_index, part) in wrap_line(line, wrap_width).into_iter().enumerate() {
+            let part_style = part.style;
+            let part = part.style(primary_style().patch(part_style));
             result.push(prefixed_line(
                 part,
                 if line_index == 0 && part_index == 0 {
@@ -703,18 +651,6 @@ fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static
         }
     }
     result
-}
-
-fn format_thinking_duration(duration_ms: u64) -> String {
-    if duration_ms < 60_000 {
-        format!("{:.1}s", duration_ms as f64 / 1_000.0)
-    } else {
-        format!(
-            "{}m {:.1}s",
-            duration_ms / 60_000,
-            (duration_ms % 60_000) as f64 / 1_000.0
-        )
-    }
 }
 
 fn prefixed_line(mut line: Line<'static>, prefix: &str, style: Style) -> Line<'static> {
@@ -932,31 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_temporary_thinking_cell() {
-        let thinking = ThinkingCell::new();
-        insta::assert_snapshot!(
-            "thinking",
-            thinking
-                .display_lines(60)
-                .iter()
-                .map(line_text)
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    }
-
-    #[test]
-    fn finalized_thinking_keeps_its_duration() {
-        let mut thinking = ThinkingCell::new();
-        thinking.finish();
-        let duration = thinking.duration_ms;
-        thinking.finish();
-
-        assert_eq!(thinking.duration_ms, duration);
-        assert!(!line_text(&thinking.display_lines(60)[0]).contains("⠋"));
-    }
-
-    #[test]
     fn thought_extracts_bold_title_and_formats_short_duration_in_milliseconds() {
         let mut thought = ThoughtCell::new_with_id(
             "reasoning-1",
@@ -1038,7 +949,7 @@ mod tests {
         assert!(!thought.expanded);
         assert_eq!(
             thought.display_lines(60)[0].spans[1].style.fg,
-            Some(crate::ui_consts::COLOR_WARNING)
+            Some(crate::ui_consts::COLOR_THOUGHT)
         );
         insta::assert_snapshot!(
             "thought_closed",
@@ -1052,6 +963,10 @@ mod tests {
 
         thought.toggle();
         assert!(thought.expanded);
+        assert_eq!(
+            thought.display_lines(60)[1].spans[0].style.fg,
+            Some(crate::ui_consts::COLOR_THOUGHT_BODY)
+        );
         insta::assert_snapshot!(
             "thought_open",
             thought
@@ -1060,6 +975,21 @@ mod tests {
                 .map(line_text)
                 .collect::<Vec<_>>()
                 .join("\n")
+        );
+    }
+
+    #[test]
+    fn uses_explicit_atlas_colors_for_reasoning_and_response() {
+        let running = ThoughtCell::new_with_id("reasoning-1", "**Organizing tools for clarity**");
+        assert_eq!(
+            running.display_lines(60)[0].spans[0].style.fg,
+            Some(crate::ui_consts::COLOR_THINKING)
+        );
+
+        let response = AgentMarkdownCell::with_message_id(None, "A final answer.");
+        assert_eq!(
+            response.display_lines(60)[0].style.fg,
+            Some(crate::ui_consts::COLOR_TEXT_PRIMARY)
         );
     }
 }

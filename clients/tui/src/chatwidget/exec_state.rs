@@ -13,7 +13,6 @@ impl ChatWidget {
                 cwd: _,
                 target: _,
             } => {
-                self.finalize_thinking();
                 self.finalize_reasoning();
                 self.status = Status::Executing;
                 if self.find_active_exec_mut(&execution_id).is_none() {
@@ -84,14 +83,13 @@ impl ChatWidget {
                     );
                     self.cells.push(Box::new(cell));
                 }
-                self.status = if self.has_running_exec() {
+                self.status = if self.has_running_exec()
+                    || !self.active_running_tool_activities().is_empty()
+                {
                     Status::Executing
                 } else {
-                    Status::Thinking
+                    Status::Working
                 };
-                if !self.has_running_exec() && self.active_running_tool_activities().is_empty() {
-                    self.begin_thinking();
-                }
                 self.history_changed();
             }
             _ => {}

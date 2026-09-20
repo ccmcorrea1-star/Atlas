@@ -2,17 +2,16 @@
 source: src/bottom_pane/chat_composer.rs
 expression: "rows(&empty, 100, 14)"
 ---
-│                                                                                                   
-│ › Ask Atlas to do anything                                                                 Atlas  
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│                                                                                                   
-│ ~/projetos/Atlas · ? shortcuts                                              2.6k/256k · 98% left
+                                                                                                    
+                                                                                                    
+  › Ask Atlas to do anything                                                                        
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ~/projetos/Atlas · ? shortcuts                                              2.6k/256k · 98% left

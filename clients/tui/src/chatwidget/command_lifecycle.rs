@@ -7,9 +7,8 @@ impl ChatWidget {
         match event {
             RuntimeEvent::SessionUpdated { .. } => {}
             RuntimeEvent::TurnStarted => {
-                self.status = Status::Thinking;
+                self.status = Status::Working;
                 self.turn_active = true;
-                self.begin_thinking();
             }
             RuntimeEvent::ContextUpdated { context } => {
                 self.context_usage = Some(context);
@@ -19,7 +18,6 @@ impl ChatWidget {
                 tool_name,
                 target,
             } => {
-                self.finalize_thinking();
                 self.finalize_reasoning();
                 self.status = Status::Executing;
                 if self.find_active_tool_mut(&tool_id).is_none() {
@@ -47,7 +45,6 @@ impl ChatWidget {
                 tool_name,
                 output,
             } => {
-                self.status = Status::Thinking;
                 if let Some(cell) = self.find_active_tool_mut(&tool_id) {
                     cell.complete_with_elapsed(output);
                     self.commit_active_tool(&tool_id);
@@ -58,8 +55,8 @@ impl ChatWidget {
                     cell.complete_with_elapsed(output);
                     self.cells.push(Box::new(cell));
                 }
-                if self.active_running_tool_activities().is_empty() {
-                    self.begin_thinking();
+                if self.active_running_tool_activities().is_empty() && !self.has_running_exec() {
+                    self.status = Status::Working;
                 } else {
                     self.status = Status::Executing;
                 }
@@ -85,7 +82,6 @@ impl ChatWidget {
         message_id: Option<String>,
         context: Option<ContextUsage>,
     ) {
-        self.finalize_thinking();
         self.finalize_reasoning();
         if let Some(context) = context {
             self.context_usage = Some(context);
@@ -127,7 +123,6 @@ impl ChatWidget {
     }
 
     fn fail_turn(&mut self, message: String) {
-        self.finalize_thinking();
         self.finalize_reasoning();
         for cell in &mut self.cells {
             abort_exec_cell(cell.as_mut());
@@ -168,6 +163,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_response_stays_working_without_thinking_or_thought() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        assert!(matches!(widget.status(), Status::Working));
+        assert!(widget.active_cells().is_empty());
+
+        widget.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message-1".to_owned(),
+            content: "Ola".to_owned(),
+        });
+        assert!(matches!(widget.status(), Status::Working));
+        assert!(
+            widget
+                .cells()
+                .iter()
+                .all(|cell| !cell.as_any().is::<ThoughtCell>())
+        );
+
+        widget.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "Ola".to_owned(),
+            message_id: Some("message-1".to_owned()),
+            context: None,
+        });
+        assert!(matches!(widget.status(), Status::Ready));
+        assert_eq!(widget.cells().len(), 1);
+    }
+
+    #[test]
     fn duplicate_tool_started_updates_one_active_card() {
         let mut widget = ChatWidget::new();
         widget.handle_runtime_event(RuntimeEvent::TurnStarted);
@@ -190,13 +213,9 @@ mod tests {
             output: Some("done".to_owned()),
         });
 
-        assert!(
-            widget
-                .active_cells()
-                .iter()
-                .any(|cell| cell.as_any().is::<ThinkingCell>())
-        );
-        assert_eq!(widget.cells().len(), 2);
+        assert!(widget.active_cells().is_empty());
+        assert!(matches!(widget.status(), Status::Working));
+        assert_eq!(widget.cells().len(), 1);
     }
 
     #[test]
@@ -216,7 +235,7 @@ mod tests {
             });
         }
 
-        assert_eq!(widget.cells().len(), 3);
+        assert_eq!(widget.cells().len(), 1);
         assert_eq!(
             widget
                 .cells()
@@ -228,10 +247,11 @@ mod tests {
     }
 
     #[test]
-    fn creates_thinking_after_a_tool_and_removes_it_for_the_response() {
+    fn tool_lifecycle_returns_to_working_without_creating_thinking() {
         let mut widget = ChatWidget::new();
         widget.handle_runtime_event(RuntimeEvent::TurnStarted);
-        assert!(widget.active_cells()[0].as_any().is::<ThinkingCell>());
+        assert!(widget.active_cells().is_empty());
+        assert!(matches!(widget.status(), Status::Working));
 
         widget.handle_runtime_event(RuntimeEvent::ToolStarted {
             tool_id: "tool-1".to_owned(),
@@ -239,18 +259,10 @@ mod tests {
             target: None,
         });
         assert!(
-            !widget
+            widget
                 .active_cells()
                 .iter()
-                .any(|cell| cell.as_any().is::<ThinkingCell>())
-        );
-
-        assert_eq!(widget.cells().len(), 1);
-        assert!(
-            widget.cells()[0].display_lines(80)[0]
-                .spans
-                .iter()
-                .all(|span| !span.content.contains("⠋"))
+                .any(|cell| { cell.as_any().downcast_ref::<ToolGroupCell>().is_some() })
         );
 
         widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
@@ -258,24 +270,69 @@ mod tests {
             tool_name: "filesystem.read".to_owned(),
             output: None,
         });
-        assert!(
-            widget
-                .active_cells()
-                .iter()
-                .any(|cell| cell.as_any().is::<ThinkingCell>())
-        );
+        assert!(widget.active_cells().is_empty());
+        assert!(matches!(widget.status(), Status::Working));
 
         widget.handle_runtime_event(RuntimeEvent::MessageDelta {
             message_id: "message-1".to_owned(),
             delta: "answer".to_owned(),
         });
         assert!(
-            !widget
+            widget
                 .active_cells()
                 .iter()
-                .any(|cell| cell.as_any().is::<ThinkingCell>())
+                .any(|cell| { cell.as_any().downcast_ref::<AgentMessageCell>().is_some() })
         );
-        assert_eq!(widget.cells().len(), 3);
+        assert_eq!(widget.cells().len(), 1);
+    }
+
+    #[test]
+    fn tool_then_reasoning_commits_one_thought_before_the_response() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: None,
+        });
+        widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: None,
+        });
+        assert!(matches!(widget.status(), Status::Working));
+        assert!(
+            widget
+                .cells()
+                .iter()
+                .all(|cell| !cell.as_any().is::<ThoughtCell>())
+        );
+
+        widget.handle_runtime_event(RuntimeEvent::ReasoningStart {
+            reasoning_id: "reasoning-1".to_owned(),
+        });
+        widget.handle_runtime_event(RuntimeEvent::ReasoningDelta {
+            reasoning_id: "reasoning-1".to_owned(),
+            delta: "**Organizing tools for clarity**".to_owned(),
+        });
+        assert!(widget.active_cells().iter().any(|cell| {
+            cell.as_any()
+                .downcast_ref::<ThoughtCell>()
+                .is_some_and(|thought| thought.is_running())
+        }));
+        widget.handle_runtime_event(RuntimeEvent::ReasoningEnd {
+            reasoning_id: "reasoning-1".to_owned(),
+        });
+
+        assert_eq!(
+            widget
+                .cells()
+                .iter()
+                .filter(|cell| cell.as_any().is::<ThoughtCell>())
+                .count(),
+            1
+        );
+        assert!(widget.active_cells().is_empty());
     }
 
     #[test]

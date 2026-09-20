@@ -2,15 +2,14 @@
 source: src/chatwidget/rendering.rs
 expression: "screen_rows(&mut app, 24, 12).join(\"\\n\")"
 ---
-  ⠋ Thinking · 0.0s     
                         
                         
                         
                         
                         
                         
+    › fix the error     
+      path              
                         
-  │                     
-  │ › fix the error     
-  │   path              
-  │ ? shortcuts
+                        
+    ? shortcuts

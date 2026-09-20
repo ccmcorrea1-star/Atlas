@@ -19,7 +19,6 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::CancelledCell;
 use crate::history_cell::ErrorCell;
 use crate::history_cell::HistoryCell;
-use crate::history_cell::ThinkingCell;
 use crate::history_cell::ThoughtCell;
 use crate::history_cell::ToolCell;
 use crate::history_cell::ToolGroupCell;
@@ -125,9 +124,6 @@ impl ChatWidget {
 
     pub(crate) fn tick(&mut self) {
         for cell in &mut self.active_cells {
-            if let Some(thinking) = cell.as_any_mut().downcast_mut::<ThinkingCell>() {
-                thinking.tick();
-            }
             if let Some(thought) = cell.as_any_mut().downcast_mut::<ThoughtCell>() {
                 thought.tick();
             }
@@ -521,7 +517,7 @@ impl ChatWidget {
         if let Some(previous_index) = previous_index
             && self.cells[previous_index + 1..]
                 .iter()
-                .all(|candidate| candidate.as_any().is::<ThinkingCell>())
+                .all(|candidate| candidate.as_any().is::<ThoughtCell>())
             && self.cells[previous_index]
                 .as_any()
                 .downcast_ref::<ToolGroupCell>()
@@ -544,44 +540,6 @@ impl ChatWidget {
         }
     }
 
-    fn finalize_thinking(&mut self) {
-        let positions = self
-            .active_cells
-            .iter()
-            .enumerate()
-            .filter_map(|(index, cell)| cell.as_any().is::<ThinkingCell>().then_some(index))
-            .collect::<Vec<_>>();
-        if positions.is_empty() {
-            return;
-        }
-        for index in positions.into_iter().rev() {
-            let mut cell = self.active_cells.remove(index);
-            if let Some(thinking) = cell.as_any_mut().downcast_mut::<ThinkingCell>() {
-                thinking.finish();
-            }
-            self.cells.push(cell);
-        }
-        self.bump_active_revision();
-        self.history_changed();
-    }
-
-    /// Descarta o Thinking generico sem commitar.
-    ///
-    /// O reasoning estruturado assume a vez: manter o placeholder na timeline
-    /// duplicaria o mesmo estado em duas celulas.
-    fn discard_thinking(&mut self) {
-        if !self
-            .active_cells
-            .iter()
-            .any(|cell| cell.as_any().is::<ThinkingCell>())
-        {
-            return;
-        }
-        self.active_cells
-            .retain(|cell| !cell.as_any().is::<ThinkingCell>());
-        self.bump_active_revision();
-    }
-
     pub(crate) fn toggle_thought(&mut self, active: bool, index: usize) -> bool {
         let cells = if active {
             &mut self.active_cells
@@ -601,19 +559,6 @@ impl ChatWidget {
             self.history_changed();
         }
         true
-    }
-
-    fn begin_thinking(&mut self) {
-        if self
-            .active_cells
-            .iter()
-            .any(|cell| cell.as_any().is::<ThinkingCell>())
-        {
-            return;
-        }
-        self.active_cells.push(Box::new(ThinkingCell::new()));
-        self.status = Status::Thinking;
-        self.bump_active_revision();
     }
 
     fn cancel_active_cells(&mut self) {

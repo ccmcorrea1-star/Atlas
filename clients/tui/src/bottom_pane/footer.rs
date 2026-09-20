@@ -1,7 +1,7 @@
 //! Renderizacao do footer adaptada do painel inferior da TUI do Codex.
 //!
-//! O footer e uma view pura do estado do composer. Ele aplica a mesma ordem de
-//! fallback por largura do Codex sem deixar o contexto cobrir a dica em terminais estreitos.
+//! O footer e uma view pura do estado do composer. Ele concentra workspace,
+//! atalhos, modelo e contexto sem deixar a informacao da direita cobrir a dica.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+use crate::ui_consts::composer_secondary_style;
 use crate::ui_consts::error_style;
-use crate::ui_consts::secondary_style;
 use crate::ui_consts::warning_style;
 
 const SHORTCUT_HEIGHT: u16 = 11;
@@ -103,29 +103,7 @@ pub(crate) fn desired_height(app: &App, _width: u16) -> u16 {
 }
 
 fn session_info(app: &App) -> Option<String> {
-    match (app.session_model(), app.session_provider()) {
-        (Some(model), Some(provider)) => Some(format!("{model} · {provider}")),
-        (Some(model), None) | (None, Some(model)) => Some(model.to_owned()),
-        (None, None) => None,
-    }
-}
-
-impl FooterProps {
-    /// Identidade do rodape em ordem de preferencia, da forma completa a compacta.
-    ///
-    /// O composer usa a primeira variante que couber na linha do input.
-    pub(crate) fn identity_candidates(&self) -> Vec<String> {
-        let mut candidates = vec!["Atlas".to_owned()];
-        if let Some(session) = self.session.as_deref() {
-            candidates.insert(0, format!("Atlas · {session}"));
-        }
-        candidates
-    }
-}
-
-/// Identidade do rodape para o composer, sem precisar de uma area de footer.
-pub(crate) fn identity_candidates(app: &App) -> Vec<String> {
-    FooterProps::from_app(app).identity_candidates()
+    app.session_model().map(ToOwned::to_owned)
 }
 
 pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -143,28 +121,57 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn render_workspace_line(area: Rect, props: &FooterProps, buffer: &mut Buffer) {
     let available = usize::from(area.width);
-    let context_width = props.context.as_deref().map_or(0, UnicodeWidthStr::width);
-    let show_context = context_width > 0 && context_width <= available;
-    let reserved = if show_context {
-        context_width.saturating_add(RIGHT_ALIGNED_GAP)
+    let candidates = right_candidates(props);
+    let right = candidates
+        .iter()
+        .enumerate()
+        .find(|(index, candidate)| {
+            let right_width = UnicodeWidthStr::width(candidate.as_str());
+            if right_width + RIGHT_ALIGNED_GAP > available {
+                return false;
+            }
+            let is_last = *index + 1 == candidates.len();
+            is_last || left_group_fits(props, available, right_width)
+        })
+        .map(|(_, candidate)| candidate.clone());
+    let right_width = right.as_deref().map_or(0, UnicodeWidthStr::width);
+    let reserved = if right.is_some() {
+        right_width.saturating_add(RIGHT_ALIGNED_GAP)
     } else {
         0
     };
     let left = left_group(props, available.saturating_sub(reserved));
     let left_width = UnicodeWidthStr::width(left.as_str());
-    let mut line = Line::from(Span::styled(left, secondary_style()));
-    if show_context {
+    let mut line = Line::from(Span::styled(left, composer_secondary_style()));
+    if let Some(right) = right {
         let padding = available
             .saturating_sub(left_width)
-            .saturating_sub(context_width)
+            .saturating_sub(right_width)
             .max(RIGHT_ALIGNED_GAP.min(available));
         line.push_span(Span::raw(" ".repeat(padding)));
-        line.push_span(Span::styled(
-            props.context.clone().unwrap_or_default(),
-            secondary_style(),
-        ));
+        line.push_span(Span::styled(right, composer_secondary_style()));
     }
     line.render(area, buffer);
+}
+
+fn right_candidates(props: &FooterProps) -> Vec<String> {
+    match (props.session.as_deref(), props.context.as_deref()) {
+        (Some(session), Some(context)) => vec![
+            format!("{session} · {context}"),
+            context.to_owned(),
+            session.to_owned(),
+        ],
+        (Some(session), None) => vec![session.to_owned()],
+        (None, Some(context)) => vec![context.to_owned()],
+        (None, None) => Vec::new(),
+    }
+}
+
+fn left_group_fits(props: &FooterProps, available: usize, right_width: usize) -> bool {
+    let budget = available.saturating_sub(right_width + RIGHT_ALIGNED_GAP);
+    let left = left_group(props, budget);
+    let hint = props.left.trim();
+    hint.is_empty() || left.ends_with(hint)
 }
 
 /// Grupo da esquerda: caminho do workspace e a dica do composer.
@@ -283,9 +290,8 @@ pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
 fn status_line(app: &App, width: u16) -> Option<Line<'static>> {
     match app.status() {
         crate::app::Status::Ready => None,
-        crate::app::Status::Thinking | crate::app::Status::Executing => {
-            (width > 0).then(|| Line::from(Span::styled("esc to interrupt", secondary_style())))
-        }
+        crate::app::Status::Working | crate::app::Status::Executing => (width > 0)
+            .then(|| Line::from(Span::styled("esc to interrupt", composer_secondary_style()))),
         crate::app::Status::Error(message) => Some(Line::from(Span::styled(
             format!("! {message}"),
             error_style(),
@@ -335,9 +341,9 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         }
         let left_width = usize::from(area.width) / 2;
         Line::from(vec![
-            Span::styled(left, secondary_style()),
+            Span::styled(left, composer_secondary_style()),
             Span::raw(" ".repeat(left_width.saturating_sub(left.width()))),
-            Span::styled(right, secondary_style()),
+            Span::styled(right, composer_secondary_style()),
         ])
         .render(Rect::new(area.x, y, area.width, 1), buffer);
     }
@@ -351,7 +357,7 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         buffer.set_span(
             area.x + 2,
             area.y + 1,
-            &Span::styled("Ask Atlas to do anything", secondary_style()),
+            &Span::styled("Ask Atlas to do anything", composer_secondary_style()),
             area.width.saturating_sub(2),
         );
     }
@@ -625,15 +631,15 @@ mod tests {
     }
 
     #[test]
-    fn renders_session_info_with_model_and_provider_only() {
+    fn renders_session_info_with_model_only() {
         let mut app = App::new("footer-session-info".to_owned());
         app.handle_runtime_event(RuntimeEvent::SessionUpdated {
             model: "gpt-5.6-luna".to_owned(),
             provider: "opencode-go".to_owned(),
         });
         let output = super::session_info(&app);
-        assert_eq!(output.as_deref(), Some("gpt-5.6-luna · opencode-go"));
-        assert!(!output.as_deref().unwrap().contains("directory:"));
+        assert_eq!(output.as_deref(), Some("gpt-5.6-luna"));
+        assert!(!output.as_deref().unwrap().contains("opencode-go"));
     }
 
     #[test]

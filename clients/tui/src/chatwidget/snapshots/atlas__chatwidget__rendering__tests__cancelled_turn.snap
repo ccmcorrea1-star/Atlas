@@ -6,8 +6,6 @@ expression: "screen_rows(&mut app, 80, 16).join(\"\\n\")"
   › long task                                                                   
                                                                                 
                                                                                 
-  Thinking · 0.0s                                                               
-                                                                                
   partial result                                                                
                                                                                 
   Cancelled                                                                     
@@ -15,6 +13,7 @@ expression: "screen_rows(&mut app, 80, 16).join(\"\\n\")"
                                                                                 
                                                                                 
                                                                                 
-  │                                                                             
-  │ › Ask Atlas to do anything                                         Atlas    
-  │ ~/projetos/Atlas · ? shortcuts
+    › Ask Atlas to do anything                                                  
+                                                                                
+                                                                                
+    ~/projetos/Atlas · ? shortcuts

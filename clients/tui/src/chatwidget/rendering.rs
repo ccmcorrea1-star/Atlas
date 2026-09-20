@@ -370,14 +370,14 @@ mod tests {
     }
 
     #[test]
-    fn keeps_active_status_and_composer_after_resize() {
+    fn keeps_working_status_and_composer_after_resize() {
         let mut app = App::new("render-resize-active".to_owned());
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
         for (width, height) in [(80, 24), (120, 40), (80, 24)] {
             let rows = screen_rows(&mut app, width, height);
             assert_eq!(rows.len(), usize::from(height));
-            assert!(rows.iter().any(|row| row.contains("Thinking")));
+            assert!(!rows.iter().any(|row| row.contains("Thinking")));
             assert!(
                 rows.iter()
                     .any(|row| row.contains("Ask Atlas to do anything"))

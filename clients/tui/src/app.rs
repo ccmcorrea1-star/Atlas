@@ -34,7 +34,7 @@ pub(crate) const MAX_USER_INPUT_TEXT_CHARS: usize = 1 << 20;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Status {
     Ready,
-    Thinking,
+    Working,
     Executing,
     Error(String),
 }
@@ -60,7 +60,6 @@ pub struct App {
     external_editor_requested: bool,
     runtime_connected: bool,
     session_model: Option<String>,
-    session_provider: Option<String>,
     /// Raiz do workspace exibida no footer; resolvida uma vez na construcao.
     workspace: Option<PathBuf>,
     /// Home do usuario, usada para compactar o caminho do workspace em `~/`.
@@ -144,7 +143,6 @@ impl App {
             // Runtime confirma a sessão sem bloquear o composer.
             runtime_connected: true,
             session_model: None,
-            session_provider: None,
             workspace: workspace_root(),
             home: home_dir(),
             thought_hit_regions: Vec::new(),
@@ -210,10 +208,6 @@ impl App {
 
     pub(crate) fn session_model(&self) -> Option<&str> {
         self.session_model.as_deref()
-    }
-
-    pub(crate) fn session_provider(&self) -> Option<&str> {
-        self.session_provider.as_deref()
     }
 
     /// Caminho do workspace exibido no footer.
@@ -615,9 +609,8 @@ impl App {
 
     pub fn handle_runtime_event(&mut self, event: RuntimeEvent) {
         self.runtime_connected = true;
-        if let RuntimeEvent::SessionUpdated { model, provider } = event {
+        if let RuntimeEvent::SessionUpdated { model, provider: _ } = event {
             self.session_model = Some(model);
-            self.session_provider = Some(provider);
             return;
         }
         let terminal = event.is_terminal();
@@ -1180,7 +1173,7 @@ mod tests {
             context: None,
         });
         assert_eq!(app.take_queued_input().as_deref(), Some("second"));
-        assert_eq!(app.cells().len(), 4);
+        assert_eq!(app.cells().len(), 3);
     }
 
     #[test]
