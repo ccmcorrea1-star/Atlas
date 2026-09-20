@@ -1,34 +1,34 @@
 # Paleta visual do Atlas
 
-Fonte: identidade visual atual do Atlas em `assets/brand/`.
+Fonte: [Vint-HS, por michdev](https://lospec.com/palette-list/vint-hs).
 
-A identidade usa uma base escura e fria, com azul-petróleo, ciano dessaturado e off-white. A estética deve permanecer minimalista e retrofuturista. Efeitos CRT/VHS pertencem às aplicações da marca, não à geometria ou às cores-base do símbolo.
+A identidade visual do Atlas usa uma seleção reduzida da Vint-HS. A base deve permanecer escura, com texto claro e um único acento azul/índigo. O efeito retrô vem do tratamento CRT/VHS, não de usar muitas cores.
 
 ## Paleta principal
 
-| Nome           | Hex       | Uso                                  |
-| -------------- | --------- | ------------------------------------ |
-| Fundo          | `#090B0B` | Fundo principal                      |
-| Superfície     | `#142328` | Painéis e superfícies elevadas       |
-| Azul Atlas     | `#314A50` | Cor estrutural da identidade         |
-| Acento orbital | `#77B0B8` | Órbita, foco e detalhes tecnológicos |
-| Off-white      | `#EBEDDF` | Wordmark, ícones e texto em destaque |
-
-## Tons auxiliares
-
-| Nome        | Hex       | Uso                      |
-| ----------- | --------- | ------------------------ |
-| Fundo frio  | `#0B1214` | Variação de fundo        |
-| Azul escuro | `#142328` | Profundidade e contraste |
-| Azul médio  | `#557C85` | Elementos secundários    |
-| Ciano claro | `#A7DBDF` | Realces pontuais         |
+| Nome | Hex | Uso |
+| --- | --- | --- |
+| Fundo | `#141414` | Fundo principal |
+| Superfície | `#202125` | Composer, cards e painéis |
+| Texto | `#E9F6E1` | Respostas, títulos e conteúdo principal |
+| Secundário | `#827D7D` | Thought, footer, duração e metadados |
+| Azul Atlas | `#3C53CE` | Foco, links, tools e identidade |
+| Azul ativo | `#797DDE` | Thinking, cursor e estados ativos |
+| Erro | `#BE173B` | Falhas e estados destrutivos |
 
 ## Aplicação
 
-O contraste principal é `#EBEDDF` sobre `#090B0B`.
+A interface deve ser majoritariamente fundo, superfície e texto. O Azul Atlas aparece apenas onde existe ação, foco ou identidade.
 
-`#314A50` e `#77B0B8` devem ser usados de forma econômica para preservar a identidade escura e minimalista.
+Na TUI e nos apps:
 
-Na TUI, superfícies e mensagens devem derivar desses tons sem introduzir uma paleta paralela. Vermelho continua reservado para falhas e estados destrutivos.
+- mensagem e resposta: `#E9F6E1`
+- prompt `›`, links e tools: `#3C53CE`
+- Thinking ativo: `#797DDE`
+- Thought concluído, footer e metadados: `#827D7D`
+- composer e superfícies: `#202125`
+- erros: `#BE173B`
 
-Texturas, scanlines, aberração cromática e outros efeitos VHS/CRT são tratamentos visuais opcionais e não alteram a paleta oficial.
+Evite criar cores específicas para cada tool ou estado. O símbolo e o texto devem comunicar o estado sem transformar a interface em uma paleta multicolorida.
+
+Scanlines, glow, ghosting e aberração cromática podem usar cores adicionais da Vint-HS apenas como efeito visual. Essas cores não fazem parte da hierarquia funcional da interface.
