@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { TelegramAdapter } from './adapter.js';
@@ -9,6 +9,16 @@ function listEnv(name: string): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+function runtimeSocketPath(): string {
+  if (process.env.ATLAS_RUNTIME_SOCKET?.trim()) {
+    return process.env.ATLAS_RUNTIME_SOCKET;
+  }
+  const runtimeDirectory = process.env.XDG_RUNTIME_DIR?.trim();
+  return runtimeDirectory === undefined || runtimeDirectory.length === 0
+    ? '/tmp/atlas-runtime.sock'
+    : join(runtimeDirectory, 'atlas-runtime.sock');
 }
 
 function isMainModule(): boolean {
@@ -24,7 +34,7 @@ async function main(): Promise<void> {
 
   const adapter = new TelegramAdapter({
     token,
-    runtime: new UnixTelegramRuntime(process.env.ATLAS_RUNTIME_SOCKET ?? '/tmp/atlas-runtime.sock'),
+    runtime: new UnixTelegramRuntime(runtimeSocketPath()),
     allowedUsers: listEnv('TELEGRAM_ALLOWED_USERS'),
     allowedChats: listEnv('TELEGRAM_ALLOWED_CHATS'),
     allowAll: process.env.TELEGRAM_ALLOW_ALL_USERS === 'true',

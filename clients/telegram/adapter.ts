@@ -72,18 +72,30 @@ export class TelegramAdapter {
   }
 
   public async start(): Promise<void> {
-    this.bot = await this.api.getMe();
-    await mkdir(this.downloadDirectory, { recursive: true, mode: 0o700 });
     this.running = true;
+    let retryDelayMs = 1_000;
     while (this.running) {
-      const updates = await this.api.getUpdates(this.offset, 30);
-      for (const update of updates) {
-        this.offset = update.update_id + 1;
-        void this.handleUpdate(update).catch((error: unknown) => {
-          console.error(
-            `Atlas Telegram update failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+      try {
+        if (this.bot === undefined) {
+          this.bot = await this.api.getMe();
+        }
+        await mkdir(this.downloadDirectory, { recursive: true, mode: 0o700 });
+        const updates = await this.api.getUpdates(this.offset, 30);
+        retryDelayMs = 1_000;
+        for (const update of updates) {
+          this.offset = update.update_id + 1;
+          void this.handleUpdate(update).catch((error: unknown) => {
+            console.error(
+              `Atlas Telegram update failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
+      } catch (error) {
+        console.error(
+          `Atlas Telegram polling failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        retryDelayMs = Math.min(retryDelayMs * 2, 15_000);
       }
     }
   }
