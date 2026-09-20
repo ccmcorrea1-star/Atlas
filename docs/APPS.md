@@ -121,6 +121,22 @@ Seu foco é interação por voz e texto, captura de fotos e arquivos, notificaç
 
 Ele não precisa reproduzir toda a interface do Workstation.
 
+## Atlas Telegram
+
+O **Atlas Telegram** é o cliente remoto do Atlas para Telegram.
+
+Ele deve oferecer uma experiência próxima à do Atlas nos demais clientes, usando mensagens, voz, imagens, documentos e controles interativos como interface para o mesmo Runtime.
+
+A implementação fica em `clients/telegram/` e atua como adapter entre a Telegram Bot API e os contratos públicos do Atlas. Agent, sessões, Tasks, Workers, memória e execução continuam pertencendo ao Runtime.
+
+O cliente deve suportar conversas persistentes, streaming por atualização de mensagens, anexos, notificações assíncronas, acompanhamento de Tasks e approvals. Comandos operacionais podem expor ações como iniciar uma nova conversa, consultar estado, cancelar uma execução e alternar sessões.
+
+Controles que interrompem ou respondem a trabalho em andamento, como cancelamento e approvals, devem continuar disponíveis durante uma execução.
+
+O acesso deve permitir restrição por usuário ou chat. Grupos e tópicos podem ser suportados quando o contexto de conversa puder ser associado de forma determinística a uma sessão do Atlas.
+
+A criação e configuração da identidade do bot é feita pelo Telegram, enquanto o cliente continua sendo apenas uma interface do Atlas.
+
 ## Atlas Web
 
 O **Atlas Web** é um cliente leve para acessar o Atlas pelo navegador.
@@ -141,6 +157,8 @@ Atlas Web não representa um Runtime diferente nem uma versão independente do A
         ├──────── Terminal ───────────────┤
         │                │                │
       Mobile           Browser           Web
+        │
+     Telegram
 ```
 
 Os apps podem apresentar diferentes partes do mesmo estado, mas a fonte de verdade permanece no Runtime.
@@ -157,6 +175,7 @@ Tools, Skills, MCPs e integrações externas são capabilities ou fronteiras de 
 Atlas Knowledge     → app
 Atlas Code          → app
 Atlas Terminal      → app
+Atlas Telegram      → app
 
 GitHub              → integração
 Google Drive        → integração
