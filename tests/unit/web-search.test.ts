@@ -261,6 +261,60 @@ test('SearXNG omite metadados opcionais ausentes ou inválidos', async () => {
   }
 });
 
+test('fallback RSS assume quando SearXNG retorna vazio', async () => {
+  const primary = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({
+        results: [],
+        unresponsive_engines: [['bing news', 'parsing error']],
+      }),
+    );
+  });
+  const rss = createServer((request, response) => {
+    const requestedUrl = new URL(request.url ?? '/', 'http://test.local');
+    assert.equal(requestedUrl.searchParams.get('hl'), 'pt-BR');
+    assert.match(requestedUrl.searchParams.get('q') ?? '', /when:1d/);
+    response.setHeader('content-type', 'application/rss+xml');
+    response.end(`<?xml version="1.0"?><rss><channel><item>
+      <title>Notícia &amp; atual</title>
+      <link>https://news.test/article</link>
+      <description><![CDATA[Resumo <b>curto</b>]]></description>
+      <source url="https://source.test">Fonte Teste</source>
+      <pubDate>Sun, 20 Sep 2026 19:00:00 GMT</pubDate>
+    </item></channel></rss>`);
+  });
+  const primaryServer = await listen(primary);
+  const rssServer = await listen(rss);
+  try {
+    const outcome = await runSearch(
+      'notícias de hoje',
+      5,
+      {
+        endpoint: primaryServer.endpoint,
+        fallbackProviders: ['rss-news'],
+        providers: { 'rss-news': { endpoint: rssServer.endpoint } },
+      },
+      undefined,
+      { timeRange: 'day' },
+    );
+    assert.equal(outcome.status, 'success');
+    assert.deepEqual(outcome.results, [
+      {
+        title: 'Notícia & atual',
+        url: 'https://news.test/article',
+        snippet: 'Resumo curto',
+        source: 'Fonte Teste',
+        publishedAt: 'Sun, 20 Sep 2026 19:00:00 GMT',
+      },
+    ]);
+    assert.deepEqual(outcome.warnings, ['bing news: parsing error']);
+  } finally {
+    await primaryServer.close();
+    await rssServer.close();
+  }
+});
+
 test('fallback troca de adapter quando o provider primário falha', async () => {
   const providers = new Map<string, SearchProviderFactory>([
     [

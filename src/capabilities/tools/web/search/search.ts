@@ -55,6 +55,7 @@ const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
 const DEFAULT_ENDPOINT = 'http://searxng.home';
 const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_RSS_ENDPOINT = 'https://news.google.com/rss/search';
 
 const providerFactories = new Map<string, SearchProviderFactory>();
 
@@ -106,6 +107,99 @@ class SearXNGProvider implements SearchProvider {
       clearTimeout(timeout);
     }
   }
+}
+
+class RssNewsProvider implements SearchProvider {
+  public async search(
+    query: string,
+    limit: number,
+    config: SearchConfig,
+    options: SearchOptions = {},
+  ): Promise<unknown> {
+    const endpoint = config.providers?.['rss-news']?.endpoint ?? DEFAULT_RSS_ENDPOINT;
+    const url = new URL(endpoint);
+    const freshness =
+      options.timeRange === undefined ? '' : ` when:${rssFreshness(options.timeRange)}`;
+    url.searchParams.set('q', `${queryWithDomains(query, options.domains)}${freshness}`.trim());
+    url.searchParams.set('hl', 'pt-BR');
+    url.searchParams.set('gl', 'BR');
+    url.searchParams.set('ceid', 'BR:pt-419');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        headers: { accept: 'application/rss+xml, application/xml, text/xml' },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new ProviderError(`RSS provider returned HTTP ${response.status}`);
+      }
+      return {
+        results: parseRssItems(await response.text()).slice(0, limit),
+      } satisfies SearchProviderResponse;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new ProviderError('RSS provider request timed out');
+      }
+      throw error instanceof Error ? error : new ProviderError(String(error));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function rssFreshness(timeRange: SearchTimeRange): string {
+  return timeRange === 'day' ? '1d' : timeRange === 'week' ? '7d' : '30d';
+}
+
+function parseRssItems(xml: string): SearchResult[] {
+  return [...xml.matchAll(new RegExp('<item[^>]*>([^]*?)</item>', 'gi'))].flatMap((match) => {
+    const item = match[1];
+    const title = rssField(item, 'title');
+    const url = rssField(item, 'link');
+    if (title === undefined || url === undefined) {
+      return [];
+    }
+    const result: SearchResult = { title, url };
+    const snippet = rssField(item, 'description');
+    const source = rssField(item, 'source');
+    const publishedAt = rssField(item, 'pubDate');
+    if (snippet !== undefined) result.snippet = snippet;
+    if (source !== undefined) result.source = source;
+    if (publishedAt !== undefined) result.publishedAt = publishedAt;
+    return [result];
+  });
+}
+
+function rssField(item: string, field: string): string | undefined {
+  const match = item.match(new RegExp(`<${field}[^>]*>([^]*?)</${field}>`, 'i'));
+  if (match === null) return undefined;
+  const value = decodeXml(match[1].trim())
+    .replace(/<[^>]+>/g, ' ')
+    .replaceAll('\n', ' ')
+    .replaceAll('\r', ' ')
+    .replaceAll('\t', ' ')
+    .replace(/  +/g, ' ')
+    .trim();
+  return value === '' ? undefined : value;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replaceAll('<![CDATA[', '')
+    .replaceAll(']]>', '')
+    .replace(new RegExp('&#x([0-9a-f]+);', 'gi'), (_match, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 16)),
+    )
+    .replace(new RegExp('&#([0-9]+);', 'g'), (_match, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 10)),
+    )
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&');
 }
 
 function queryWithDomains(query: string, domains: string[] | undefined): string {
@@ -162,6 +256,7 @@ function normalizeUnresponsiveEngines(value: unknown): string[] {
 }
 
 providerFactories.set('searxng', () => new SearXNGProvider());
+providerFactories.set('rss-news', () => new RssNewsProvider());
 
 export function registerSearchProvider(name: string, factory: SearchProviderFactory): void {
   if (!name.trim()) {
@@ -315,9 +410,14 @@ export async function runSearch(
   providers: ReadonlyMap<string, SearchProviderFactory> = providerFactories,
   options: SearchOptions = {},
 ): Promise<SearchOutcome> {
-  const names = [config.provider ?? 'searxng', ...(config.fallbackProviders ?? [])];
+  const configuredNames = [config.provider ?? 'searxng', ...(config.fallbackProviders ?? [])];
+  const names =
+    options.category === 'news' && configuredNames.includes('rss-news')
+      ? ['rss-news', ...configuredNames.filter((name) => name !== 'rss-news')]
+      : configuredNames;
   const attempted = new Set<string>();
   let lastError = 'no search provider configured';
+  const warnings: string[] = [];
 
   for (const name of names) {
     if (attempted.has(name)) {
@@ -333,21 +433,20 @@ export async function runSearch(
       const raw = await factory(config).search(query, limit, config, options);
       const providerResponse = isSearchProviderResponse(raw) ? raw : { results: raw };
       const results = sanitizeResults(providerResponse.results).slice(0, limit);
-      const warnings = providerResponse.warnings ?? [];
-      if (results.length === 0 && warnings.length > 0) {
+      const providerWarnings = providerResponse.warnings ?? [];
+      warnings.push(...providerWarnings);
+      if (results.length > 0) {
         return {
-          status: 'failed',
-          error: `SearXNG returned no results; unavailable engines: ${warnings.join('; ')}`,
+          status: 'success',
+          error: '',
           results,
-          warnings,
+          ...(warnings.length === 0 ? {} : { warnings }),
         };
       }
-      return {
-        status: 'success',
-        error: '',
-        results,
-        ...(warnings.length === 0 ? {} : { warnings }),
-      };
+      lastError =
+        name === 'searxng' && providerWarnings.length > 0
+          ? `SearXNG returned no results; unavailable engines: ${providerWarnings.join('; ')}`
+          : `${name} returned no results`;
     } catch (error) {
       lastError = `${name}: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -357,6 +456,7 @@ export async function runSearch(
     status: names.length === 0 ? 'unavailable' : 'failed',
     error: lastError,
     results: [],
+    ...(warnings.length === 0 ? {} : { warnings }),
   };
 }
 

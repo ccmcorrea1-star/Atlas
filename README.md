@@ -67,8 +67,10 @@ ambiente, ela sobrescreve o valor do arquivo. O contrato completo está em
 [`protocol/config.schema.json`](protocol/config.schema.json).
 
 Os adapters web também ficam nessa configuração global. O default local é
-SearXNG para `web.search`, o extractor nativo para `web.fetch`, Camoufox +
-Playwright para `web.browser` e Crawl4AI é opcional para `web.crawl`:
+SearXNG para `web.search`; para notícias atuais, o provider `rss-news` pode ser
+preferido quando estiver em `fallbackProviders`. O extractor nativo é usado por
+`web.fetch`, Camoufox + Playwright por `web.browser` e Crawl4AI é opcional para
+`web.crawl`:
 
 ```json
 {
@@ -76,7 +78,7 @@ Playwright para `web.browser` e Crawl4AI é opcional para `web.crawl`:
     "search": {
       "provider": "searxng",
       "endpoint": "http://searxng.home",
-      "fallbackProviders": []
+      "fallbackProviders": ["rss-news"]
     },
     "fetch": { "extractor": "native" },
     "browser": {
