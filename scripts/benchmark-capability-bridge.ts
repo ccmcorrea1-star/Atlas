@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 
-import { NativeCapabilityRuntime } from '../src/capability-runtime.js';
+import { NativeCapabilityRuntime } from '../src/capabilities/runtime-client.js';
 
 type Sample = {
   name: string;

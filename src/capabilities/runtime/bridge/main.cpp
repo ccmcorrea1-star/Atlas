@@ -3,6 +3,9 @@
 #include "../../core/loader.hpp"
 #include "../../core/registry.hpp"
 #include "../executable/protocol.hpp"
+#include "../../../skills/discovery.hpp"
+#include "../../../skills/loader.hpp"
+#include "../../../skills/registry.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,17 +18,66 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
 using atlas::capabilities::Capability;
-using atlas::capabilities::Discovery;
 using atlas::capabilities::DiscoveryRequest;
+using atlas::capabilities::ToolDiscovery;
 using atlas::capabilities::Executor;
 using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
 using atlas::capabilities::StructuredValue;
 using atlas::capabilities::ToolListResult;
+using atlas::skills::Skill;
+using atlas::skills::SkillDiscovery;
+using atlas::skills::SkillDiscoveryRequest;
+using atlas::skills::SkillLoader;
+using atlas::skills::SkillRegistry;
+using atlas::skills::SkillSource;
+
+class RuntimeDiscovery {
+ public:
+  RuntimeDiscovery(const Registry& registry, const SkillRegistry& skills)
+      : tools_(registry), skills_(skills) {}
+
+  std::vector<atlas::capabilities::DiscoveryResult> discover(
+      const DiscoveryRequest& request) const {
+    std::vector<atlas::capabilities::DiscoveryResult> result = tools_.discover(request);
+    SkillDiscoveryRequest skillRequest;
+    skillRequest.query = request.query.value_or("");
+    if (request.limit.has_value()) {
+      skillRequest.hasLimit = true;
+      skillRequest.limit = request.limit.value();
+    }
+    for (const auto& skill : skills_.discover(skillRequest)) {
+      result.push_back({skill.id, skill.type, skill.summary});
+    }
+    if (request.limit.has_value() && result.size() > request.limit.value()) {
+      result.resize(request.limit.value());
+    }
+    return result;
+  }
+
+  std::vector<ToolListResult> listTools(std::optional<std::string_view> group) const {
+    return tools_.listTools(group);
+  }
+
+  std::optional<Capability> getDefinition(std::string_view id) const {
+    return tools_.getDefinition(id);
+  }
+
+  std::optional<Skill> getSkill(
+      std::string_view id,
+      std::optional<std::string_view> path = std::nullopt) const {
+    return skills_.getSkill(id, path);
+  }
+
+ private:
+  ToolDiscovery tools_;
+  SkillDiscovery skills_;
+};
 
 const StructuredValue* field(
     const StructuredValue::Object& object,
@@ -106,7 +158,7 @@ std::filesystem::path capabilitiesDirectory(const char* executable) {
   return executablePath.parent_path().parent_path().parent_path();
 }
 
-void loadRegistry(const char* executable, Registry& registry) {
+void loadRegistries(const char* executable, Registry& registry, SkillRegistry& skills) {
   Loader loader(registry);
   const std::filesystem::path directory = capabilitiesDirectory(executable) / "tools";
   if (!loader.scan(directory)) {
@@ -114,7 +166,10 @@ void loadRegistry(const char* executable, Registry& registry) {
   }
 
   const std::filesystem::path project = std::filesystem::current_path();
-  const auto scanSkills = [&loader](const std::filesystem::path& root) {
+  SkillLoader skillLoader(skills);
+  const auto scanSkills = [&skillLoader](
+                              const std::filesystem::path& root,
+                              SkillSource source) {
     std::error_code error;
     if (!std::filesystem::is_directory(root, error)) {
       if (error && error != std::errc::no_such_file_or_directory) {
@@ -122,16 +177,16 @@ void loadRegistry(const char* executable, Registry& registry) {
       }
       return;
     }
-    if (!loader.scanSkills(root)) {
-      throw std::runtime_error(loader.lastError());
+    if (!skillLoader.scan(root, source)) {
+      throw std::runtime_error(skillLoader.lastError());
     }
   };
 
-  scanSkills(project / ".atlas" / "skills");
+  scanSkills(project / ".atlas" / "skills", SkillSource::project);
   if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-    scanSkills(std::filesystem::path(home) / ".config" / "atlas" / "skills");
+    scanSkills(std::filesystem::path(home) / ".config" / "atlas" / "skills", SkillSource::global);
   }
-  scanSkills(project / ".agents" / "skills");
+  scanSkills(project / ".agents" / "skills", SkillSource::agents);
 }
 
 void writeResponse(const StructuredValue::Object& response) {
@@ -152,7 +207,7 @@ int failure(std::string message) {
 }
 
 StructuredValue::Object discoveryValue(
-    const Discovery& discovery,
+    const RuntimeDiscovery& discovery,
     const StructuredValue::Object& request) {
   DiscoveryRequest discoveryRequest;
   discoveryRequest.query = optionalString(request, "query");
@@ -170,7 +225,7 @@ StructuredValue::Object discoveryValue(
 }
 
 StructuredValue::Object listToolsValue(
-    const Discovery& discovery,
+    const RuntimeDiscovery& discovery,
     const StructuredValue::Object& request) {
   const std::optional<std::string> group = optionalString(request, "group");
   if (group.has_value() && group->empty()) {
@@ -208,7 +263,7 @@ StructuredValue definitionValue(const Capability& capability) {
 }
 
 StructuredValue::Object getDefinitionValue(
-    const Discovery& discovery,
+    const RuntimeDiscovery& discovery,
     const StructuredValue::Object& request) {
   const std::string id = requiredString(request, "id");
   const auto definition = discovery.getDefinition(id);
@@ -218,20 +273,34 @@ StructuredValue::Object getDefinitionValue(
 }
 
 StructuredValue::Object getSkillValue(
-    const Discovery& discovery,
+    const RuntimeDiscovery& discovery,
     const StructuredValue::Object& request) {
   const std::string id = requiredString(request, "id");
-  const auto skill = discovery.getSkill(id);
+  const auto path = optionalString(request, "path");
+  const auto skill = discovery.getSkill(
+      id,
+      path.has_value() ? std::optional<std::string_view>(*path) : std::nullopt);
   if (!skill.has_value()) {
     return StructuredValue::Object{{"skill", StructuredValue(nullptr)}};
   }
   return StructuredValue::Object{
       {"skill", StructuredValue::Object{
-          {"id", skill->id},
-          {"type", skill->type},
-          {"summary", skill->summary},
-          {"instructions", skill->instructions},
-      }},
+           {"id", skill->id},
+           {"type", "skill"},
+           {"summary", skill->summary},
+           {"instructions", skill->instructions},
+           {"source", skill->source.string()},
+           {"files", [&skill] {
+             StructuredValue::Array files;
+             for (const auto& file : skill->files) {
+               files.emplace_back(StructuredValue::Object{
+                   {"path", file.path},
+                   {"content", file.content},
+               });
+             }
+             return StructuredValue(std::move(files));
+           }()},
+       }},
   };
 }
 
@@ -255,11 +324,6 @@ StructuredValue::Object executeValue(
   if (!definition.has_value()) {
     throw std::runtime_error("capability '" + id + "' is not registered");
   }
-  if (definition->type != "tool") {
-    throw std::runtime_error(
-        "capability '" + id + "' of type '" + definition->type + "' is not executable");
-  }
-
   const atlas::capabilities::ExecutionOutputCallback on_output =
       optionalBoolean(request, "stream", false)
       ? [&requestId](std::string_view channel, std::string_view delta) {
@@ -283,7 +347,7 @@ StructuredValue::Object executeValue(
 void handleLine(
     const Registry& registry,
     const Executor& executor,
-    const Discovery& discovery,
+    const RuntimeDiscovery& discovery,
     const std::string& line) {
   std::optional<std::string> requestId;
   try {
@@ -333,14 +397,15 @@ int main(int argc, char* argv[]) {
   }
 
   Registry registry;
+  SkillRegistry skills;
   try {
-    loadRegistry(argv[0], registry);
+    loadRegistries(argv[0], registry, skills);
   } catch (const std::exception& exception) {
     return failure(exception.what());
   }
 
   const Executor executor(registry);
-  const Discovery discovery(registry);
+  const RuntimeDiscovery discovery(registry, skills);
 
   std::string line;
   while (std::getline(std::cin, line)) {

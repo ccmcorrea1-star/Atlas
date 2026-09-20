@@ -4,21 +4,13 @@
 
 namespace atlas::capabilities {
 
-namespace {
-
-bool isUsableType(std::string_view type) {
-  return type == "tool" || type == "skill";
-}
-
-}  // namespace
-
-std::vector<DiscoveryResult> Discovery::discover(const DiscoveryRequest& request) const {
+std::vector<DiscoveryResult> ToolDiscovery::discover(const DiscoveryRequest& request) const {
   std::vector<Capability> capabilities = registry_.search(request.query.value_or(""));
   capabilities.erase(
       std::remove_if(
           capabilities.begin(),
           capabilities.end(),
-          [](const Capability& capability) { return !isUsableType(capability.type); }),
+           [](const Capability& capability) { return capability.type != "tool"; }),
       capabilities.end());
   if (request.limit.has_value() && capabilities.size() > request.limit.value()) {
     capabilities.resize(request.limit.value());
@@ -26,7 +18,7 @@ std::vector<DiscoveryResult> Discovery::discover(const DiscoveryRequest& request
   return project(capabilities);
 }
 
-std::vector<ToolListResult> Discovery::listTools(std::optional<std::string_view> group) const {
+std::vector<ToolListResult> ToolDiscovery::listTools(std::optional<std::string_view> group) const {
   std::vector<Capability> capabilities = group.has_value()
       ? registry_.children(group.value())
       : registry_.list();
@@ -39,7 +31,7 @@ std::vector<ToolListResult> Discovery::listTools(std::optional<std::string_view>
   return projectTools(capabilities);
 }
 
-std::optional<Capability> Discovery::getDefinition(std::string_view id) const {
+std::optional<Capability> ToolDiscovery::getDefinition(std::string_view id) const {
   const auto capability = registry_.getDefinition(id);
   if (!capability.has_value() || capability->type != "tool") {
     return std::nullopt;
@@ -47,15 +39,7 @@ std::optional<Capability> Discovery::getDefinition(std::string_view id) const {
   return capability;
 }
 
-std::optional<Capability> Discovery::getSkill(std::string_view id) const {
-  const auto capability = registry_.getDefinition(id);
-  if (!capability.has_value() || capability->type != "skill") {
-    return std::nullopt;
-  }
-  return capability;
-}
-
-std::vector<DiscoveryResult> Discovery::project(const std::vector<Capability>& capabilities) {
+std::vector<DiscoveryResult> ToolDiscovery::project(const std::vector<Capability>& capabilities) {
   std::vector<DiscoveryResult> result;
   result.reserve(capabilities.size());
   for (const Capability& capability : capabilities) {
@@ -64,7 +48,7 @@ std::vector<DiscoveryResult> Discovery::project(const std::vector<Capability>& c
   return result;
 }
 
-std::vector<ToolListResult> Discovery::projectTools(const std::vector<Capability>& capabilities) {
+std::vector<ToolListResult> ToolDiscovery::projectTools(const std::vector<Capability>& capabilities) {
   std::vector<ToolListResult> result;
   result.reserve(capabilities.size());
   for (const Capability& capability : capabilities) {

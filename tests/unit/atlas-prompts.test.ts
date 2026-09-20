@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 
-import { loadInstructions, runAtlas } from '../../src/atlas.js';
+import { loadInstructions, runAtlas } from '../../src/agent/atlas.js';
 
 type RequestBody = Record<string, unknown>;
 

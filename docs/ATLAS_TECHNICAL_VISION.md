@@ -60,7 +60,8 @@ Uma **Tool** representa uma ação executável. Depois de descoberta, deve ser c
 
 Uma **Skill** representa um procedimento reutilizável. Ela orienta o Agent a combinar Tools sem precisar se tornar uma Tool monolítica.
 
-Discovery encontra Tools e Skills. O [`Capability Registry`](#capability-registry) administra capacidades executáveis e procedurais.
+Discovery encontra Tools e Skills. O Registry de Tools administra apenas recursos executáveis;
+o SkillRegistry administra recursos procedurais e sua materialização progressiva.
 
 ## Contexto e memória
 
@@ -72,11 +73,12 @@ A compactação reconstrói o contexto ativo, preservando objetivo, estado, deci
 
 > Nada entra no contexto do modelo apenas porque existe.
 
-## Capability Registry
+## Registries
 
-Toda capacidade conhecida pelo Atlas deve entrar em um Registry independente da linguagem de implementação.
+Toda Tool conhecida pelo Atlas deve entrar em um Registry independente da linguagem de implementação.
+Skills possuem um SkillRegistry separado porque são instruções e metadados, não implementações executáveis.
 
-O Registry pode receber capacidades nativas, integrações externas ou MCP sem expor seus detalhes ao restante do sistema.
+O Registry de Tools pode receber capacidades nativas, integrações externas ou MCP sem expor seus detalhes ao restante do sistema.
 
 Capacidades geradas precisam de identidade, versão, origem, dependências, testes e provenance. Código criado pelo Agent não se torna confiável apenas por ter sido gerado pelo próprio Atlas.
 

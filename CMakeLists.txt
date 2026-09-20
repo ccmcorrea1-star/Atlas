@@ -25,6 +25,13 @@ add_library(atlas-capabilities-core STATIC
 target_include_directories(atlas-capabilities-core PUBLIC src/capabilities/core)
 target_link_libraries(atlas-capabilities-core PUBLIC atlas-capabilities-executable-runtime)
 
+add_library(atlas-skills STATIC
+  src/skills/discovery.cpp
+  src/skills/loader.cpp
+  src/skills/registry.cpp
+)
+target_include_directories(atlas-skills PUBLIC src/skills)
+
 add_executable(atlas-shell-exec-runtime
   src/capabilities/runtime/executable/main.cpp
   src/capabilities/tools/shell/exec/shell.cpp
@@ -157,6 +164,7 @@ add_executable(atlas-capability-bridge-runtime
   src/capabilities/runtime/bridge/main.cpp
 )
 target_link_libraries(atlas-capability-bridge-runtime PRIVATE atlas-capabilities-core)
+target_link_libraries(atlas-capability-bridge-runtime PRIVATE atlas-skills)
 set_target_properties(atlas-capability-bridge-runtime PROPERTIES
   OUTPUT_NAME runtime
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/capabilities/runtime/bridge"
@@ -175,7 +183,7 @@ target_link_libraries(atlas-system-info-test PRIVATE atlas-capabilities-core)
 add_dependencies(atlas-system-info-test atlas-system-info-runtime)
 
 add_executable(atlas-capability-loader-test tests/native/capability_loader_test.cpp)
-target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-core)
+target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-core atlas-skills)
 add_dependencies(atlas-capability-loader-test atlas-capability-bridge-runtime)
 
 add_executable(atlas-capability-discovery-test tests/native/discovery_test.cpp)
@@ -213,6 +221,7 @@ target_link_libraries(atlas-command-runner-test PRIVATE atlas-capabilities-core)
 foreach(target
     atlas-capabilities-executable-runtime
     atlas-capabilities-core
+    atlas-skills
     atlas-filesystem-search-ignore
     atlas-shell-exec-runtime
     atlas-git-status-runtime

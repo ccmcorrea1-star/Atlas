@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
-import type { CapabilityRuntime } from '../../src/capability-runtime.js';
+import type { CapabilityRuntime } from '../../src/capabilities/runtime-client.js';
 import { atlasRuntimeSessionData } from '../../src/config/index.js';
 import { runAtlas } from '../../src/index.js';
 import { AtlasRuntimeServer } from '../../src/runtime/server.js';

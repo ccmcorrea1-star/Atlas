@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 
-import type { AtlasWebConfig } from './config/index.js';
+import type { AtlasWebConfig } from '../config/index.js';
+import type { SkillDefinition, SkillFile } from '../skills/types.js';
 
 export type CapabilityDiscoveryRequest = {
   query?: string;
@@ -31,13 +32,6 @@ export type ToolDefinition = CapabilityDiscoveryResult & {
   schema: Record<string, unknown>;
 };
 
-export type SkillDefinition = CapabilityDiscoveryResult & {
-  type: 'skill';
-  instructions: string;
-};
-
-export type CapabilityDefinition = ToolDefinition | SkillDefinition;
-
 export type CapabilityExecutionResult = {
   target: string;
   status: string;
@@ -54,7 +48,7 @@ export interface CapabilityRuntime {
   discover(request?: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult[]>;
   listTools(request?: CapabilityToolListRequest): Promise<CapabilityToolListResult[]>;
   getDefinition(id: string): Promise<ToolDefinition | undefined>;
-  getSkill(id: string): Promise<SkillDefinition | undefined>;
+  getSkill?: (id: string, path?: string) => Promise<SkillDefinition | undefined>;
   execute(
     id: string,
     target: string,
@@ -163,6 +157,22 @@ function jsonSchema(value: unknown): Record<string, unknown> {
   return asObject(value, 'Capability schema');
 }
 
+function skillFiles(value: unknown): SkillFile[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Skill definition field "files" must be an array.');
+  }
+  return value.map((item) => {
+    const file = asObject(item, 'Skill file');
+    if (typeof file.content !== 'string') {
+      throw new Error('Skill file field "content" must be a string.');
+    }
+    return {
+      path: requiredString(file.path, 'path'),
+      content: file.content,
+    };
+  });
+}
+
 // Cliente do bridge C++ persistente. O processo é iniciado sob demanda, reutilizado
 // enquanto este runtime existir e reiniciado de forma limpa depois de crash ou EOF.
 export class NativeCapabilityRuntime implements CapabilityRuntime {
@@ -240,8 +250,12 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     return parsedDefinition;
   }
 
-  public async getSkill(id: string): Promise<SkillDefinition | undefined> {
-    const response = await this.request({ operation: 'get_skill', id });
+  public async getSkill(id: string, path?: string): Promise<SkillDefinition | undefined> {
+    const response = await this.request({
+      operation: 'get_skill',
+      id,
+      ...(path === undefined ? {} : { path }),
+    });
     if (response.skill === null || response.skill === undefined) {
       return undefined;
     }
@@ -256,6 +270,8 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       type,
       summary: requiredString(skill.summary, 'summary'),
       instructions: requiredString(skill.instructions, 'instructions'),
+      source: requiredString(skill.source, 'source'),
+      files: skill.files === undefined ? [] : skillFiles(skill.files),
     };
   }
 

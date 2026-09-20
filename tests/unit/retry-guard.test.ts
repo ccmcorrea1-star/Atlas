@@ -6,12 +6,12 @@ import {
   HookableCapabilityRuntime,
   RetryGuard,
   type CapabilityExecutionHookContext,
-} from '../../src/capability-hooks.js';
+} from '../../src/capabilities/execution-hooks.js';
 import {
   NativeCapabilityRuntime,
   type CapabilityExecutionResult,
   type CapabilityRuntime,
-} from '../../src/capability-runtime.js';
+} from '../../src/capabilities/runtime-client.js';
 import { DEFAULT_ATLAS_WEB_CONFIG } from '../../src/config/index.js';
 import { runAtlas } from '../../src/index.js';
 

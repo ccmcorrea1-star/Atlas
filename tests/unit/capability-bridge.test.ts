@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { NativeCapabilityRuntime } from '../../src/capability-runtime.js';
+import { NativeCapabilityRuntime } from '../../src/capabilities/runtime-client.js';
 
 type BridgeRecord = Record<string, unknown>;
 
@@ -181,6 +181,8 @@ test('correlates concurrent responses by request_id', async () => {
       type: 'skill',
       summary: 'fake skill',
       instructions: 'Use fake.tool, then report the result.',
+      source: '/tmp/fake.skill/SKILL.md',
+      files: [],
     });
     // A resposta atrasada do discover chega depois; a correlação ignora a ordem.
     assert.deepEqual(order, ['definition', 'discover']);

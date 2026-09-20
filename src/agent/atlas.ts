@@ -18,9 +18,13 @@ import {
   OPENCODE_GO_MODEL,
   withOpenCodeGoAbortSignal,
   withOpenCodeGoSession,
-} from './opencode-go.js';
-import { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
-import type { AtlasConfig } from './config/index.js';
+} from '../providers/opencode-go.js';
+import {
+  HookableCapabilityRuntime,
+  RetryGuard,
+  stableSerialize,
+} from '../capabilities/execution-hooks.js';
+import type { AtlasConfig } from '../config/index.js';
 import {
   createCapabilityRuntime,
   type CapabilityDiscoveryRequest,
@@ -28,7 +32,8 @@ import {
   type CapabilityExecutionOptions,
   type CapabilityRuntime,
   type ToolDefinition,
-} from './capability-runtime.js';
+} from '../capabilities/runtime-client.js';
+import type { SkillDiscovery } from '../skills/types.js';
 
 let instructionsCache: string | undefined;
 
@@ -36,8 +41,8 @@ let instructionsCache: string | undefined;
 function promptsDirectory(): string {
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(moduleDirectory, 'prompts'),
-    join(moduleDirectory, '..', 'src', 'prompts'),
+    join(moduleDirectory, '..', 'prompts'),
+    join(moduleDirectory, '..', '..', 'src', 'prompts'),
   ];
   const directory = candidates.find((candidate) => existsSync(candidate));
   if (directory === undefined) {
@@ -298,10 +303,6 @@ function executionTool(
       if (arguments_ === undefined) {
         throw new Error('execute arguments must be a JSON object.');
       }
-      const skill = await capabilityRuntime.getSkill(id);
-      if (skill !== undefined) {
-        throw new Error(`execute accepts only registered Tools; "${id}" is a Skill.`);
-      }
       const executionId = details?.toolCall?.callId;
       const executionOptions: CapabilityExecutionOptions = {
         signal: details?.signal,
@@ -410,7 +411,7 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   };
 }
 
-function skillTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
+function skillTool(skillDiscovery: SkillDiscovery): FunctionTool {
   return {
     type: 'function',
     name: 'skill',
@@ -419,6 +420,10 @@ function skillTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'identificador exato da Skill' },
+        path: {
+          type: 'string',
+          description: 'caminho relativo de um arquivo auxiliar da Skill',
+        },
       },
       required: ['id'],
       additionalProperties: false,
@@ -428,14 +433,18 @@ function skillTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
     isEnabled: async () => true,
     invoke: async (_runContext, input) => {
       const request = parseObjectInput(input, 'skill');
-      if (Object.keys(request).some((key) => key !== 'id')) {
-        throw new Error('skill accepts only id.');
+      if (Object.keys(request).some((key) => key !== 'id' && key !== 'path')) {
+        throw new Error('skill accepts only id and path.');
       }
       const id = request.id;
       if (typeof id !== 'string' || !id) {
         throw new Error('skill id must be a non-empty string.');
       }
-      const definition = await capabilityRuntime.getSkill(id);
+      const path = request.path;
+      if (path !== undefined && (typeof path !== 'string' || !path)) {
+        throw new Error('skill path must be a non-empty string.');
+      }
+      const definition = await skillDiscovery.getSkill(id, path);
       if (definition === undefined) {
         throw new Error(`Skill "${id}" was not found.`);
       }
@@ -507,7 +516,9 @@ function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
 }
 
 function createAtlasAgent(
-  capabilityRuntime: CapabilityRuntime,
+  executionRuntime: CapabilityRuntime,
+  discoveryRuntime: CapabilityRuntime,
+  skillDiscovery: SkillDiscovery,
   definitions: readonly ToolDefinition[],
   onOutput?: (
     capabilityId: string,
@@ -535,13 +546,13 @@ function createAtlasAgent(
     tools: [
       // Core tools materializadas primeiro; o long tail continua nos base tools.
       ...definitions.map((definition) =>
-        capabilityFunctionTool(definition, capabilityRuntime, onOutput),
+        capabilityFunctionTool(definition, executionRuntime, onOutput),
       ),
-      listToolsTool(capabilityRuntime),
-      discoveryTool(capabilityRuntime),
-      skillTool(capabilityRuntime),
-      describeTool(capabilityRuntime),
-      executionTool(capabilityRuntime, onOutput),
+      listToolsTool(discoveryRuntime),
+      discoveryTool(discoveryRuntime),
+      skillTool(skillDiscovery),
+      describeTool(discoveryRuntime),
+      executionTool(executionRuntime, onOutput),
     ],
   });
 }
@@ -922,6 +933,9 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   // Cada turno recebe um RetryGuard novo para permitir a mesma chamada apos falha.
   const turnRuntime = new HookableCapabilityRuntime(capabilityRuntime, new RetryGuard());
+  const skillDiscovery: SkillDiscovery = {
+    getSkill: (id, path) => capabilityRuntime.getSkill?.(id, path) ?? Promise.resolve(undefined),
+  };
   // As tools diretas sao montadas sobre o runtime do turno, com hooks e guard.
   const definitions = coreTools ? await loadMaterializedDefinitions(capabilityRuntime) : [];
   const capabilityIdByToolName = new Map(
@@ -929,6 +943,8 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   );
   const agent = createAtlasAgent(
     turnRuntime,
+    capabilityRuntime,
+    skillDiscovery,
     definitions,
     onEvent === undefined
       ? undefined

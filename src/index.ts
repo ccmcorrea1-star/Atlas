@@ -1,11 +1,10 @@
 // Este e o ponto de entrada publico: consumidores importam o Agent e seu runtime daqui.
-export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './atlas.js';
-export type { AtlasRunEvent, AtlasRunOptions } from './atlas.js';
+export { Atlas, createAtlasRunner, getAtlasRunner, runAtlas } from './agent/atlas.js';
+export type { AtlasRunEvent, AtlasRunOptions } from './agent/atlas.js';
 
 // O runtime de capabilities permanece independente do Agent SDK e pode ser substituido em testes.
-export { createCapabilityRuntime, NativeCapabilityRuntime } from './capability-runtime.js';
+export { createCapabilityRuntime, NativeCapabilityRuntime } from './capabilities/runtime-client.js';
 export type {
-  CapabilityDefinition,
   CapabilityType,
   CapabilityDiscoveryRequest,
   CapabilityDiscoveryResult,
@@ -14,19 +13,23 @@ export type {
   CapabilityToolListRequest,
   CapabilityToolListResult,
   NativeCapabilityRuntimeOptions,
-  SkillDefinition,
   ToolDefinition,
-} from './capability-runtime.js';
+} from './capabilities/runtime-client.js';
+export type { SkillDefinition, SkillDiscovery, SkillFile } from './skills/types.js';
 
 // Os hooks genericos permitem auditar ou bloquear execucoes sem alterar as capabilities.
-export { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
+export {
+  HookableCapabilityRuntime,
+  RetryGuard,
+  stableSerialize,
+} from './capabilities/execution-hooks.js';
 export type {
   AfterExecuteHook,
   BeforeExecuteHook,
   CapabilityExecutionHookContext,
   CapabilityExecutionHooks,
   RetryGuardStatus,
-} from './capability-hooks.js';
+} from './capabilities/execution-hooks.js';
 
 // O provider e a sessao ficam publicos para configuracao e integracao com o OpenCode Go.
 export {
@@ -41,14 +44,14 @@ export {
   OPENCODE_GO_RESPONSES_PATH,
   OPENCODE_GO_RESPONSES_URL,
   withOpenCodeGoSession,
-} from './opencode-go.js';
+} from './providers/opencode-go.js';
 
 // Tipos publicos permitem configurar endpoints e modelos sem depender de tipos internos do SDK.
 export type {
   OpenCodeGoEndpoint,
   OpenCodeGoModelDefinition,
   OpenCodeGoProviderOptions,
-} from './opencode-go.js';
+} from './providers/opencode-go.js';
 
 export type {
   RuntimeContextUsage,

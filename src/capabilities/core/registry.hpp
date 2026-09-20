@@ -48,8 +48,6 @@ struct Capability {
   // Detalhes usados somente por Tools na materializacao e execucao.
   std::string description;
   StructuredValue schema;
-  // Instrucoes usadas somente por Skills na materializacao sob demanda.
-  std::string instructions;
 };
 
 // Mantem capabilities mutaveis em runtime e fornece snapshots ordenados.

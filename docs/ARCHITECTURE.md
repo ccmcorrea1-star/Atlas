@@ -5,8 +5,11 @@ Este documento define onde cada responsabilidade do Atlas deve ficar.
 ## Estrutura
 
 - [`src/`](../src/) — Runtime e API principal.
+- [`src/agent/`](../src/agent/) — Agent Atlas e orquestração de turnos.
 - [`src/prompts/`](../src/prompts/) — prompt padrão do Agent.
-- [`src/capabilities/`](../src/capabilities/) — capabilities nativas.
+- [`src/providers/`](../src/providers/) — adapters de provider do Agent.
+- [`src/capabilities/`](../src/capabilities/) — Tools executáveis, Registry, Executor e manifestos.
+- [`src/skills/`](../src/skills/) — SkillRegistry, loader, discovery e tipos de Skill.
 - [`clients/`](../clients/) — clientes desacoplados do Runtime.
 - [`protocol/`](../protocol/) — contratos compartilhados.
 - [`tests/`](../tests/) — testes.
@@ -28,7 +31,7 @@ Integrações externas devem ficar isoladas de regras internas.
 Código compartilhado entre linguagens deve depender de contratos definidos em [`protocol/`](../protocol/).
 
 A entrada comum de execução fica em [`src/capabilities/core/executor.cpp`](../src/capabilities/core/executor.cpp):
-ela valida `arguments` contra o schema antes de escolher `implementation.kind`. A fronteira
+ela valida `arguments` contra o schema da Tool antes de escolher `implementation.kind`. A fronteira
 `implementation.kind` continua permitindo runtimes executáveis independentes em C++, Rust e
 TypeScript. Runtimes C++ usam [`runtime/executable`](../src/capabilities/runtime/executable/)
 como adaptador de protocolo e conectam o `run()` ao dispatch C++ da capability.
@@ -38,44 +41,49 @@ de processo. [`command_runner.cpp`](../src/capabilities/core/command_runner.cpp)
 camada comum de comandos, incluindo captura de saída, timeout, código de saída e a distinção
 explícita de executável ausente.
 
-O bridge de capabilities em [`src/capabilities/runtime/bridge/`](../src/capabilities/runtime/bridge/)
-é um processo residente iniciado sob demanda por [`NativeCapabilityRuntime`](../src/capability-runtime.ts).
-Ele mantém `Registry` e `Executor` vivos e atende múltiplas requisições NDJSON pelo mesmo stdin,
+O bridge em [`src/capabilities/runtime/bridge/`](../src/capabilities/runtime/bridge/)
+é um processo residente iniciado sob demanda por [`NativeCapabilityRuntime`](../src/capabilities/runtime-client.ts).
+Ele mantém o Registry de Tools, o Executor e o SkillRegistry vivos e atende múltiplas requisições NDJSON pelo mesmo stdin,
 correlacionadas por `request_id`. O cliente TypeScript reutiliza o processo enquanto o runtime
 existir, reinicia após crash/EOF e preserva o streaming de `execution.output.delta`. Os runtimes
 individuais das capabilities continuam sendo processos por execução.
 
-A extensão transversal de execução fica em [`src/capability-hooks.ts`](../src/capability-hooks.ts):
-[`HookableCapabilityRuntime`](../src/capability-hooks.ts) decora qualquer `CapabilityRuntime` e
+A extensão transversal de execução fica em [`src/capabilities/execution-hooks.ts`](../src/capabilities/execution-hooks.ts):
+[`HookableCapabilityRuntime`](../src/capabilities/execution-hooks.ts) decora qualquer `CapabilityRuntime` e
 aplica os pontos `before_execute` e `after_execute` sem alterar o contrato das capabilities.
-[`RetryGuard`](../src/capability-hooks.ts) usa esses hooks para bloquear, dentro do mesmo turno,
+[`RetryGuard`](../src/capabilities/execution-hooks.ts) usa esses hooks para bloquear, dentro do mesmo turno,
 uma chamada idêntica (mesmo id, target e argumentos normalizados) depois de uma falha. O guard é
-criado por turno em [`runAtlas`](../src/atlas.ts) e não deve ser implementado dentro das tools.
+criado por turno em [`runAtlas`](../src/agent/atlas.ts) e não deve ser implementado dentro das tools.
 
 ## Tools e Skills
 
-O modelo público separa definições executáveis e procedurais:
+O modelo interno separa definições executáveis e procedurais:
 
 - **Tool** possui `schema` e `implementation`, pode ser materializada como Function Tool
-  e é a única capacidade aceita por `execute`.
-- **Skill** possui apenas identidade, resumo e instruções procedurais. Seu conteúdo vem de
-  `SKILL.md` e não é executável pelo Runtime.
+  e é o único recurso aceito por `execute`. O Registry de Tools não conhece Skills.
+- **Skill** possui metadados, instruções, a origem do `SKILL.md` e arquivos auxiliares
+  materializáveis. Ela nunca passa pelo Executor ou pelos hooks de execução.
 
-[`discover`](../src/atlas.ts) retorna somente `id`, `type` e `summary` para ambos os tipos.
-[`list_tools`](../src/atlas.ts) retorna somente Tools. A Function Tool `skill({ id })`
-materializa as instruções completas somente quando o Agent escolhe uma Skill; assim o
-conteúdo não entra no contexto por existir no disco.
+O Runtime compõe [`ToolDiscovery`](../src/capabilities/core/discovery.hpp) e
+[`SkillDiscovery`](../src/skills/discovery.hpp) em um resultado unificado.
+[`discover`](../src/agent/atlas.ts) retorna somente `id`, `type` e `summary` para ambos os tipos.
+[`list_tools`](../src/agent/atlas.ts) retorna somente Tools. A Function Tool `skill({ id })`
+materializa instruções e origem somente quando o Agent escolhe uma Skill. `skill({ id, path })`
+também carrega, sob demanda, um arquivo em `references/`, `scripts/`, `templates/` ou `assets/`.
+Assim, nenhum conteúdo entra no contexto por existir no disco.
 
-Skills são carregadas pelo bridge a partir destes locais, nesta ordem de precedência:
+Skills são carregadas pelo [`SkillLoader`](../src/skills/loader.hpp) a partir destes locais.
+O [`SkillRegistry`](../src/skills/registry.hpp) aplica explicitamente a precedência, sem
+usar mensagens de erro de duplicidade como mecanismo de seleção:
 
-- `.atlas/skills/<name>/SKILL.md`
-- `~/.config/atlas/skills/<name>/SKILL.md`
-- `.agents/skills/<name>/SKILL.md` (compatibilidade)
+1. `.atlas/skills/<name>/SKILL.md`
+2. `~/.config/atlas/skills/<name>/SKILL.md`
+3. `.agents/skills/<name>/SKILL.md` (compatibilidade)
 
 O `SKILL.md` exige frontmatter com `name` e `description`; `name` é o id da Skill,
 `description` é o resumo de discovery e o restante do arquivo são suas instruções.
-O fluxo esperado é `discover -> skill -> execute` para combinar a Skill carregada com as
-Tools necessárias.
+O fluxo esperado é `discover -> skill -> execute`: a Skill orienta o Agent e somente as
+Tools escolhidas são executadas.
 
 Antes de criar um novo módulo, verifique se a responsabilidade pertence a um módulo existente.
 

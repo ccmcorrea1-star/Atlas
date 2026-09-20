@@ -6,9 +6,8 @@ import type {
   CapabilityRuntime,
   CapabilityToolListRequest,
   CapabilityToolListResult,
-  SkillDefinition,
   ToolDefinition,
-} from './capability-runtime.js';
+} from './runtime-client.js';
 
 export type CapabilityExecutionHookContext = {
   id: string;
@@ -85,10 +84,6 @@ export class HookableCapabilityRuntime implements CapabilityRuntime {
 
   public getDefinition(id: string): Promise<ToolDefinition | undefined> {
     return this.runtime.getDefinition(id);
-  }
-
-  public getSkill(id: string): Promise<SkillDefinition | undefined> {
-    return this.runtime.getSkill(id);
   }
 
   // Repassa o encerramento para o runtime decorado, quando ele for persistente.

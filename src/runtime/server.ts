@@ -15,7 +15,7 @@ import {
   OPENCODE_GO_MODELS,
   OPENCODE_GO_PROVIDER,
   type OpenCodeGoModelDefinition,
-} from '../opencode-go.js';
+} from '../providers/opencode-go.js';
 import {
   parseRuntimeMessage,
   runtimeErrorEvent,

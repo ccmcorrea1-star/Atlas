@@ -39,11 +39,10 @@ Capability descriptor(
       .summary = "capability de teste",
       .parent = std::nullopt,
       .aliases = {},
-      .implementation = {std::move(kind), std::move(entrypoint)},
-      .description = {},
-      .schema = {},
-      .instructions = {},
-  };
+       .implementation = {std::move(kind), std::move(entrypoint)},
+       .description = {},
+       .schema = {},
+   };
 }
 
 const StructuredValue* outputField(const ExecutionResult& result, std::string_view name) {
@@ -124,18 +123,11 @@ void testGroupIsNotExecutable() {
       "group execution should be rejected by type");
 }
 
-void testSkillIsNotExecutable() {
+void testSkillDoesNotEnterToolRegistry() {
   Registry registry;
   Capability skill = descriptor("process.procedure", "native", "not-used");
   skill.type = "skill";
-  skill.implementation = {};
-  require(registry.registerCapability(std::move(skill)), "skill should be registerable");
-
-  const ExecutionResult result = Executor(registry).execute("process.procedure", "local", {});
-  require(result.status == ExecutionStatus::failed, "a skill should not be executable");
-  require(
-      result.error == "capability 'process.procedure' of type 'skill' is not executable",
-      "skill execution should be rejected by type");
+  require(!registry.registerCapability(std::move(skill)), "a Skill should not enter the Tool Registry");
 }
 
 void testMissingCapability() {
@@ -274,7 +266,7 @@ void testInvalidImplementationIsNotRunnable() {
 int main() {
   testShellExecution();
   testGroupIsNotExecutable();
-  testSkillIsNotExecutable();
+  testSkillDoesNotEnterToolRegistry();
   testMissingCapability();
   testUnsupportedKinds();
   testInvalidEntrypoint();

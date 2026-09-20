@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 
-import type { CapabilityRuntime, ToolDefinition } from '../../src/capability-runtime.js';
+import type { CapabilityRuntime, ToolDefinition } from '../../src/capabilities/runtime-client.js';
 import { runAtlas } from '../../src/index.js';
 
 type RequestBody = Record<string, unknown>;
@@ -179,7 +179,9 @@ test('materializes core capabilities as direct tools from the registry', async (
       },
     ],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
-    getSkill: async () => undefined,
+    getSkill: async () => {
+      throw new Error('execute must not query the SkillRegistry');
+    },
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
       return { target, status: 'success', error: '', output: { content: 'conteudo real' } };
@@ -252,6 +254,8 @@ test('discovers Skills without instructions and materializes them on demand', as
     type: 'skill' as const,
     summary: 'publicar uma versão com validações',
     instructions: '1. Use git.status.\n2. Execute the release checks.\n',
+    source: '/workspace/.atlas/skills/release/SKILL.md',
+    files: [],
   };
   const capabilityRuntime: CapabilityRuntime = {
     discover: async () => [
@@ -406,7 +410,7 @@ test('materializes web.search and web.fetch as direct tools', async () => {
 });
 
 test('exposes every core capability and keeps the base tools in the same payload', async () => {
-  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const { NativeCapabilityRuntime } = await import('../../src/capabilities/runtime-client.js');
   const capabilityRuntime = new NativeCapabilityRuntime();
   const server = await startCapabilityAgentServer();
 
@@ -424,7 +428,7 @@ test('exposes every core capability and keeps the base tools in the same payload
       [...materializedToolNames, ...baseToolNames],
     );
 
-    // Schemas reais do Registry, sem copia manual em src/atlas.ts.
+    // Schemas reais do Registry, sem copia manual no Agent.
     const readTool = tools(firstRequest).find((tool) => tool.name === 'filesystem_read');
     assert.ok(readTool);
     const readParameters = readTool.parameters as RequestBody;
@@ -448,7 +452,7 @@ test('exposes every core capability and keeps the base tools in the same payload
 
 test('discovers, describes, and executes shell.exec through base tools', async () => {
   const server = await startCapabilityAgentServer();
-  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const { NativeCapabilityRuntime } = await import('../../src/capabilities/runtime-client.js');
   const capabilityRuntime = new NativeCapabilityRuntime();
 
   try {
@@ -587,7 +591,7 @@ test('lists the complete tool catalog and filters tools by group', async () => {
 });
 
 test('forwards streamed output from the native shell capability', async () => {
-  const { NativeCapabilityRuntime } = await import('../../src/capability-runtime.js');
+  const { NativeCapabilityRuntime } = await import('../../src/capabilities/runtime-client.js');
   const runtime = new NativeCapabilityRuntime();
   try {
     const events: Array<{ channel: string; delta: string }> = [];

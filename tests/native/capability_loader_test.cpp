@@ -1,6 +1,9 @@
 #include "../../src/capabilities/core/discovery.hpp"
 #include "../../src/capabilities/core/loader.hpp"
 #include "../../src/capabilities/core/registry.hpp"
+#include "../../src/skills/discovery.hpp"
+#include "../../src/skills/loader.hpp"
+#include "../../src/skills/registry.hpp"
 
 #include <cerrno>
 #include <cstdlib>
@@ -20,6 +23,10 @@ using atlas::capabilities::Discovery;
 using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
 using atlas::capabilities::StructuredValue;
+using atlas::skills::SkillDiscovery;
+using atlas::skills::SkillLoader;
+using atlas::skills::SkillRegistry;
+using atlas::skills::SkillSource;
 
 void require(bool condition, std::string_view message) {
   if (!condition) {
@@ -154,6 +161,7 @@ void testBridge(const std::filesystem::path& directory) {
       "{\"operation\":\"get_skill\",\"id\":\"bridge.local\",\"request_id\":\"local\"}\n"
       "{\"operation\":\"get_skill\",\"id\":\"bridge.global\",\"request_id\":\"global\"}\n"
       "{\"operation\":\"get_skill\",\"id\":\"bridge.agent\",\"request_id\":\"agent\"}\n"
+      "{\"operation\":\"discover\",\"query\":\"skill local\",\"request_id\":\"discover\"}\n"
       "{\"operation\":\"execute\",\"id\":\"bridge.local\",\"target\":\"local\",\"request_id\":\"execute\"}\n";
   const std::string output = runBridge(executable, project, home, input);
 
@@ -166,7 +174,7 @@ void testBridge(const std::filesystem::path& directory) {
     require(parsed.has_value(), "bridge response should be valid JSON");
     responses.push_back(parsed.value());
   }
-  require(responses.size() == 4, "bridge should return one response per request");
+  require(responses.size() == 5, "bridge should return one response per request");
 
   for (std::size_t index = 0; index < 3; ++index) {
     const auto* response = std::get_if<StructuredValue::Object>(&responses[index].value);
@@ -180,19 +188,26 @@ void testBridge(const std::filesystem::path& directory) {
         "materialized skill should include instructions");
   }
 
+  const auto* discoveryResponse = std::get_if<StructuredValue::Object>(&responses[3].value);
+  require(discoveryResponse != nullptr, "unified discovery response should be an object");
+  require(objectField(*discoveryResponse, "results") != nullptr, "discovery should include Skill results");
+
   const auto* execution = std::get_if<StructuredValue::Object>(&responses.back().value);
   require(execution != nullptr, "execute response should be an object");
   const auto* error = objectField(*execution, "error");
   require(
       error != nullptr && std::get_if<std::string>(&error->value) != nullptr &&
-          std::get_if<std::string>(&error->value)->find("type 'skill' is not executable") != std::string::npos,
-      "bridge should reject skill execution before the executor");
+           std::get_if<std::string>(&error->value)->find("is not registered") != std::string::npos,
+       "bridge should not send a Skill to the executor");
 }
 
 void testLoader(const std::filesystem::path& directory) {
   Registry registry;
   Loader loader(registry);
   Discovery discovery(registry);
+  SkillRegistry skillRegistry;
+  SkillLoader skillLoader(skillRegistry);
+  SkillDiscovery skillDiscovery(skillRegistry);
 
   const std::filesystem::path groupPath = directory / "group" / "group.json";
   std::filesystem::create_directories(groupPath.parent_path());
@@ -222,14 +237,14 @@ void testLoader(const std::filesystem::path& directory) {
   writeManifest(
       localSkill,
       skillDocument("tests.procedure", "combina ferramentas", "Combine the tools in order."));
-  require(loader.loadSkill(localSkill), "valid SKILL.md should load");
-  const auto loadedSkill = registry.get("tests.procedure");
+  require(skillLoader.load(localSkill, SkillSource::project), "valid SKILL.md should load");
+  const auto loadedSkill = skillRegistry.get("tests.procedure");
   require(
-      loadedSkill.has_value() && loadedSkill->type == "skill" &&
+      loadedSkill.has_value() &&
           loadedSkill->summary == "combina ferramentas" &&
           loadedSkill->instructions == "Combine the tools in order.",
       "skill frontmatter and instructions should be materialized");
-  const auto discoveredSkill = discovery.getSkill("tests.procedure");
+  const auto discoveredSkill = skillDiscovery.getSkill("tests.procedure");
   require(
       discoveredSkill.has_value() && discoveredSkill->instructions == "Combine the tools in order.",
       "loaded skill should be available through skill discovery");
@@ -238,14 +253,38 @@ void testLoader(const std::filesystem::path& directory) {
   const std::filesystem::path agentSkills = directory / ".agents" / "skills";
   const std::filesystem::path globalSkill = globalSkills / "global" / "SKILL.md";
   const std::filesystem::path agentSkill = agentSkills / "agent" / "SKILL.md";
+  const std::filesystem::path globalOverride = globalSkills / "procedure" / "SKILL.md";
+  const std::filesystem::path agentOverride = agentSkills / "procedure" / "SKILL.md";
   std::filesystem::create_directories(globalSkill.parent_path());
   std::filesystem::create_directories(agentSkill.parent_path());
+  std::filesystem::create_directories(globalOverride.parent_path());
+  std::filesystem::create_directories(agentOverride.parent_path());
   writeManifest(globalSkill, skillDocument("tests.global", "skill global", "Global instructions."));
   writeManifest(agentSkill, skillDocument("tests.agent", "skill agent", "Agent instructions."));
-  require(loader.scanSkills(globalSkills), "global skills should scan");
-  require(loader.scanSkills(agentSkills), "agent skills should scan");
-  require(registry.get("tests.global").has_value(), "global skill should be registered");
-  require(registry.get("tests.agent").has_value(), "agent skill should be registered");
+  writeManifest(
+      globalOverride,
+      skillDocument("tests.procedure", "global override", "Global instructions."));
+  writeManifest(
+      agentOverride,
+      skillDocument("tests.procedure", "agent override", "Agent instructions."));
+  require(skillLoader.scan(globalSkills, SkillSource::global), "global skills should scan");
+  require(skillLoader.scan(agentSkills, SkillSource::agents), "agent skills should scan");
+  require(skillRegistry.get("tests.global").has_value(), "global skill should be registered");
+  require(skillRegistry.get("tests.agent").has_value(), "agent skill should be registered");
+  const auto precedence = skillRegistry.get("tests.procedure");
+  require(
+      precedence.has_value() && precedence->summary == "combina ferramentas" &&
+          skillRegistry.sourceOf("tests.procedure") == SkillSource::project,
+      "project Skills should have precedence over global and agent Skills");
+
+  const std::filesystem::path auxiliary = localSkills / "procedure" / "references" / "guide.md";
+  std::filesystem::create_directories(auxiliary.parent_path());
+  writeManifest(auxiliary, "reference content");
+  const auto materialized = skillDiscovery.getSkill("tests.procedure", "references/guide.md");
+  require(
+      materialized.has_value() && materialized->files.size() == 1 &&
+          materialized->files.front().content == "reference content",
+      "skill discovery should materialize an auxiliary file on demand");
 
   const auto catalog = discovery.listTools();
   require(

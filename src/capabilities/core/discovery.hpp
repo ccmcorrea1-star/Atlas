@@ -29,18 +29,16 @@ struct ToolListResult {
   std::optional<std::string> group;
 };
 
-// Consulta o Registry sem executar a capability encontrada.
-class Discovery {
+// Consulta o Registry de Tools sem executar a Tool encontrada.
+class ToolDiscovery {
  public:
-  explicit Discovery(const Registry& registry) : registry_(registry) {}
+  explicit ToolDiscovery(const Registry& registry) : registry_(registry) {}
 
   std::vector<DiscoveryResult> discover(const DiscoveryRequest& request = {}) const;
   std::vector<ToolListResult> listTools(
       std::optional<std::string_view> group = std::nullopt) const;
   // Carrega o contrato de uma Tool somente quando o Agent escolhe uma Tool.
   std::optional<Capability> getDefinition(std::string_view id) const;
-  // Carrega as instrucoes completas de uma Skill sob demanda.
-  std::optional<Capability> getSkill(std::string_view id) const;
 
  private:
   static std::vector<DiscoveryResult> project(const std::vector<Capability>& capabilities);
@@ -48,5 +46,7 @@ class Discovery {
 
   const Registry& registry_;
 };
+
+using Discovery = ToolDiscovery;
 
 }  // namespace atlas::capabilities

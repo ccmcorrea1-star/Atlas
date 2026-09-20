@@ -349,13 +349,15 @@ bool Registry::isValid(const Capability& capability) {
       capability.id.find('\0') != std::string::npos ||
       capability.type.find('\0') != std::string::npos || capability.summary.find('\0') != std::string::npos ||
       capability.description.find('\0') != std::string::npos ||
-      capability.instructions.find('\0') != std::string::npos ||
       capability.implementation.kind.find('\0') != std::string::npos ||
       capability.implementation.entrypoint.find('\0') != std::string::npos) {
     return false;
   }
   if (capability.parent.has_value() &&
       (capability.parent->empty() || capability.parent->find('\0') != std::string::npos)) {
+    return false;
+  }
+  if (capability.type != "tool" && capability.type != "group") {
     return false;
   }
 
@@ -371,9 +373,6 @@ bool Registry::isValid(const Capability& capability) {
     aliases.push_back(alias);
   }
   if (capability.type == "group") {
-    return capability.implementation.kind.empty() && capability.implementation.entrypoint.empty();
-  }
-  if (capability.type == "skill") {
     return capability.implementation.kind.empty() && capability.implementation.entrypoint.empty();
   }
   return !capability.implementation.empty();

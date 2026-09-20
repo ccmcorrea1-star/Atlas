@@ -26,6 +26,8 @@ const skill = {
   type: 'skill',
   summary: 'fake skill',
   instructions: 'Use fake.tool, then report the result.',
+  source: '/tmp/fake.skill/SKILL.md',
+  files: [],
 };
 
 function write(payload) {
