@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 
-import type { CapabilityDefinition, CapabilityRuntime } from '../../src/capability-runtime.js';
+import type { CapabilityRuntime, ToolDefinition } from '../../src/capability-runtime.js';
 import { runAtlas } from '../../src/index.js';
 
 type RequestBody = Record<string, unknown>;
@@ -148,10 +148,10 @@ const materializedToolNames = [
   'web_search',
   'web_fetch',
 ];
-const baseToolNames = ['list_tools', 'discover', 'describe', 'execute'];
+const baseToolNames = ['list_tools', 'discover', 'skill', 'describe', 'execute'];
 
 test('materializes core capabilities as direct tools from the registry', async () => {
-  const definition: CapabilityDefinition = {
+  const definition: ToolDefinition = {
     id: 'filesystem.read',
     type: 'tool',
     summary: 'ler o conteudo de um arquivo',
@@ -171,7 +171,6 @@ test('materializes core capabilities as direct tools from the registry', async (
   const capabilityRuntime: CapabilityRuntime = {
     discover: async () => [],
     listTools: async () => [
-      { id: 'filesystem', type: 'group', summary: 'arquivos' },
       {
         id: definition.id,
         type: definition.type,
@@ -180,6 +179,7 @@ test('materializes core capabilities as direct tools from the registry', async (
       },
     ],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    getSkill: async () => undefined,
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
       return { target, status: 'success', error: '', output: { content: 'conteudo real' } };
@@ -246,8 +246,83 @@ test('materializes core capabilities as direct tools from the registry', async (
   }
 });
 
+test('discovers Skills without instructions and materializes them on demand', async () => {
+  const skill = {
+    id: 'release.procedure',
+    type: 'skill' as const,
+    summary: 'publicar uma versão com validações',
+    instructions: '1. Use git.status.\n2. Execute the release checks.\n',
+  };
+  const capabilityRuntime: CapabilityRuntime = {
+    discover: async () => [
+      { id: 'shell.exec', type: 'tool', summary: 'executar comandos' },
+      { id: skill.id, type: skill.type, summary: skill.summary },
+    ],
+    listTools: async () => [],
+    getDefinition: async () => undefined,
+    getSkill: async (id) => (id === skill.id ? skill : undefined),
+    execute: async () => ({ target: 'local', status: 'success', error: '' }),
+  };
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber === 1
+        ? [
+            {
+              id: 'function-call-discover-skill',
+              type: 'function_call',
+              status: 'completed',
+              call_id: 'discover-skill-call',
+              name: 'discover',
+              arguments: JSON.stringify({ query: 'publicar versão' }),
+            },
+          ]
+        : requestNumber === 2
+          ? [
+              {
+                id: 'function-call-skill',
+                type: 'function_call',
+                status: 'completed',
+                call_id: 'skill-call',
+                name: 'skill',
+                arguments: JSON.stringify({ id: skill.id }),
+              },
+            ]
+          : [
+              {
+                id: 'final-skill-message',
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Instruções carregadas.', annotations: [] }],
+              },
+            ];
+    return responseEnvelope(requestNumber, input, output);
+  });
+
+  try {
+    const result = await runAtlas('Como publico uma versão?', {
+      apiKey: 'atlas-skills-test-key',
+      baseURL: server.baseURL,
+      conversationId: 'skills-progressive-disclosure-conversation',
+      capabilityRuntime,
+    });
+
+    assert.equal(result.finalOutput, 'Instruções carregadas.');
+    assert.equal(server.requests.length, 3);
+    assert.deepEqual(
+      tools(server.requests[0] as RequestBody).map((tool) => tool.name),
+      baseToolNames,
+    );
+    assert.doesNotMatch(JSON.stringify(server.requests[1]?.input), /Use git\.status/);
+    assert.match(JSON.stringify(server.requests[2]?.input), /Use git\.status/);
+    assert.match(JSON.stringify(server.requests[2]?.input), /release\.procedure/);
+  } finally {
+    await server.close();
+  }
+});
+
 test('materializes web.search and web.fetch as direct tools', async () => {
-  const definitions: CapabilityDefinition[] = [
+  const definitions: ToolDefinition[] = [
     {
       id: 'web.search',
       type: 'tool',
@@ -279,6 +354,7 @@ test('materializes web.search and web.fetch as direct tools', async () => {
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async (id) => definitionsById.get(id),
+    getSkill: async () => undefined,
     execute: async (id, target, arguments_) => {
       executed.push(`${id}:${JSON.stringify(arguments_)}`);
       return { target, status: 'success', error: '', output: { results: [] } };
@@ -457,13 +533,11 @@ test('lists the complete tool catalog and filters tools by group', async () => {
     listTools: async (request = {}) => {
       calls.push(request);
       return request.group === undefined
-        ? [
-            { id: 'shell', type: 'group', summary: 'shell tools' },
-            { id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' },
-          ]
+        ? [{ id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' }]
         : [{ id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' }];
     },
     getDefinition: async () => undefined,
+    getSkill: async () => undefined,
     execute: async () => ({ target: 'local', status: 'ok', error: '' }),
   };
   const server = await startCapabilityAgentServer((requestNumber, input) => {
@@ -505,7 +579,7 @@ test('lists the complete tool catalog and filters tools by group', async () => {
     assert.match(JSON.stringify(server.requests[2]?.input), /shell\.exec/);
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
   } finally {
     await server.close();
@@ -546,7 +620,7 @@ test('forwards streamed output from the native shell capability', async () => {
 });
 
 test('keeps non-materialized capability schemas out of tools across conversation turns', async () => {
-  const definition: CapabilityDefinition = {
+  const definition: ToolDefinition = {
     id: 'sandbox.run',
     type: 'tool',
     summary: 'executa um programa em sandbox',
@@ -567,10 +641,10 @@ test('keeps non-materialized capability schemas out of tools across conversation
       { id: definition.id, type: definition.type, summary: definition.summary },
     ],
     listTools: async () => [
-      { id: 'process', type: 'group', summary: 'ferramentas de processo' },
       { id: definition.id, type: definition.type, summary: definition.summary, group: 'process' },
     ],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    getSkill: async () => undefined,
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
       return {
@@ -642,11 +716,11 @@ test('keeps non-materialized capability schemas out of tools across conversation
     assert.equal(server.requests.length, 4);
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
     assert.deepEqual(
       tools(server.requests[2] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
     assert.doesNotMatch(JSON.stringify(tools(server.requests[2] as RequestBody)), /sandbox\.run/);
     assert.deepEqual(executed, [
@@ -658,7 +732,7 @@ test('keeps non-materialized capability schemas out of tools across conversation
 });
 
 test('dispatches different capability IDs through the generic execute tool', async () => {
-  const definitions: CapabilityDefinition[] = [
+  const definitions: ToolDefinition[] = [
     {
       id: 'foo.bar',
       type: 'tool',
@@ -703,6 +777,7 @@ test('dispatches different capability IDs through the generic execute tool', asy
     listTools: async () =>
       definitions.map(({ id, type, summary }) => ({ id, type, summary, group: 'foo' })),
     getDefinition: async (id) => definitionsById.get(id),
+    getSkill: async () => undefined,
     execute: async (id, target, arguments_) => {
       executed.push({ id, arguments_ });
       return { target, status: 'ok', error: '', capability: id };
@@ -772,15 +847,15 @@ test('dispatches different capability IDs through the generic execute tool', asy
     assert.equal(result.finalOutput, 'Capabilities executadas.');
     assert.deepEqual(
       tools(server.requests[0] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
     assert.deepEqual(
       tools(server.requests[2] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
     assert.deepEqual(
       tools(server.requests[4] as RequestBody).map((tool) => tool.name),
-      ['list_tools', 'discover', 'describe', 'execute'],
+      baseToolNames,
     );
     assert.match(JSON.stringify(server.requests[2]?.input), /description/);
     assert.deepEqual(

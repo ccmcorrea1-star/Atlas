@@ -21,6 +21,12 @@ const definition = {
   description: 'fake tool used by the persistent bridge tests',
   schema: { type: 'object', properties: {} },
 };
+const skill = {
+  id: 'fake.skill',
+  type: 'skill',
+  summary: 'fake skill',
+  instructions: 'Use fake.tool, then report the result.',
+};
 
 function write(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -46,7 +52,12 @@ input.on('line', (line) => {
 
   if (request.operation === 'discover') {
     const reply = () =>
-      respond({ results: [{ id: 'fake.tool', type: 'tool', summary: 'fake tool' }] });
+      respond({
+        results: [
+          { id: 'fake.tool', type: 'tool', summary: 'fake tool' },
+          { id: 'fake.skill', type: 'skill', summary: 'fake skill' },
+        ],
+      });
     if (discoverDelay > 0) {
       setTimeout(reply, discoverDelay);
     } else {
@@ -62,6 +73,11 @@ input.on('line', (line) => {
 
   if (request.operation === 'get_definition') {
     respond({ definition: request.id === 'missing.tool' ? null : definition });
+    return;
+  }
+
+  if (request.operation === 'get_skill') {
+    respond({ skill: request.id === skill.id ? skill : null });
     return;
   }
 

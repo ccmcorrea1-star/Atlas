@@ -396,6 +396,28 @@ bool requiredString(
   return true;
 }
 
+std::string trim(std::string_view value) {
+  std::size_t first = 0;
+  while (first < value.size() && std::isspace(static_cast<unsigned char>(value[first]))) {
+    ++first;
+  }
+  std::size_t last = value.size();
+  while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1]))) {
+    --last;
+  }
+  return std::string(value.substr(first, last - first));
+}
+
+std::string frontmatterValue(std::string_view value) {
+  std::string result = trim(value);
+  if (result.size() >= 2 &&
+      ((result.front() == '"' && result.back() == '"') ||
+       (result.front() == '\'' && result.back() == '\''))) {
+    result = result.substr(1, result.size() - 2);
+  }
+  return result;
+}
+
 // Converte o JSON do manifesto para o valor estruturado preservado no Registry.
 StructuredValue toStructuredValue(const JsonValue& value) {
   switch (value.kind) {
@@ -591,6 +613,99 @@ bool Loader::parseManifest(
   }
 }
 
+bool Loader::parseSkill(
+    const std::filesystem::path& path,
+    Capability& capability,
+    std::string& error) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "cannot open skill";
+    return false;
+  }
+  const std::string contents{
+      std::istreambuf_iterator<char>(file),
+      std::istreambuf_iterator<char>()};
+  if (file.bad()) {
+    error = "cannot read skill";
+    return false;
+  }
+
+  const std::size_t firstLineEnd = contents.find('\n');
+  const std::string firstLine = trim(
+      std::string_view(contents).substr(0, firstLineEnd == std::string::npos ? contents.size() : firstLineEnd));
+  if (firstLine != "---" || firstLineEnd == std::string::npos) {
+    error = "skill must start with YAML frontmatter";
+    return false;
+  }
+
+  bool hasName = false;
+  bool hasDescription = false;
+  std::size_t position = firstLineEnd + 1;
+  std::size_t instructionsStart = std::string::npos;
+  while (position <= contents.size()) {
+    const std::size_t lineEnd = contents.find('\n', position);
+    std::string_view line(contents.data() + position, lineEnd == std::string::npos
+        ? contents.size() - position
+        : lineEnd - position);
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1);
+    }
+    if (trim(line) == "---") {
+      instructionsStart = lineEnd == std::string::npos ? contents.size() : lineEnd + 1;
+      break;
+    }
+
+    const std::string metadata = trim(line);
+    if (!metadata.empty()) {
+      const std::size_t separator = metadata.find(':');
+      if (separator == std::string::npos) {
+        error = "invalid skill frontmatter entry";
+        return false;
+      }
+      const std::string key = trim(std::string_view(metadata).substr(0, separator));
+      const std::string value = frontmatterValue(std::string_view(metadata).substr(separator + 1));
+      if (key == "name") {
+        if (hasName || value.empty()) {
+          error = "frontmatter field 'name' must be present once and non-empty";
+          return false;
+        }
+        capability.id = value;
+        hasName = true;
+      } else if (key == "description") {
+        if (hasDescription || value.empty()) {
+          error = "frontmatter field 'description' must be present once and non-empty";
+          return false;
+        }
+        capability.summary = value;
+        capability.description = value;
+        hasDescription = true;
+      }
+    }
+
+    if (lineEnd == std::string::npos) {
+      break;
+    }
+    position = lineEnd + 1;
+  }
+
+  if (instructionsStart == std::string::npos) {
+    error = "skill frontmatter is not closed";
+    return false;
+  }
+  if (!hasName || !hasDescription) {
+    error = "skill frontmatter requires 'name' and 'description'";
+    return false;
+  }
+  if (capability.id.find('\0') != std::string::npos || capability.summary.find('\0') != std::string::npos) {
+    error = "skill frontmatter cannot contain NUL bytes";
+    return false;
+  }
+
+  capability.type = "skill";
+  capability.instructions = contents.substr(instructionsStart);
+  return true;
+}
+
 std::filesystem::path Loader::sourcePath(const std::filesystem::path& path) {
   std::error_code error;
   const std::filesystem::path absolute = std::filesystem::absolute(path, error);
@@ -606,8 +721,9 @@ bool Loader::load(const std::filesystem::path& path) {
   last_error_.clear();
   Capability capability;
   std::string error;
-  if (!parseManifest(path, capability, error)) {
-    return fail("failed to load manifest '" + path.string() + "': " + error);
+  const bool skill = path.filename() == "SKILL.md";
+  if (!(skill ? parseSkill(path, capability, error) : parseManifest(path, capability, error))) {
+    return fail("failed to load " + std::string(skill ? "skill" : "manifest") + " '" + path.string() + "': " + error);
   }
   // Entry points executaveis sao relativos ao manifesto que os declara.
   if (capability.implementation.kind == "executable" &&
@@ -624,6 +740,13 @@ bool Loader::load(const std::filesystem::path& path) {
   }
   sources_[id] = sourcePath(path);
   return true;
+}
+
+bool Loader::loadSkill(const std::filesystem::path& path) {
+  if (path.filename() != "SKILL.md") {
+    return fail("skill path must point to 'SKILL.md'");
+  }
+  return load(path);
 }
 
 bool Loader::unload(std::string_view id) {
@@ -647,7 +770,8 @@ bool Loader::reload(std::string_view id) {
 
   Capability capability;
   std::string error;
-  if (!parseManifest(source->second, capability, error)) {
+  const bool skill = source->second.filename() == "SKILL.md";
+  if (!(skill ? parseSkill(source->second, capability, error) : parseManifest(source->second, capability, error))) {
     return fail("failed to reload capability '" + std::string(id) + "': " + error);
   }
   if (capability.implementation.kind == "executable" &&
@@ -697,6 +821,63 @@ bool Loader::scan(const std::filesystem::path& directory) {
   bool success = true;
   for (const std::filesystem::path& manifest : manifests) {
     if (!load(manifest)) {
+      success = false;
+      if (firstError.empty()) {
+        firstError = last_error_;
+      }
+    }
+  }
+  if (!success) {
+    last_error_ = std::move(firstError);
+  }
+  return success;
+}
+
+bool Loader::scanSkills(const std::filesystem::path& directory) {
+  last_error_.clear();
+  std::error_code errorCode;
+  if (!std::filesystem::is_directory(directory, errorCode)) {
+    return fail("cannot scan skills '" + directory.string() + "': directory does not exist");
+  }
+  if (errorCode) {
+    return fail("cannot scan skills '" + directory.string() + "': " + errorCode.message());
+  }
+
+  std::vector<std::filesystem::path> skills;
+  std::filesystem::directory_iterator iterator(directory, errorCode);
+  if (errorCode) {
+    return fail("cannot scan skills '" + directory.string() + "': " + errorCode.message());
+  }
+  const std::filesystem::directory_iterator end;
+  while (iterator != end) {
+    std::error_code entryError;
+    if (iterator->is_directory(entryError)) {
+      const std::filesystem::path skill = iterator->path() / "SKILL.md";
+      std::error_code skillError;
+      if (std::filesystem::is_regular_file(skill, skillError)) {
+        skills.push_back(skill);
+      } else if (skillError) {
+        return fail("cannot inspect skill '" + skill.string() + "': " + skillError.message());
+      }
+    } else if (entryError) {
+      return fail("cannot inspect '" + iterator->path().string() + "': " + entryError.message());
+    }
+    iterator.increment(errorCode);
+    if (errorCode) {
+      return fail("cannot scan skills '" + directory.string() + "': " + errorCode.message());
+    }
+  }
+  std::sort(skills.begin(), skills.end());
+
+  std::string firstError;
+  bool success = true;
+  for (const std::filesystem::path& skill : skills) {
+    if (!loadSkill(skill)) {
+      // A raiz já carregada tem precedência sobre as seguintes.
+      if (last_error_.find("already registered") != std::string::npos) {
+        last_error_.clear();
+        continue;
+      }
       success = false;
       if (firstError.empty()) {
         firstError = last_error_;

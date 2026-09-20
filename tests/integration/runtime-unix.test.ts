@@ -16,13 +16,13 @@ const capabilityRuntime: CapabilityRuntime = {
   discover: async () => [],
   listTools: async () => [],
   getDefinition: async () => undefined,
+  getSkill: async () => undefined,
   execute: async () => ({ target: 'local', status: 'ok', error: '' }),
 };
 
 const shellCapabilityRuntime: CapabilityRuntime = {
   discover: async () => [{ id: 'shell.exec', type: 'tool', summary: 'execute a command' }],
   listTools: async () => [
-    { id: 'shell', type: 'group', summary: 'shell tools' },
     { id: 'shell.exec', type: 'tool', summary: 'execute a command', group: 'shell' },
   ],
   getDefinition: async (id) =>
@@ -43,6 +43,7 @@ const shellCapabilityRuntime: CapabilityRuntime = {
           },
         }
       : undefined,
+  getSkill: async () => undefined,
   execute: async (_id, target, arguments_) => {
     const failed = arguments_.command === 'false';
     return {
@@ -1104,6 +1105,7 @@ test('normalizes generic tool output before publishing tool.completed', async ()
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async (id) => (id === definition.id ? definition : undefined),
+    getSkill: async () => undefined,
     execute: async (_id, target, arguments_) => ({
       target,
       status: 'success',

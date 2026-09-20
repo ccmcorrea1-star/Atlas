@@ -19,6 +19,9 @@ class Loader {
   // Valida e registra o manifesto capability.json ou group.json indicado.
   bool load(const std::filesystem::path& path);
 
+  // Valida e registra o SKILL.md indicado.
+  bool loadSkill(const std::filesystem::path& path);
+
   // Remove do Registry o recurso identificado, sem executar a implementacao.
   bool unload(std::string_view id);
 
@@ -28,11 +31,18 @@ class Loader {
   // Procura capability.json recursivamente e carrega cada manifesto encontrado.
   bool scan(const std::filesystem::path& directory);
 
+  // Procura SKILL.md nas pastas diretas de um diretorio de skills.
+  bool scanSkills(const std::filesystem::path& directory);
+
   // Retorna a causa da ultima operacao que falhou.
   const std::string& lastError() const noexcept { return last_error_; }
 
  private:
   static bool parseManifest(
+      const std::filesystem::path& path,
+      Capability& capability,
+      std::string& error);
+  static bool parseSkill(
       const std::filesystem::path& path,
       Capability& capability,
       std::string& error);

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -111,6 +112,26 @@ void loadRegistry(const char* executable, Registry& registry) {
   if (!loader.scan(directory)) {
     throw std::runtime_error(loader.lastError());
   }
+
+  const std::filesystem::path project = std::filesystem::current_path();
+  const auto scanSkills = [&loader](const std::filesystem::path& root) {
+    std::error_code error;
+    if (!std::filesystem::is_directory(root, error)) {
+      if (error && error != std::errc::no_such_file_or_directory) {
+        throw std::runtime_error("cannot inspect skills directory '" + root.string() + "': " + error.message());
+      }
+      return;
+    }
+    if (!loader.scanSkills(root)) {
+      throw std::runtime_error(loader.lastError());
+    }
+  };
+
+  scanSkills(project / ".atlas" / "skills");
+  if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+    scanSkills(std::filesystem::path(home) / ".config" / "atlas" / "skills");
+  }
+  scanSkills(project / ".agents" / "skills");
 }
 
 void writeResponse(const StructuredValue::Object& response) {
@@ -196,6 +217,24 @@ StructuredValue::Object getDefinitionValue(
   };
 }
 
+StructuredValue::Object getSkillValue(
+    const Discovery& discovery,
+    const StructuredValue::Object& request) {
+  const std::string id = requiredString(request, "id");
+  const auto skill = discovery.getSkill(id);
+  if (!skill.has_value()) {
+    return StructuredValue::Object{{"skill", StructuredValue(nullptr)}};
+  }
+  return StructuredValue::Object{
+      {"skill", StructuredValue::Object{
+          {"id", skill->id},
+          {"type", skill->type},
+          {"summary", skill->summary},
+          {"instructions", skill->instructions},
+      }},
+  };
+}
+
 StructuredValue::Object executeValue(
     const Registry& registry,
     const Executor& executor,
@@ -215,6 +254,10 @@ StructuredValue::Object executeValue(
   const auto definition = registry.getDefinition(id);
   if (!definition.has_value()) {
     throw std::runtime_error("capability '" + id + "' is not registered");
+  }
+  if (definition->type != "tool") {
+    throw std::runtime_error(
+        "capability '" + id + "' of type '" + definition->type + "' is not executable");
   }
 
   const atlas::capabilities::ExecutionOutputCallback on_output =
@@ -265,6 +308,8 @@ void handleLine(
       response = discoveryValue(discovery, *request);
     } else if (operation == "get_definition") {
       response = getDefinitionValue(discovery, *request);
+    } else if (operation == "get_skill") {
+      response = getSkillValue(discovery, *request);
     } else if (operation == "execute") {
       response = executeValue(registry, executor, *request, requestId);
     } else {

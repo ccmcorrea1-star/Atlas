@@ -23,11 +23,11 @@ import { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capabi
 import type { AtlasConfig } from './config/index.js';
 import {
   createCapabilityRuntime,
-  type CapabilityDefinition,
   type CapabilityDiscoveryRequest,
   type CapabilityDiscoveryResult,
   type CapabilityExecutionOptions,
   type CapabilityRuntime,
+  type ToolDefinition,
 } from './capability-runtime.js';
 
 let instructionsCache: string | undefined;
@@ -189,14 +189,11 @@ function createRunner(options: OpenCodeGoProviderOptions): Runner {
 
 // As definicoes nao mudam durante o processo: o cache evita uma ida ao Registry
 // por turno, e cada turno ainda monta as tools sobre o runtime com hooks.
-const materializedDefinitionCache = new WeakMap<
-  CapabilityRuntime,
-  Promise<CapabilityDefinition[]>
->();
+const materializedDefinitionCache = new WeakMap<CapabilityRuntime, Promise<ToolDefinition[]>>();
 
 function loadMaterializedDefinitions(
   capabilityRuntime: CapabilityRuntime,
-): Promise<CapabilityDefinition[]> {
+): Promise<ToolDefinition[]> {
   const cached = materializedDefinitionCache.get(capabilityRuntime);
   if (cached !== undefined) {
     return cached;
@@ -213,9 +210,7 @@ function loadMaterializedDefinitions(
         return undefined;
       }
     }),
-  ).then((definitions) =>
-    definitions.filter((item): item is CapabilityDefinition => item !== undefined),
-  );
+  ).then((definitions) => definitions.filter((item): item is ToolDefinition => item !== undefined));
   materializedDefinitionCache.set(capabilityRuntime, loading);
   return loading;
 }
@@ -276,14 +271,14 @@ function executionTool(
   return {
     type: 'function',
     name: 'execute',
-    description: 'executa qualquer capability registrada pelo id e pelos argumentos fornecidos',
+    description: 'executa uma Tool registrada pelo id e pelos argumentos fornecidos',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'identificador exato da capability' },
+        id: { type: 'string', description: 'identificador exato da Tool' },
         arguments: {
           type: 'object',
-          description: 'argumentos definidos pelo schema da capability',
+          description: 'argumentos definidos pelo schema da Tool',
           additionalProperties: true,
         },
       },
@@ -303,6 +298,10 @@ function executionTool(
       if (arguments_ === undefined) {
         throw new Error('execute arguments must be a JSON object.');
       }
+      const skill = await capabilityRuntime.getSkill(id);
+      if (skill !== undefined) {
+        throw new Error(`execute accepts only registered Tools; "${id}" is a Skill.`);
+      }
       const executionId = details?.toolCall?.callId;
       const executionOptions: CapabilityExecutionOptions = {
         signal: details?.signal,
@@ -321,7 +320,7 @@ function executionTool(
 // Function Tool direta para uma capability do Registry: mesmo Executor,
 // hooks e validacao de schema do caminho generico, sem discover/describe.
 function capabilityFunctionTool(
-  definition: CapabilityDefinition,
+  definition: ToolDefinition,
   capabilityRuntime: CapabilityRuntime,
   onOutput?: (
     capabilityId: string,
@@ -375,7 +374,7 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   return {
     type: 'function',
     name: 'discover',
-    description: 'encontra capabilities utilizáveis sem executar uma capability',
+    description: 'encontra Tools e Skills utilizáveis sem executá-los',
     parameters,
     strict: false,
     needsApproval: async () => false,
@@ -411,11 +410,45 @@ function discoveryTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   };
 }
 
+function skillTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
+  return {
+    type: 'function',
+    name: 'skill',
+    description: 'carrega as instruções completas de uma Skill conhecida pelo id',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'identificador exato da Skill' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    } as FunctionTool['parameters'],
+    strict: false,
+    needsApproval: async () => false,
+    isEnabled: async () => true,
+    invoke: async (_runContext, input) => {
+      const request = parseObjectInput(input, 'skill');
+      if (Object.keys(request).some((key) => key !== 'id')) {
+        throw new Error('skill accepts only id.');
+      }
+      const id = request.id;
+      if (typeof id !== 'string' || !id) {
+        throw new Error('skill id must be a non-empty string.');
+      }
+      const definition = await capabilityRuntime.getSkill(id);
+      if (definition === undefined) {
+        throw new Error(`Skill "${id}" was not found.`);
+      }
+      return JSON.stringify(definition);
+    },
+  };
+}
+
 function listToolsTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   return {
     type: 'function',
     name: 'list_tools',
-    description: 'lista grupos e tools registradas, opcionalmente filtradas por grupo',
+    description: 'lista somente Tools registradas, opcionalmente filtradas por grupo',
     parameters: {
       type: 'object',
       properties: {
@@ -446,11 +479,11 @@ function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
   return {
     type: 'function',
     name: 'describe',
-    description: 'retorna a definição completa de uma capability conhecida pelo id',
+    description: 'retorna a definição completa de uma Tool conhecida pelo id',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'identificador exato da capability' },
+        id: { type: 'string', description: 'identificador exato da Tool' },
       },
       required: ['id'],
       additionalProperties: false,
@@ -465,8 +498,8 @@ function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
         throw new Error('describe id must be a non-empty string.');
       }
       const definition = await capabilityRuntime.getDefinition(id);
-      if (definition === undefined || (definition.type !== 'tool' && definition.type !== 'skill')) {
-        throw new Error(`Capability "${id}" was not found.`);
+      if (definition === undefined) {
+        throw new Error(`Tool "${id}" was not found.`);
       }
       return JSON.stringify(definition);
     },
@@ -475,7 +508,7 @@ function describeTool(capabilityRuntime: CapabilityRuntime): FunctionTool {
 
 function createAtlasAgent(
   capabilityRuntime: CapabilityRuntime,
-  definitions: readonly CapabilityDefinition[],
+  definitions: readonly ToolDefinition[],
   onOutput?: (
     capabilityId: string,
     executionId: string,
@@ -506,6 +539,7 @@ function createAtlasAgent(
       ),
       listToolsTool(capabilityRuntime),
       discoveryTool(capabilityRuntime),
+      skillTool(capabilityRuntime),
       describeTool(capabilityRuntime),
       executionTool(capabilityRuntime, onOutput),
     ],

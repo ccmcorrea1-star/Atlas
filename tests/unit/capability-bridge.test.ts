@@ -170,8 +170,18 @@ test('correlates concurrent responses by request_id', async () => {
     });
 
     const [results, definition] = await Promise.all([discoverPromise, definitionPromise]);
-    assert.deepEqual(results, [{ id: 'fake.tool', type: 'tool', summary: 'fake tool' }]);
+    assert.deepEqual(results, [
+      { id: 'fake.tool', type: 'tool', summary: 'fake tool' },
+      { id: 'fake.skill', type: 'skill', summary: 'fake skill' },
+    ]);
     assert.equal(definition?.id, 'fake.tool');
+    const skill = await runtime.getSkill('fake.skill');
+    assert.deepEqual(skill, {
+      id: 'fake.skill',
+      type: 'skill',
+      summary: 'fake skill',
+      instructions: 'Use fake.tool, then report the result.',
+    });
     // A resposta atrasada do discover chega depois; a correlação ignora a ordem.
     assert.deepEqual(order, ['definition', 'discover']);
   } finally {

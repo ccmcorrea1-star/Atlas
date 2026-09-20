@@ -97,6 +97,7 @@ test('HookableCapabilityRuntime short-circuits a blocked call without executing 
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async () => undefined,
+    getSkill: async () => undefined,
     execute: async (id, target) => {
       executions += 1;
       return { target, status: 'unavailable', error: `no provider for ${id}` };
@@ -120,6 +121,7 @@ test('HookableCapabilityRuntime reports thrown executions to after_execute', asy
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async () => undefined,
+    getSkill: async () => undefined,
     execute: async () => {
       throw new Error('runtime exploded');
     },
@@ -218,6 +220,7 @@ test('blocks an identical failing capability call within the same turn', async (
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async () => undefined,
+    getSkill: async () => undefined,
     execute: async (id, target) => {
       executed.push(id);
       return { target, status: 'unavailable', error: 'no search provider configured' };
@@ -253,6 +256,7 @@ test('allows the same failing call again in a new turn', async () => {
     discover: async () => [],
     listTools: async () => [],
     getDefinition: async () => undefined,
+    getSkill: async () => undefined,
     execute: async (id, target) => {
       executed.push(id);
       return { target, status: 'unavailable', error: 'no search provider configured' };
@@ -304,6 +308,7 @@ test('executes web.search without provider once and blocks the identical retry',
     discover: (request) => native.discover(request),
     listTools: (request) => native.listTools(request),
     getDefinition: (id) => native.getDefinition(id),
+    getSkill: (id) => native.getSkill(id),
     execute: async (id, target, arguments_, options) => {
       executions += 1;
       return native.execute(id, target, arguments_, options);

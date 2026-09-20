@@ -52,6 +52,31 @@ aplica os pontos `before_execute` e `after_execute` sem alterar o contrato das c
 uma chamada idêntica (mesmo id, target e argumentos normalizados) depois de uma falha. O guard é
 criado por turno em [`runAtlas`](../src/atlas.ts) e não deve ser implementado dentro das tools.
 
+## Tools e Skills
+
+O modelo público separa definições executáveis e procedurais:
+
+- **Tool** possui `schema` e `implementation`, pode ser materializada como Function Tool
+  e é a única capacidade aceita por `execute`.
+- **Skill** possui apenas identidade, resumo e instruções procedurais. Seu conteúdo vem de
+  `SKILL.md` e não é executável pelo Runtime.
+
+[`discover`](../src/atlas.ts) retorna somente `id`, `type` e `summary` para ambos os tipos.
+[`list_tools`](../src/atlas.ts) retorna somente Tools. A Function Tool `skill({ id })`
+materializa as instruções completas somente quando o Agent escolhe uma Skill; assim o
+conteúdo não entra no contexto por existir no disco.
+
+Skills são carregadas pelo bridge a partir destes locais, nesta ordem de precedência:
+
+- `.atlas/skills/<name>/SKILL.md`
+- `~/.config/atlas/skills/<name>/SKILL.md`
+- `.agents/skills/<name>/SKILL.md` (compatibilidade)
+
+O `SKILL.md` exige frontmatter com `name` e `description`; `name` é o id da Skill,
+`description` é o resumo de discovery e o restante do arquivo são suas instruções.
+O fluxo esperado é `discover -> skill -> execute` para combinar a Skill carregada com as
+Tools necessárias.
+
 Antes de criar um novo módulo, verifique se a responsabilidade pertence a um módulo existente.
 
 ## Fronteira web

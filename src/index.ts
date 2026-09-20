@@ -6,6 +6,7 @@ export type { AtlasRunEvent, AtlasRunOptions } from './atlas.js';
 export { createCapabilityRuntime, NativeCapabilityRuntime } from './capability-runtime.js';
 export type {
   CapabilityDefinition,
+  CapabilityType,
   CapabilityDiscoveryRequest,
   CapabilityDiscoveryResult,
   CapabilityExecutionResult,
@@ -13,6 +14,8 @@ export type {
   CapabilityToolListRequest,
   CapabilityToolListResult,
   NativeCapabilityRuntimeOptions,
+  SkillDefinition,
+  ToolDefinition,
 } from './capability-runtime.js';
 
 // Os hooks genericos permitem auditar ou bloquear execucoes sem alterar as capabilities.

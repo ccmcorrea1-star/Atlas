@@ -51,7 +51,7 @@ list_tools({ group: "shell" })
 discover({ query: "logs de container" })
 ```
 
-`list_tools` lista grupos e Tools registrados, ou somente as Tools de um grupo.
+`list_tools` lista somente Tools registradas, opcionalmente filtradas por grupo.
 Discovery retorna somente Tools e Skills utilizáveis encontradas por intenção.
 Grupos organizam o Registry e não são resultados de Discovery. Somente a
 capacidade relevante deve ser materializada por completo.

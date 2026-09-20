@@ -27,9 +27,9 @@ Compreenda a intenção, execute o trabalho corretamente e use apenas as etapas,
 
 Capabilities não disponíveis diretamente usam o fluxo:
 
-`discover → execute`
+`discover → skill → execute`
 
-Use `list_tools` para inspecionar o catálogo e `describe` somente quando precisar do contrato completo de uma capability conhecida.
+Use `list_tools` para inspecionar somente Tools, `discover` para encontrar Tools e Skills, `skill` para carregar as instruções completas de uma Skill, e `describe` somente quando precisar do contrato completo de uma Tool conhecida.
 
 # Contexto
 

@@ -2,19 +2,24 @@
 #include "../../src/capabilities/core/loader.hpp"
 #include "../../src/capabilities/core/registry.hpp"
 
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
 using atlas::capabilities::Discovery;
 using atlas::capabilities::Loader;
 using atlas::capabilities::Registry;
+using atlas::capabilities::StructuredValue;
 
 void require(bool condition, std::string_view message) {
   if (!condition) {
@@ -53,6 +58,137 @@ std::string groupManifest(std::string_view id, std::string_view summary) {
          "}\n";
 }
 
+std::string skillDocument(
+    std::string_view name,
+    std::string_view description,
+    std::string_view instructions) {
+  return "---\nname: " + std::string(name) + "\ndescription: " + std::string(description) +
+      "\n---\n" + std::string(instructions);
+}
+
+const StructuredValue* objectField(
+    const StructuredValue::Object& object,
+    std::string_view name) {
+  const auto iterator = object.find(name);
+  return iterator == object.end() ? nullptr : &iterator->second;
+}
+
+std::string runBridge(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& directory,
+    const std::filesystem::path& home,
+    const std::string& input) {
+  int inputPipe[2] = {-1, -1};
+  int outputPipe[2] = {-1, -1};
+  require(pipe(inputPipe) == 0 && pipe(outputPipe) == 0, "bridge pipes should be created");
+  const pid_t child = fork();
+  require(child != -1, "bridge process should fork");
+  if (child == 0) {
+    if (dup2(inputPipe[0], STDIN_FILENO) == -1 || dup2(outputPipe[1], STDOUT_FILENO) == -1 ||
+        chdir(directory.c_str()) == -1 || setenv("HOME", home.c_str(), 1) == -1) {
+      _exit(126);
+    }
+    close(inputPipe[0]);
+    close(inputPipe[1]);
+    close(outputPipe[0]);
+    close(outputPipe[1]);
+    execl(executable.c_str(), executable.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  close(inputPipe[0]);
+  close(outputPipe[1]);
+  std::size_t written = 0;
+  while (written < input.size()) {
+    const ssize_t count = write(inputPipe[1], input.data() + written, input.size() - written);
+    if (count > 0) {
+      written += static_cast<std::size_t>(count);
+    } else if (count == -1 && errno == EINTR) {
+      continue;
+    } else {
+      require(false, "bridge request should be written");
+    }
+  }
+  close(inputPipe[1]);
+
+  std::string output;
+  char buffer[4096];
+  while (true) {
+    const ssize_t count = read(outputPipe[0], buffer, sizeof(buffer));
+    if (count > 0) {
+      output.append(buffer, static_cast<std::size_t>(count));
+    } else if (count == 0) {
+      break;
+    } else if (errno != EINTR) {
+      require(false, "bridge output should be readable");
+    }
+  }
+  close(outputPipe[0]);
+
+  int status = 0;
+  require(waitpid(child, &status, 0) == child, "bridge process should be reaped");
+  require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "bridge process should exit successfully");
+  return output;
+}
+
+void testBridge(const std::filesystem::path& directory) {
+  const std::filesystem::path project = directory / "bridge-project";
+  const std::filesystem::path home = directory / "bridge-home";
+  std::filesystem::create_directories(project / ".atlas" / "skills" / "local");
+  std::filesystem::create_directories(project / ".agents" / "skills" / "agent");
+  std::filesystem::create_directories(home / ".config" / "atlas" / "skills" / "global");
+  writeManifest(
+      project / ".atlas" / "skills" / "local" / "SKILL.md",
+      skillDocument("bridge.local", "skill local", "Use the local tools."));
+  writeManifest(
+      project / ".agents" / "skills" / "agent" / "SKILL.md",
+      skillDocument("bridge.agent", "skill agent", "Use the agent tools."));
+  writeManifest(
+      home / ".config" / "atlas" / "skills" / "global" / "SKILL.md",
+      skillDocument("bridge.global", "skill global", "Use the global tools."));
+
+  const std::filesystem::path executable =
+      std::filesystem::absolute("src/capabilities/runtime/bridge/runtime");
+  require(std::filesystem::exists(executable), "bridge executable should be built");
+  const std::string input =
+      "{\"operation\":\"get_skill\",\"id\":\"bridge.local\",\"request_id\":\"local\"}\n"
+      "{\"operation\":\"get_skill\",\"id\":\"bridge.global\",\"request_id\":\"global\"}\n"
+      "{\"operation\":\"get_skill\",\"id\":\"bridge.agent\",\"request_id\":\"agent\"}\n"
+      "{\"operation\":\"execute\",\"id\":\"bridge.local\",\"target\":\"local\",\"request_id\":\"execute\"}\n";
+  const std::string output = runBridge(executable, project, home, input);
+
+  std::vector<StructuredValue> responses;
+  std::istringstream lines(output);
+  std::string line;
+  while (std::getline(lines, line)) {
+    std::string parseError;
+    const auto parsed = atlas::capabilities::parseJson(line, parseError);
+    require(parsed.has_value(), "bridge response should be valid JSON");
+    responses.push_back(parsed.value());
+  }
+  require(responses.size() == 4, "bridge should return one response per request");
+
+  for (std::size_t index = 0; index < 3; ++index) {
+    const auto* response = std::get_if<StructuredValue::Object>(&responses[index].value);
+    require(response != nullptr, "skill response should be an object");
+    const auto* skill = objectField(*response, "skill");
+    const auto* skillObject = skill == nullptr ? nullptr : std::get_if<StructuredValue::Object>(&skill->value);
+    require(skillObject != nullptr, "get_skill should return a materialized skill");
+    const auto* instructions = objectField(*skillObject, "instructions");
+    require(
+        instructions != nullptr && std::get_if<std::string>(&instructions->value) != nullptr,
+        "materialized skill should include instructions");
+  }
+
+  const auto* execution = std::get_if<StructuredValue::Object>(&responses.back().value);
+  require(execution != nullptr, "execute response should be an object");
+  const auto* error = objectField(*execution, "error");
+  require(
+      error != nullptr && std::get_if<std::string>(&error->value) != nullptr &&
+          std::get_if<std::string>(&error->value)->find("type 'skill' is not executable") != std::string::npos,
+      "bridge should reject skill execution before the executor");
+}
+
 void testLoader(const std::filesystem::path& directory) {
   Registry registry;
   Loader loader(registry);
@@ -79,11 +215,42 @@ void testLoader(const std::filesystem::path& directory) {
       discovery.discover({.query = "repete", .limit = std::nullopt}).size() == 1 &&
           discovery.discover({.query = "repete", .limit = std::nullopt}).front().id == "tests.echo",
       "loaded capability should appear in Discovery search");
+
+  const std::filesystem::path localSkills = directory / ".atlas" / "skills";
+  const std::filesystem::path localSkill = localSkills / "procedure" / "SKILL.md";
+  std::filesystem::create_directories(localSkill.parent_path());
+  writeManifest(
+      localSkill,
+      skillDocument("tests.procedure", "combina ferramentas", "Combine the tools in order."));
+  require(loader.loadSkill(localSkill), "valid SKILL.md should load");
+  const auto loadedSkill = registry.get("tests.procedure");
+  require(
+      loadedSkill.has_value() && loadedSkill->type == "skill" &&
+          loadedSkill->summary == "combina ferramentas" &&
+          loadedSkill->instructions == "Combine the tools in order.",
+      "skill frontmatter and instructions should be materialized");
+  const auto discoveredSkill = discovery.getSkill("tests.procedure");
+  require(
+      discoveredSkill.has_value() && discoveredSkill->instructions == "Combine the tools in order.",
+      "loaded skill should be available through skill discovery");
+
+  const std::filesystem::path globalSkills = directory / "home" / ".config" / "atlas" / "skills";
+  const std::filesystem::path agentSkills = directory / ".agents" / "skills";
+  const std::filesystem::path globalSkill = globalSkills / "global" / "SKILL.md";
+  const std::filesystem::path agentSkill = agentSkills / "agent" / "SKILL.md";
+  std::filesystem::create_directories(globalSkill.parent_path());
+  std::filesystem::create_directories(agentSkill.parent_path());
+  writeManifest(globalSkill, skillDocument("tests.global", "skill global", "Global instructions."));
+  writeManifest(agentSkill, skillDocument("tests.agent", "skill agent", "Agent instructions."));
+  require(loader.scanSkills(globalSkills), "global skills should scan");
+  require(loader.scanSkills(agentSkills), "agent skills should scan");
+  require(registry.get("tests.global").has_value(), "global skill should be registered");
+  require(registry.get("tests.agent").has_value(), "agent skill should be registered");
+
   const auto catalog = discovery.listTools();
   require(
-      catalog.size() == 2 && catalog[0].id == "tests" && catalog[0].type == "group" &&
-          catalog[1].id == "tests.echo" && catalog[1].type == "tool",
-      "listTools should return groups and tools from the Registry");
+      catalog.size() == 1 && catalog[0].id == "tests.echo" && catalog[0].type == "tool",
+      "listTools should return only tools from the Registry");
   const auto groupTools = discovery.listTools("tests");
   require(
       groupTools.size() == 1 && groupTools.front().id == "tests.echo" &&
@@ -136,6 +303,8 @@ void testLoader(const std::filesystem::path& directory) {
   }
   require(!loader.unload("tests.echo"), "unload should fail for a missing capability");
   require(loader.unload("tests"), "group unload should remove a loaded group");
+
+  testBridge(directory);
 }
 
 }  // namespace

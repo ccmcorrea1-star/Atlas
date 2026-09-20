@@ -42,6 +42,7 @@ Capability descriptor(
       .implementation = {std::move(kind), std::move(entrypoint)},
       .description = {},
       .schema = {},
+      .instructions = {},
   };
 }
 
@@ -127,6 +128,7 @@ void testSkillIsNotExecutable() {
   Registry registry;
   Capability skill = descriptor("process.procedure", "native", "not-used");
   skill.type = "skill";
+  skill.implementation = {};
   require(registry.registerCapability(std::move(skill)), "skill should be registerable");
 
   const ExecutionResult result = Executor(registry).execute("process.procedure", "local", {});

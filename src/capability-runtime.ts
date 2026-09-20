@@ -8,9 +8,11 @@ export type CapabilityDiscoveryRequest = {
   limit?: number;
 };
 
+export type CapabilityType = 'tool' | 'skill';
+
 export type CapabilityDiscoveryResult = {
   id: string;
-  type: string;
+  type: CapabilityType;
   summary: string;
 };
 
@@ -19,13 +21,22 @@ export type CapabilityToolListRequest = {
 };
 
 export type CapabilityToolListResult = CapabilityDiscoveryResult & {
+  type: 'tool';
   group?: string;
 };
 
-export type CapabilityDefinition = CapabilityDiscoveryResult & {
+export type ToolDefinition = CapabilityDiscoveryResult & {
+  type: 'tool';
   description: string;
   schema: Record<string, unknown>;
 };
+
+export type SkillDefinition = CapabilityDiscoveryResult & {
+  type: 'skill';
+  instructions: string;
+};
+
+export type CapabilityDefinition = ToolDefinition | SkillDefinition;
 
 export type CapabilityExecutionResult = {
   target: string;
@@ -42,7 +53,8 @@ export type CapabilityExecutionOptions = {
 export interface CapabilityRuntime {
   discover(request?: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult[]>;
   listTools(request?: CapabilityToolListRequest): Promise<CapabilityToolListResult[]>;
-  getDefinition(id: string): Promise<CapabilityDefinition | undefined>;
+  getDefinition(id: string): Promise<ToolDefinition | undefined>;
+  getSkill(id: string): Promise<SkillDefinition | undefined>;
   execute(
     id: string,
     target: string,
@@ -114,11 +126,19 @@ function isUsableType(type: string): boolean {
   return type === 'tool' || type === 'skill';
 }
 
+function capabilityType(value: unknown, field: string): CapabilityType {
+  const type = requiredString(value, field);
+  if (type !== 'tool' && type !== 'skill') {
+    throw new Error(`Capability runtime response field "${field}" has an unsupported value.`);
+  }
+  return type;
+}
+
 function discoveryResult(value: unknown): CapabilityDiscoveryResult {
   const result = asObject(value, 'Discovery result');
   return {
     id: requiredString(result.id, 'id'),
-    type: requiredString(result.type, 'type'),
+    type: capabilityType(result.type, 'type'),
     summary: requiredString(result.summary, 'summary'),
   };
 }
@@ -126,11 +146,15 @@ function discoveryResult(value: unknown): CapabilityDiscoveryResult {
 function toolListResult(value: unknown): CapabilityToolListResult {
   const result = discoveryResult(value);
   const record = asObject(value, 'Tool list result');
+  if (result.type !== 'tool') {
+    throw new Error('Tool list result field "type" must be "tool".');
+  }
   if (record.group !== undefined && (typeof record.group !== 'string' || !record.group)) {
     throw new Error('Tool list result field "group" must be a non-empty string when present.');
   }
   return {
     ...result,
+    type: 'tool',
     ...(record.group === undefined ? {} : { group: record.group }),
   };
 }
@@ -195,21 +219,44 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     return tools.map(toolListResult);
   }
 
-  public async getDefinition(id: string): Promise<CapabilityDefinition | undefined> {
+  public async getDefinition(id: string): Promise<ToolDefinition | undefined> {
     const response = await this.request({ operation: 'get_definition', id });
     if (response.definition === null || response.definition === undefined) {
       return undefined;
     }
 
     const definition = asObject(response.definition, 'Capability definition');
-    const parsedDefinition = {
+    const type = capabilityType(definition.type, 'type');
+    if (type !== 'tool') {
+      return undefined;
+    }
+    const parsedDefinition: ToolDefinition = {
       id: requiredString(definition.id, 'id'),
-      type: requiredString(definition.type, 'type'),
+      type: 'tool',
       summary: requiredString(definition.summary, 'summary'),
       description: requiredString(definition.description, 'description'),
       schema: jsonSchema(definition.schema),
     };
-    return isUsableType(parsedDefinition.type) ? parsedDefinition : undefined;
+    return parsedDefinition;
+  }
+
+  public async getSkill(id: string): Promise<SkillDefinition | undefined> {
+    const response = await this.request({ operation: 'get_skill', id });
+    if (response.skill === null || response.skill === undefined) {
+      return undefined;
+    }
+
+    const skill = asObject(response.skill, 'Skill definition');
+    const type = capabilityType(skill.type, 'type');
+    if (type !== 'skill') {
+      return undefined;
+    }
+    return {
+      id: requiredString(skill.id, 'id'),
+      type,
+      summary: requiredString(skill.summary, 'summary'),
+      instructions: requiredString(skill.instructions, 'instructions'),
+    };
   }
 
   public async execute(

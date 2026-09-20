@@ -34,17 +34,22 @@ std::vector<ToolListResult> Discovery::listTools(std::optional<std::string_view>
       std::remove_if(
           capabilities.begin(),
           capabilities.end(),
-          [group](const Capability& capability) {
-            return group.has_value() ? capability.type != "tool"
-                                     : capability.type != "group" && capability.type != "tool";
-          }),
+           [](const Capability& capability) { return capability.type != "tool"; }),
       capabilities.end());
   return projectTools(capabilities);
 }
 
 std::optional<Capability> Discovery::getDefinition(std::string_view id) const {
   const auto capability = registry_.getDefinition(id);
-  if (!capability.has_value() || !isUsableType(capability->type)) {
+  if (!capability.has_value() || capability->type != "tool") {
+    return std::nullopt;
+  }
+  return capability;
+}
+
+std::optional<Capability> Discovery::getSkill(std::string_view id) const {
+  const auto capability = registry_.getDefinition(id);
+  if (!capability.has_value() || capability->type != "skill") {
     return std::nullopt;
   }
   return capability;

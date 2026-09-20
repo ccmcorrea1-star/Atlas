@@ -37,8 +37,10 @@ class Discovery {
   std::vector<DiscoveryResult> discover(const DiscoveryRequest& request = {}) const;
   std::vector<ToolListResult> listTools(
       std::optional<std::string_view> group = std::nullopt) const;
-  // Carrega detalhes somente quando o Agent escolhe uma capability utilizavel.
+  // Carrega o contrato de uma Tool somente quando o Agent escolhe uma Tool.
   std::optional<Capability> getDefinition(std::string_view id) const;
+  // Carrega as instrucoes completas de uma Skill sob demanda.
+  std::optional<Capability> getSkill(std::string_view id) const;
 
  private:
   static std::vector<DiscoveryResult> project(const std::vector<Capability>& capabilities);

@@ -176,6 +176,7 @@ add_dependencies(atlas-system-info-test atlas-system-info-runtime)
 
 add_executable(atlas-capability-loader-test tests/native/capability_loader_test.cpp)
 target_link_libraries(atlas-capability-loader-test PRIVATE atlas-capabilities-core)
+add_dependencies(atlas-capability-loader-test atlas-capability-bridge-runtime)
 
 add_executable(atlas-capability-discovery-test tests/native/discovery_test.cpp)
 target_link_libraries(atlas-capability-discovery-test PRIVATE atlas-capabilities-core)
