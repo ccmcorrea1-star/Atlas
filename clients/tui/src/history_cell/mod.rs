@@ -20,6 +20,7 @@ pub(crate) use messages::AgentMarkdownCell;
 pub(crate) use messages::AgentMessageCell;
 pub(crate) use messages::CancelledCell;
 pub(crate) use messages::ThinkingCell;
+pub(crate) use messages::ThoughtCell;
 pub(crate) use messages::UserHistoryCell;
 
 #[allow(dead_code)]

@@ -12,7 +12,6 @@ use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
 use crate::render::highlight_streaming::StreamingCodeHighlighter;
 use crate::ui_consts::action_style;
-use crate::ui_consts::primary_style;
 use crate::ui_consts::secondary_style;
 use crate::ui_consts::user_surface_style;
 use crate::ui_consts::warning_style;
@@ -95,48 +94,111 @@ impl HistoryCell for UserHistoryCell {
 }
 
 /// Bloco de reasoning recolhido por padrao para nao competir com a resposta.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct ThoughtCell {
+    reasoning_id: String,
+    /// Texto acumulado do reasoning; base do titulo e do corpo.
     source: String,
+    /// Titulo extraido do primeiro bloco em negrito, como no OpenCode.
+    title: Option<String>,
+    /// Corpo do reasoning sem o bloco de titulo.
+    body: String,
     expanded: bool,
+    started_at: Instant,
+    duration_ms: Option<u64>,
+    frame: usize,
 }
 
-#[allow(dead_code)]
 impl ThoughtCell {
-    pub(crate) fn new(source: impl Into<String>) -> Self {
-        Self {
-            source: source.into(),
+    pub(crate) fn new_with_id(reasoning_id: impl Into<String>, source: impl Into<String>) -> Self {
+        let mut cell = Self {
+            reasoning_id: reasoning_id.into(),
+            source: String::new(),
+            title: None,
+            body: String::new(),
             expanded: false,
+            started_at: Instant::now(),
+            duration_ms: None,
+            frame: 0,
+        };
+        cell.set_source(source.into());
+        cell
+    }
+
+    pub(crate) fn reasoning_id(&self) -> &str {
+        &self.reasoning_id
+    }
+
+    pub(crate) fn append(&mut self, delta: &str) {
+        let mut source = std::mem::take(&mut self.source);
+        source.push_str(delta);
+        self.set_source(source);
+    }
+
+    /// O provider pode revelar o titulo no meio do stream; por isso o texto
+    /// acumulado e reinterpretado a cada delta.
+    fn set_source(&mut self, source: String) {
+        self.title = reasoning_title(&source).0;
+        self.body = reasoning_body(&source);
+        self.source = source;
+    }
+
+    pub(crate) fn finish(&mut self) {
+        if self.duration_ms.is_none() {
+            self.duration_ms = Some(elapsed_millis(self.started_at));
         }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.duration_ms.is_none()
     }
 
     pub(crate) fn toggle(&mut self) {
         self.expanded = !self.expanded;
     }
-
-    pub(crate) fn is_expanded(&self) -> bool {
-        self.expanded
-    }
 }
 
 impl HistoryCell for ThoughtCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let marker = if self.expanded { "v " } else { "> " };
-        let mut lines = vec![Line::from(vec![
-            Span::styled(marker, warning_style().add_modifier(Modifier::BOLD)),
-            Span::styled("Thought", warning_style()),
-            Span::styled(
-                if self.expanded { "" } else { " (collapsed)" },
+        let title = self.title.as_deref().unwrap_or_default();
+        let mut header = if self.is_running() {
+            Line::from(vec![
+                Span::styled(
+                    THINKING_FRAMES[self.frame % THINKING_FRAMES.len()],
+                    warning_style(),
+                ),
+                Span::styled(" Thinking", warning_style()),
+            ])
+        } else {
+            let marker = if self.expanded { "- " } else { "+ " };
+            Line::from(vec![
+                Span::styled(marker, warning_style()),
+                Span::styled("Thought", warning_style()),
+            ])
+        };
+        if !title.is_empty() {
+            header.push_span(Span::styled(format!(": {title}"), warning_style()));
+        }
+        if !self.is_running() {
+            header.push_span(Span::styled(
+                format!(
+                    " · {}",
+                    format_reasoning_duration(self.duration_ms.unwrap_or(0))
+                ),
                 secondary_style(),
-            ),
-        ])];
+            ));
+        }
+        let mut lines = vec![header];
         if self.expanded {
             let content_width = usize::from(width).saturating_sub(2).max(1);
             lines.extend(
-                wrap_text(&sanitize_terminal_text(&self.source), content_width)
+                wrap_text(&self.body, content_width)
                     .into_iter()
-                    .map(|line| prefixed_line(Line::from(line), "  ", primary_style())),
+                    .map(|line| prefixed_line(Line::from(line), "  ", secondary_style())),
             );
         }
         lines
@@ -152,6 +214,56 @@ impl HistoryCell for ThoughtCell {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+fn elapsed_millis(started_at: Instant) -> u64 {
+    started_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn reasoning_title(source: &str) -> (Option<String>, Option<(usize, usize)>) {
+    let Some(start) = source.find("**") else {
+        return (None, None);
+    };
+    let content_start = start + 2;
+    let Some(relative_end) = source[content_start..].find("**") else {
+        return (None, None);
+    };
+    let end = content_start + relative_end + 2;
+    let title = source[content_start..content_start + relative_end]
+        .trim()
+        .to_owned();
+    if title.is_empty() {
+        (None, None)
+    } else {
+        (Some(title), Some((start, end)))
+    }
+}
+
+fn reasoning_body(source: &str) -> String {
+    let (_, range) = reasoning_title(source);
+    let body = range.map_or_else(
+        || source.to_owned(),
+        |(start, end)| format!("{}{}", &source[..start], &source[end..]),
+    );
+    sanitize_terminal_text(body.trim())
+}
+
+fn format_reasoning_duration(duration_ms: u64) -> String {
+    if duration_ms < 1_000 {
+        format!("{duration_ms}ms")
+    } else if duration_ms < 60_000 {
+        format!("{:.1}s", duration_ms as f64 / 1_000.0)
+    } else {
+        format!(
+            "{}m {:.1}s",
+            duration_ms / 60_000,
+            (duration_ms % 60_000) as f64 / 1_000.0
+        )
     }
 }
 
@@ -774,9 +886,85 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_collapsed_and_expanded_thought() {
-        let mut thought = ThoughtCell::new("Check the existing error handling before editing.");
-        assert!(!thought.is_expanded());
+    fn thought_extracts_bold_title_and_formats_short_duration_in_milliseconds() {
+        let mut thought = ThoughtCell::new_with_id(
+            "reasoning-1",
+            "**Inspect the error path**\n\nThe existing handler drops the cause.",
+        );
+        thought.duration_ms = Some(625);
+
+        assert_eq!(thought.reasoning_id(), "reasoning-1");
+        assert_eq!(thought.title.as_deref(), Some("Inspect the error path"));
+        assert_eq!(thought.body, "The existing handler drops the cause.");
+        assert_eq!(
+            line_text(&thought.display_lines(60)[0]),
+            "+ Thought: Inspect the error path · 625ms"
+        );
+
+        thought.toggle();
+        let lines = thought
+            .display_lines(60)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(lines.iter().any(|line| line.contains("existing handler")));
+        assert!(!lines.iter().any(|line| line.contains("**Inspect")));
+    }
+
+    #[test]
+    fn running_thought_shows_the_thinking_frame_with_the_title() {
+        let mut thought = ThoughtCell::new_with_id(
+            "reasoning-1",
+            "**Completing todo updates**\n\nChecking every pending item before the answer.",
+        );
+
+        assert_eq!(
+            line_text(&thought.display_lines(60)[0]),
+            "⠋ Thinking: Completing todo updates"
+        );
+
+        thought.append(" The list is complete.");
+
+        assert_eq!(
+            line_text(&thought.display_lines(60)[0]),
+            "⠋ Thinking: Completing todo updates"
+        );
+        assert!(thought.body.contains("The list is complete."));
+        assert_eq!(thought.display_lines(60).len(), 1);
+    }
+
+    #[test]
+    fn thought_title_and_body_are_rebuilt_as_deltas_arrive() {
+        let mut thought = ThoughtCell::new_with_id("reasoning-2", "**Completing");
+
+        assert_eq!(thought.title, None);
+        assert_eq!(thought.body, "**Completing");
+
+        thought.append(" todo updates**\n\nStart by listing the pending items.");
+
+        assert_eq!(thought.title.as_deref(), Some("Completing todo updates"));
+        assert_eq!(thought.body, "Start by listing the pending items.");
+    }
+
+    #[test]
+    fn snapshots_active_collapsed_and_expanded_thought() {
+        let thought = ThoughtCell::new_with_id("reasoning-1", "**Completing todo updates**");
+        insta::assert_snapshot!(
+            "thought_active",
+            thought
+                .display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        let mut thought = ThoughtCell::new_with_id(
+            "reasoning-1",
+            "**Completing todo updates**\n\nCheck the existing error handling before editing.",
+        );
+        thought.duration_ms = Some(625);
+        assert!(!thought.expanded);
         assert_eq!(
             thought.display_lines(60)[0].spans[1].style.fg,
             Some(crate::ui_consts::COLOR_WARNING)
@@ -792,7 +980,7 @@ mod tests {
         );
 
         thought.toggle();
-        assert!(thought.is_expanded());
+        assert!(thought.expanded);
         insta::assert_snapshot!(
             "thought_open",
             thought

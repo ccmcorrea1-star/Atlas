@@ -282,6 +282,19 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
         message_id: event.messageId,
         content: event.content,
       });
+    case 'reasoning-start':
+      return runtimeEvent(request, 'reasoning-start', {
+        reasoning_id: event.reasoningId,
+      });
+    case 'reasoning-delta':
+      return runtimeEvent(request, 'reasoning-delta', {
+        reasoning_id: event.reasoningId,
+        delta: event.delta,
+      });
+    case 'reasoning-end':
+      return runtimeEvent(request, 'reasoning-end', {
+        reasoning_id: event.reasoningId,
+      });
     case 'tool.started':
       return runtimeEvent(request, 'tool.started', {
         tool_id: event.toolId,

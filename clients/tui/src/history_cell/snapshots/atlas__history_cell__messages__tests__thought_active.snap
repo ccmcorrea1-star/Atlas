@@ -2,5 +2,4 @@
 source: src/history_cell/messages.rs
 expression: "thought.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\")"
 ---
-- Thought: Completing todo updates · 625ms
-  Check the existing error handling before editing.
+⠋ Thinking: Completing todo updates

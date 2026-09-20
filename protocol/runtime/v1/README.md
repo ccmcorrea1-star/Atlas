@@ -61,6 +61,9 @@ Todos os eventos mantêm o mesmo `request_id` e `conversation_id`.
 - `context.updated`: snapshot do uso de contexto, com `data.used_tokens` e `data.context_window`.
 - `message.delta`: fragmento de texto transmitido, com `data.message_id` e `data.delta`.
 - `message.completed`: mensagem pública completa, com `data.message_id` e `data.content`.
+- `reasoning-start`: iniciou um bloco de reasoning, com `data.reasoning_id`.
+- `reasoning-delta`: fragmento do reasoning, com `data.reasoning_id` e `data.delta`.
+- `reasoning-end`: terminou um bloco de reasoning, com `data.reasoning_id`.
 - `tool.started`: tool executada pelo Runtime iniciou, com `data.tool_id` e `data.name`.
 - `tool.completed`: tool terminou, com `data.tool_id`, `data.name` e `data.output` opcional.
 - `execution.started`: execução de `shell.exec` iniciou, com `data.execution_id`, `data.capability`, `data.program`, `data.args` e `data.cwd`/`data.target` opcionais. O comando interpretado é exposto como a invocação de shell equivalente (`program`/`args`).

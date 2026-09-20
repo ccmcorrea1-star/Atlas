@@ -14,6 +14,7 @@ impl ChatWidget {
                 target: _,
             } => {
                 self.finalize_thinking();
+                self.finalize_reasoning();
                 self.status = Status::Executing;
                 if self.find_active_exec_mut(&execution_id).is_none() {
                     let exec = ExecCell::new(

@@ -45,6 +45,16 @@ pub enum RuntimeEvent {
         message_id: String,
         content: String,
     },
+    ReasoningStart {
+        reasoning_id: String,
+    },
+    ReasoningDelta {
+        reasoning_id: String,
+        delta: String,
+    },
+    ReasoningEnd {
+        reasoning_id: String,
+    },
     ToolStarted {
         tool_id: String,
         tool_name: String,
@@ -438,6 +448,9 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
             | "context.updated"
             | "message.delta"
             | "message.completed"
+            | "reasoning-start"
+            | "reasoning-delta"
+            | "reasoning-end"
             | "tool.started"
             | "tool.completed"
             | "execution.started"
@@ -467,6 +480,16 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
         "message.completed" => Ok(Some(RuntimeEvent::MessageCompleted {
             message_id: required_string(&data, "message_id")?,
             content: text_string(&data, "content")?,
+        })),
+        "reasoning-start" => Ok(Some(RuntimeEvent::ReasoningStart {
+            reasoning_id: required_string(&data, "reasoning_id")?,
+        })),
+        "reasoning-delta" => Ok(Some(RuntimeEvent::ReasoningDelta {
+            reasoning_id: required_string(&data, "reasoning_id")?,
+            delta: text_string(&data, "delta")?,
+        })),
+        "reasoning-end" => Ok(Some(RuntimeEvent::ReasoningEnd {
+            reasoning_id: required_string(&data, "reasoning_id")?,
         })),
         "tool.started" => Ok(Some(RuntimeEvent::ToolStarted {
             tool_id: required_string(&data, "tool_id")?,
@@ -758,6 +781,49 @@ mod tests {
                 capability: "shell.exec".to_owned(),
                 channel: "stderr".to_owned(),
                 delta: "warning\n".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_reasoning_lifecycle_payload_without_dropping_the_reasoning_id() {
+        let started = parse_runtime_event(envelope(
+            "reasoning-start",
+            json!({"reasoning_id": "reasoning-1"}),
+        ))
+        .expect("reasoning-start should parse")
+        .expect("known event");
+        assert_eq!(
+            started,
+            RuntimeEvent::ReasoningStart {
+                reasoning_id: "reasoning-1".to_owned(),
+            }
+        );
+
+        let delta = parse_runtime_event(envelope(
+            "reasoning-delta",
+            json!({"reasoning_id": "reasoning-1", "delta": "**Inspect the error path**"}),
+        ))
+        .expect("reasoning-delta should parse")
+        .expect("known event");
+        assert_eq!(
+            delta,
+            RuntimeEvent::ReasoningDelta {
+                reasoning_id: "reasoning-1".to_owned(),
+                delta: "**Inspect the error path**".to_owned(),
+            }
+        );
+
+        let ended = parse_runtime_event(envelope(
+            "reasoning-end",
+            json!({"reasoning_id": "reasoning-1"}),
+        ))
+        .expect("reasoning-end should parse")
+        .expect("known event");
+        assert_eq!(
+            ended,
+            RuntimeEvent::ReasoningEnd {
+                reasoning_id: "reasoning-1".to_owned(),
             }
         );
     }

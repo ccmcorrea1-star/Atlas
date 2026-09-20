@@ -109,3 +109,23 @@ test('serializes session metadata as a public event', () => {
   assert.equal(updated.type, 'session.updated');
   assert.deepEqual(JSON.parse(serializeRuntimeMessage(updated)), updated);
 });
+
+test('serializes the reasoning lifecycle with a stable reasoning id', () => {
+  const events = [
+    runtimeEvent(request, 'reasoning-start', { reasoning_id: 'reasoning-1' }),
+    runtimeEvent(request, 'reasoning-delta', {
+      reasoning_id: 'reasoning-1',
+      delta: '**Inspect the error path**',
+    }),
+    runtimeEvent(request, 'reasoning-end', { reasoning_id: 'reasoning-1' }),
+  ];
+
+  assert.deepEqual(
+    events.map((event) => JSON.parse(serializeRuntimeMessage(event))),
+    events,
+  );
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['reasoning-start', 'reasoning-delta', 'reasoning-end'],
+  );
+});

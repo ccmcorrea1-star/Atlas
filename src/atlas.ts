@@ -108,6 +108,19 @@ export type AtlasRunEvent =
       content: string;
     }
   | {
+      type: 'reasoning-start';
+      reasoningId: string;
+    }
+  | {
+      type: 'reasoning-delta';
+      reasoningId: string;
+      delta: string;
+    }
+  | {
+      type: 'reasoning-end';
+      reasoningId: string;
+    }
+  | {
       type: 'tool.started';
       toolId: string;
       toolName: string;
@@ -467,6 +480,17 @@ function createAtlasAgent(
     name: Atlas.name,
     instructions: loadInstructions(),
     model,
+    modelSettings: {
+      // O provider so devolve o resumo do reasoning quando ele e solicitado.
+      // Sem isso o turno chega a TUI apenas com o Thinking generico.
+      providerData: {
+        providerOptions: {
+          openai: {
+            reasoningSummary: 'auto',
+          },
+        },
+      },
+    },
     tools: [
       // Core tools materializadas primeiro; o long tail continua nos base tools.
       ...definitions.map((definition) =>
@@ -629,6 +653,17 @@ function publicText(value: unknown): string | undefined {
   return JSON.stringify(value);
 }
 
+function reasoningContent(item: Record<string, unknown>): string {
+  const content = Array.isArray(item.rawContent) ? item.rawContent : item.content;
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => recordValue(part))
+    .map((part) => stringValue(part?.text) ?? '')
+    .join('');
+}
+
 function messageContent(item: Record<string, unknown>): string {
   if (!Array.isArray(item.content)) {
     return '';
@@ -652,8 +687,44 @@ async function publishRunEvent(
   fallbackMessageId: string,
   capabilityIdsByCallId: Map<string, string>,
   capabilityIdByToolName: Map<string, string>,
+  reasoningStreamState: Map<string, 'active' | 'ended'>,
 ): Promise<void> {
   if (event.type === 'raw_model_stream_event') {
+    const raw = event.data as unknown as Record<string, unknown>;
+    if (raw.type === 'model') {
+      const modelEvent = recordValue(raw.event);
+      const reasoningType = stringValue(modelEvent?.type);
+      if (
+        reasoningType === 'reasoning-start' ||
+        reasoningType === 'reasoning-delta' ||
+        reasoningType === 'reasoning-end'
+      ) {
+        const reasoningId = stringValue(modelEvent?.id) ?? 'default';
+        const state = reasoningStreamState.get(reasoningId);
+        if (reasoningType === 'reasoning-start') {
+          reasoningStreamState.set(reasoningId, 'active');
+          await onEvent({ type: 'reasoning-start', reasoningId });
+        } else if (reasoningType === 'reasoning-delta') {
+          if (state !== 'active') {
+            await onEvent({ type: 'reasoning-start', reasoningId });
+          }
+          reasoningStreamState.set(reasoningId, 'active');
+          // O adapter do AI SDK entrega o texto em `text`; `delta` cobre o formato alternativo.
+          const delta = stringValue(modelEvent?.text) ?? stringValue(modelEvent?.delta);
+          if (delta !== undefined) {
+            await onEvent({ type: 'reasoning-delta', reasoningId, delta });
+          }
+        } else {
+          if (state === undefined) {
+            await onEvent({ type: 'reasoning-start', reasoningId });
+          }
+          reasoningStreamState.set(reasoningId, 'ended');
+          await onEvent({ type: 'reasoning-end', reasoningId });
+        }
+      }
+      return;
+    }
+
     if (event.data.type !== 'output_text_delta') {
       return;
     }
@@ -671,6 +742,21 @@ async function publishRunEvent(
   }
 
   const item = event.item.rawItem as unknown as Record<string, unknown>;
+  if (event.name === 'reasoning_item_created') {
+    const reasoningId = stringValue(item.id) ?? 'default';
+    if (reasoningStreamState.has(reasoningId)) {
+      return;
+    }
+    await onEvent({ type: 'reasoning-start', reasoningId });
+    const content = reasoningContent(item);
+    if (content) {
+      await onEvent({ type: 'reasoning-delta', reasoningId, delta: content });
+    }
+    await onEvent({ type: 'reasoning-end', reasoningId });
+    reasoningStreamState.set(reasoningId, 'ended');
+    return;
+  }
+
   const agentToolName = stringValue(item.name);
   const toolId = stringValue(item.callId) ?? stringValue(item.call_id);
   // Uma tool materializada carrega o id da capability no proprio nome.
@@ -824,6 +910,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
       });
       const fallbackMessageId = randomUUID();
       const capabilityIdsByCallId = new Map<string, string>();
+      const reasoningStreamState = new Map<string, 'active' | 'ended'>();
       for await (const event of streamedResult) {
         await publishRunEvent(
           event,
@@ -831,6 +918,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
           fallbackMessageId,
           capabilityIdsByCallId,
           capabilityIdByToolName,
+          reasoningStreamState,
         );
       }
 

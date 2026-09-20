@@ -26,6 +26,9 @@ export type RuntimeEventType =
   | 'context.updated'
   | 'message.delta'
   | 'message.completed'
+  | 'reasoning-start'
+  | 'reasoning-delta'
+  | 'reasoning-end'
   | 'tool.started'
   | 'tool.completed'
   | 'execution.started'
@@ -49,6 +52,19 @@ export type RuntimeToolStartedData = {
   tool_id: string;
   name: string;
   target?: string;
+};
+
+export type RuntimeReasoningStartedData = {
+  reasoning_id: string;
+};
+
+export type RuntimeReasoningDeltaData = {
+  reasoning_id: string;
+  delta: string;
+};
+
+export type RuntimeReasoningEndedData = {
+  reasoning_id: string;
 };
 
 export type RuntimeTurnCompletedData = {

@@ -11,6 +11,9 @@
     { "$ref": "#/$defs/contextUpdated" },
     { "$ref": "#/$defs/messageDelta" },
     { "$ref": "#/$defs/messageCompleted" },
+    { "$ref": "#/$defs/reasoningStart" },
+    { "$ref": "#/$defs/reasoningDelta" },
+    { "$ref": "#/$defs/reasoningEnd" },
     { "$ref": "#/$defs/toolStarted" },
     { "$ref": "#/$defs/toolCompleted" },
     { "$ref": "#/$defs/executionStarted" },
@@ -163,6 +166,64 @@
                 "content": { "type": "string" }
               },
               "required": ["message_id", "content"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "reasoningStart": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "reasoning-start" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "reasoning_id": { "type": "string", "minLength": 1 }
+              },
+              "required": ["reasoning_id"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "reasoningDelta": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "reasoning-delta" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "reasoning_id": { "type": "string", "minLength": 1 },
+                "delta": { "type": "string" }
+              },
+              "required": ["reasoning_id", "delta"],
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "reasoningEnd": {
+      "allOf": [
+        { "$ref": "#/$defs/event" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "reasoning-end" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "reasoning_id": { "type": "string", "minLength": 1 }
+              },
+              "required": ["reasoning_id"],
               "additionalProperties": true
             }
           }

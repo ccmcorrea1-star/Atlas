@@ -6,6 +6,7 @@
 
 mod command_lifecycle;
 mod exec_state;
+mod reasoning;
 pub(crate) mod rendering;
 mod streaming;
 
@@ -19,6 +20,7 @@ use crate::history_cell::CancelledCell;
 use crate::history_cell::ErrorCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::ThinkingCell;
+use crate::history_cell::ThoughtCell;
 use crate::history_cell::ToolCell;
 use crate::history_cell::ToolGroupCell;
 use crate::runtime::ContextUsage;
@@ -126,6 +128,9 @@ impl ChatWidget {
             if let Some(thinking) = cell.as_any_mut().downcast_mut::<ThinkingCell>() {
                 thinking.tick();
             }
+            if let Some(thought) = cell.as_any_mut().downcast_mut::<ThoughtCell>() {
+                thought.tick();
+            }
         }
         let committed_parts = self
             .stream_states
@@ -188,6 +193,11 @@ impl ChatWidget {
             | RuntimeEvent::ExecutionOutputDelta { .. }
             | RuntimeEvent::ExecutionCompleted { .. } => {
                 self.handle_execution_event(event);
+            }
+            RuntimeEvent::ReasoningStart { .. }
+            | RuntimeEvent::ReasoningDelta { .. }
+            | RuntimeEvent::ReasoningEnd { .. } => {
+                self.handle_reasoning_event(event);
             }
             RuntimeEvent::SessionUpdated { .. }
             | RuntimeEvent::TurnStarted
@@ -448,20 +458,27 @@ impl ChatWidget {
             self.cells.push(cell);
             return;
         };
-        if let Some(previous) = self
+        let previous_index = self
             .cells
-            .last_mut()
-            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolGroupCell>())
-            && previous.can_merge(group)
-        {
-            let group = cell
+            .iter()
+            .rposition(|candidate| candidate.as_any().downcast_ref::<ToolGroupCell>().is_some());
+        if let Some(previous_index) = previous_index
+            && self.cells[previous_index + 1..]
+                .iter()
+                .all(|candidate| candidate.as_any().is::<ThinkingCell>())
+            && self.cells[previous_index]
                 .as_any()
                 .downcast_ref::<ToolGroupCell>()
+                .is_some_and(|previous| previous.can_merge(group))
+        {
+            let previous = self.cells[previous_index]
+                .as_any_mut()
+                .downcast_mut::<ToolGroupCell>()
                 .expect("tool group was checked");
             previous.merge(group.clone());
-        } else {
-            self.cells.push(cell);
+            return;
         }
+        self.cells.push(cell);
     }
 
     fn commit_all_active_cells(&mut self) {
@@ -490,6 +507,44 @@ impl ChatWidget {
         }
         self.bump_active_revision();
         self.history_changed();
+    }
+
+    /// Descarta o Thinking generico sem commitar.
+    ///
+    /// O reasoning estruturado assume a vez: manter o placeholder na timeline
+    /// duplicaria o mesmo estado em duas celulas.
+    fn discard_thinking(&mut self) {
+        if !self
+            .active_cells
+            .iter()
+            .any(|cell| cell.as_any().is::<ThinkingCell>())
+        {
+            return;
+        }
+        self.active_cells
+            .retain(|cell| !cell.as_any().is::<ThinkingCell>());
+        self.bump_active_revision();
+    }
+
+    pub(crate) fn toggle_thought(&mut self, active: bool, index: usize) -> bool {
+        let cells = if active {
+            &mut self.active_cells
+        } else {
+            &mut self.cells
+        };
+        let Some(cell) = cells.get_mut(index) else {
+            return false;
+        };
+        let Some(thought) = cell.as_any_mut().downcast_mut::<ThoughtCell>() else {
+            return false;
+        };
+        thought.toggle();
+        if active {
+            self.bump_active_revision();
+        } else {
+            self.history_changed();
+        }
+        true
     }
 
     fn begin_thinking(&mut self) {

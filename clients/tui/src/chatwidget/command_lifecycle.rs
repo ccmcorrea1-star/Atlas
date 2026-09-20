@@ -20,6 +20,7 @@ impl ChatWidget {
                 target,
             } => {
                 self.finalize_thinking();
+                self.finalize_reasoning();
                 self.status = Status::Executing;
                 if self.find_active_tool_mut(&tool_id).is_none() {
                     let tool = ToolCell::new_with_target(
@@ -85,6 +86,7 @@ impl ChatWidget {
         context: Option<ContextUsage>,
     ) {
         self.finalize_thinking();
+        self.finalize_reasoning();
         if let Some(context) = context {
             self.context_usage = Some(context);
         }
@@ -126,6 +128,7 @@ impl ChatWidget {
 
     fn fail_turn(&mut self, message: String) {
         self.finalize_thinking();
+        self.finalize_reasoning();
         for cell in &mut self.cells {
             abort_exec_cell(cell.as_mut());
         }
@@ -213,14 +216,14 @@ mod tests {
             });
         }
 
-        assert_eq!(widget.cells().len(), 4);
+        assert_eq!(widget.cells().len(), 3);
         assert_eq!(
             widget
                 .cells()
                 .iter()
                 .filter(|cell| cell.as_any().is::<ToolGroupCell>())
                 .count(),
-            2
+            1
         );
     }
 
