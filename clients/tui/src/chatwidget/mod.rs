@@ -141,13 +141,14 @@ impl ChatWidget {
                         message_id.clone(),
                         stream.source().to_owned(),
                         stream.stable_len,
+                        stream.block_break,
                     )
                 })
             })
             .collect::<Vec<_>>();
-        for (message_id, source, stable_len) in committed_parts {
+        for (message_id, source, stable_len, block_break) in committed_parts {
             let display_source = bounded_text(&source);
-            self.materialize_stream_commit(&message_id, &display_source, stable_len);
+            self.materialize_stream_commit(&message_id, &display_source, stable_len, block_break);
         }
         if !self.stream_states.is_empty() || !self.active_cells.is_empty() {
             self.active_revision = self.active_revision.wrapping_add(1);
@@ -243,6 +244,65 @@ impl ChatWidget {
         })
     }
 
+    fn active_agent_positions(&self, id: &str) -> Vec<usize> {
+        self.active_cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                cell.as_any()
+                    .downcast_ref::<AgentMessageCell>()
+                    .filter(|message| message.message_id == id)
+                    .map(|_| index)
+            })
+            .collect()
+    }
+
+    /// Reaplica a divisao entre regiao estavel e tail nas celulas ativas do stream.
+    ///
+    /// Depois da materializacao a primeira celula guarda a regiao estavel e a ultima guarda o
+    /// tail. Reaplicar a divisao completa nas duas fazia o tail renderizar de novo o texto ja
+    /// estavel, duplicando trechos como o titulo em negrito.
+    fn apply_stream_parts(&mut self, id: &str, source: &str, stable_len: usize, block_break: bool) {
+        let stable_len = stable_len.min(source.len());
+        let positions = self.active_agent_positions(id);
+        let (Some(&first), Some(&last)) = (positions.first(), positions.last()) else {
+            return;
+        };
+        if first == last {
+            if let Some(message) = self.active_cells[first]
+                .as_any_mut()
+                .downcast_mut::<AgentMessageCell>()
+            {
+                message.set_stream_parts(source, stable_len, block_break);
+            }
+            return;
+        }
+        if let Some(message) = self.active_cells[first]
+            .as_any_mut()
+            .downcast_mut::<AgentMessageCell>()
+        {
+            message.set_stream_parts(&source[..stable_len], stable_len, block_break);
+        }
+        if let Some(message) = self.active_cells[last]
+            .as_any_mut()
+            .downcast_mut::<AgentMessageCell>()
+        {
+            message.set_stream_parts(&source[stable_len..], 0, block_break);
+        }
+    }
+
+    /// Grava o conteudo final em todas as celulas ativas da mensagem.
+    fn set_active_agent_content(&mut self, id: &str, content: &str) {
+        for index in self.active_agent_positions(id) {
+            if let Some(message) = self.active_cells[index]
+                .as_any_mut()
+                .downcast_mut::<AgentMessageCell>()
+            {
+                message.markdown_source = content.to_owned();
+            }
+        }
+    }
+
     fn find_exec_mut(&mut self, id: &str) -> Option<&mut ExecCell> {
         self.cells.iter_mut().rev().find_map(|cell| {
             cell.as_any_mut()
@@ -309,21 +369,17 @@ impl ChatWidget {
             .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolGroupCell>())
     }
 
-    fn materialize_stream_commit(&mut self, id: &str, source: &str, stable_len: usize) {
+    fn materialize_stream_commit(
+        &mut self,
+        id: &str,
+        source: &str,
+        stable_len: usize,
+        block_break: bool,
+    ) {
         let stable_len = stable_len.min(source.len());
         let stable = &source[..stable_len];
         let tail = &source[stable_len..];
-        let positions = self
-            .active_cells
-            .iter()
-            .enumerate()
-            .filter_map(|(index, cell)| {
-                cell.as_any()
-                    .downcast_ref::<AgentMessageCell>()
-                    .filter(|message| message.message_id == id)
-                    .map(|_| index)
-            })
-            .collect::<Vec<_>>();
+        let positions = self.active_agent_positions(id);
         let Some(&first_index) = positions.first() else {
             return;
         };
@@ -334,7 +390,7 @@ impl ChatWidget {
                 .as_any_mut()
                 .downcast_mut::<AgentMessageCell>()
             {
-                message.set_stream_parts(tail, 0);
+                message.set_stream_parts(tail, 0, false);
                 message.markdown_source = source.to_owned();
             }
             return;
@@ -344,7 +400,7 @@ impl ChatWidget {
             .as_any_mut()
             .downcast_mut::<AgentMessageCell>()
         {
-            message.set_stream_parts(stable, stable.len());
+            message.set_stream_parts(stable, stable.len(), block_break);
         }
 
         if tail.is_empty() {
@@ -356,7 +412,7 @@ impl ChatWidget {
 
         let tail_cell = {
             let mut cell = AgentMessageCell::new(id.to_owned(), tail, false);
-            cell.set_stream_parts(tail, 0);
+            cell.set_stream_parts(tail, 0, block_break);
             cell.markdown_source = source.to_owned();
             Box::new(cell) as Box<dyn HistoryCell>
         };

@@ -11,6 +11,8 @@ use super::*;
 pub(super) struct MarkdownStreamState {
     source: String,
     pub(super) stable_len: usize,
+    /// O tail comeca um bloco novo depois da regiao estavel.
+    pub(super) block_break: bool,
     committed_len: usize,
     width: Option<u16>,
     revision: u64,
@@ -19,7 +21,9 @@ pub(super) struct MarkdownStreamState {
 impl MarkdownStreamState {
     fn push(&mut self, delta: &str) {
         self.source.push_str(delta);
-        self.stable_len = stable_prefix_len(&self.source);
+        let split = split_point(&self.source);
+        self.stable_len = split.stable_len;
+        self.block_break = split.block_break;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -59,16 +63,30 @@ impl MarkdownStreamState {
     }
 }
 
-fn stable_prefix_len(source: &str) -> usize {
+struct StreamSplit {
+    stable_len: usize,
+    block_break: bool,
+}
+
+/// Resolve o corte entre regiao estavel e tail e se o corte abre um bloco novo.
+fn split_point(source: &str) -> StreamSplit {
     let metadata = crate::markdown_streaming::scan(source);
     if metadata.has_reference_link_definition {
-        return 0;
+        return StreamSplit {
+            stable_len: 0,
+            block_break: false,
+        };
     }
+    let block_break = metadata.last_top_level_block_start.is_some();
     let stable_len = metadata
         .last_top_level_block_start
         .unwrap_or(0)
         .min(metadata.pending_math_start.unwrap_or(usize::MAX));
-    table_holdback_start(&source[..stable_len]).unwrap_or(stable_len)
+    let stable_len = table_holdback_start(&source[..stable_len]).unwrap_or(stable_len);
+    StreamSplit {
+        stable_len,
+        block_break: block_break && stable_len > 0,
+    }
 }
 
 fn table_holdback_start(source: &str) -> Option<usize> {
@@ -145,19 +163,23 @@ impl ChatWidget {
                 self.finalize_thinking();
                 self.finalize_reasoning();
                 self.status = Status::Thinking;
-                let (source, stable_len) = {
+                let (source, stable_len, block_break) = {
                     let stream = self.stream_states.entry(message_id.clone()).or_default();
                     stream.push(&delta);
-                    (stream.source().to_owned(), stream.stable_len)
+                    (
+                        stream.source().to_owned(),
+                        stream.stable_len,
+                        stream.block_break,
+                    )
                 };
                 let display_source = bounded_text(&source);
-                if let Some(message) = self.find_active_agent_mut(&message_id) {
-                    message.set_stream_parts(&display_source, stable_len);
+                if !self.active_agent_positions(&message_id).is_empty() {
+                    self.apply_stream_parts(&message_id, &display_source, stable_len, block_break);
                 } else {
                     let is_first_line = self.active_cells.is_empty();
                     let mut cell =
                         AgentMessageCell::new(message_id, display_source.clone(), is_first_line);
-                    cell.set_stream_parts(&display_source, stable_len);
+                    cell.set_stream_parts(&display_source, stable_len, block_break);
                     self.active_cells.push(Box::new(cell));
                 }
                 self.bump_active_revision();
@@ -171,18 +193,21 @@ impl ChatWidget {
                 self.finalize_reasoning();
                 self.status = Status::Thinking;
                 self.stream_states.remove(&message_id);
-                if let Some(message) = self.find_active_agent_mut(&message_id) {
-                    message.markdown_source = bounded_text(&content);
-                    message.clear_stream_parts();
-                    message.completed = true;
+                let content = bounded_text(&content);
+                if !self.active_agent_positions(&message_id).is_empty() {
+                    self.set_active_agent_content(&message_id, &content);
+                    if let Some(message) = self.find_active_agent_mut(&message_id) {
+                        message.clear_stream_parts();
+                        message.completed = true;
+                    }
                     self.commit_active_agent(&message_id);
                 } else if let Some(message) = self.find_agent_mut(&message_id) {
-                    message.markdown_source = bounded_text(&content);
+                    message.markdown_source = content;
                     message.completed = true;
                 } else {
                     self.cells.push(Box::new(AgentMarkdownCell::with_message_id(
                         Some(message_id),
-                        bounded_text(&content),
+                        content,
                     )));
                 }
                 self.history_changed();
@@ -282,6 +307,175 @@ mod tests {
         });
         assert!(widget.active_cells().is_empty());
         assert_eq!(widget.cells().len(), 1);
+    }
+
+    fn row_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    fn rows_of(cells: &[Box<dyn HistoryCell>], width: u16) -> Vec<String> {
+        cells
+            .iter()
+            .flat_map(|cell| cell.display_lines(width))
+            .map(|line| row_text(&line))
+            .collect()
+    }
+
+    fn stream_chunks(content: &str, size: usize) -> Vec<String> {
+        content
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(size)
+            .map(|chunk| chunk.iter().collect::<String>())
+            .collect()
+    }
+
+    fn streamed_rows(content: &str, size: usize, width: u16) -> Vec<String> {
+        let mut widget = ChatWidget::new();
+        for chunk in stream_chunks(content, size) {
+            widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+                message_id: "message".to_owned(),
+                delta: chunk,
+            });
+            widget.tick();
+        }
+        rows_of(widget.active_cells(), width)
+    }
+
+    fn completed_rows(content: &str, width: u16) -> Vec<String> {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message".to_owned(),
+            content: content.to_owned(),
+        });
+        rows_of(widget.cells(), width)
+    }
+
+    fn reference_rows(content: &str, width: u16) -> Vec<String> {
+        AgentMarkdownCell::with_message_id(None, content)
+            .display_lines(width)
+            .iter()
+            .map(row_text)
+            .collect()
+    }
+
+    fn document_rows() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("heading", "## Titulo\n\nTexto do paragrafo."),
+            (
+                "titulo em negrito",
+                "**Bridge de capabilities**\n\nO bridge de capabilities funciona como uma camada de integracao.",
+            ),
+            (
+                "dois paragrafos",
+                "Primeiro paragrafo.\n\nSegundo paragrafo.",
+            ),
+            (
+                "lista",
+                "Passos:\n\n- primeiro item\n- segundo item\n- terceiro item\n\nFim.",
+            ),
+            (
+                "code fence",
+                "Antes.\n\n```rust\nlet answer = 42;\nprintln!(\"ok\");\n```\n\nDepois.",
+            ),
+            (
+                "tabela",
+                "Tabela:\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nFim.",
+            ),
+        ]
+    }
+
+    #[test]
+    fn streaming_keeps_the_same_structure_as_the_completed_message() {
+        for (label, content) in document_rows() {
+            for size in [3usize, 7, 40] {
+                let streamed = streamed_rows(content, size, 60);
+                let completed = completed_rows(content, 60);
+                assert_eq!(
+                    streamed, completed,
+                    "{label}: stream de {size} chars divergiu da mensagem concluida"
+                );
+                assert_eq!(
+                    completed,
+                    reference_rows(content, 60),
+                    "{label}: conteudo concluido divergiu do conteudo recebido"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stable_region_and_tail_keep_the_blank_line_between_blocks() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message".to_owned(),
+            delta: "intro\n\ncodigo\n\n".to_owned(),
+        });
+        widget.tick();
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message".to_owned(),
+            delta: "```rust\nlet answer = 42;\n".to_owned(),
+        });
+        widget.tick();
+
+        let rendered = rows_of(widget.active_cells(), 40);
+        assert_eq!(rendered[0], "intro");
+        assert_eq!(rendered[1], "  ");
+        assert!(
+            rendered.iter().any(|row| row.contains("let answer = 42;")),
+            "a fence do tail deve aparecer depois do separador: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn materialization_does_not_repeat_the_stable_region_in_the_tail() {
+        let content = "**Bridge de capabilities**\n\nO bridge de capabilities funciona.";
+        let mut widget = ChatWidget::new();
+        for chunk in stream_chunks(content, 6) {
+            widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+                message_id: "message".to_owned(),
+                delta: chunk,
+            });
+            widget.tick();
+
+            let rendered = rows_of(widget.active_cells(), 80);
+            let heads = rendered
+                .iter()
+                .filter(|row| row.contains("Bridge de capabilities"))
+                .filter(|row| !row.contains("O bridge"))
+                .count();
+            assert!(
+                heads <= 1,
+                "o titulo nao pode aparecer duas vezes durante o stream: {rendered:?}"
+            );
+            assert!(
+                !rendered.iter().any(|row| row.contains("capabilitiesO")),
+                "blocos nao podem ser concatenados sem separador: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn final_completion_after_many_deltas_matches_the_received_content() {
+        let content = "## Resumo\n\nPrimeiro paragrafo.\n\nSegundo paragrafo.\n\n- item\n- outro\n";
+        let mut widget = ChatWidget::new();
+        for chunk in stream_chunks(content, 2) {
+            widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+                message_id: "message".to_owned(),
+                delta: chunk,
+            });
+            widget.tick();
+        }
+        widget.handle_runtime_event(RuntimeEvent::MessageCompleted {
+            message_id: "message".to_owned(),
+            content: content.to_owned(),
+        });
+
+        assert!(widget.active_cells().is_empty());
+        assert_eq!(rows_of(widget.cells(), 60), reference_rows(content, 60));
     }
 
     #[test]

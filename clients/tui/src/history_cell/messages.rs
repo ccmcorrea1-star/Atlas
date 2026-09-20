@@ -382,6 +382,8 @@ pub(crate) struct AgentMessageCell {
     tail_revision: u64,
     stable_render_cache: Mutex<Option<StreamingRenderCache>>,
     tail_render_cache: Mutex<Option<StreamingRenderCache>>,
+    /// Ha uma fronteira de bloco entre a regiao estavel e o tail.
+    block_break: bool,
     pub(crate) completed: bool,
     pub(crate) is_first_line: bool,
 }
@@ -401,6 +403,7 @@ impl AgentMessageCell {
             tail_revision: 0,
             stable_render_cache: Mutex::new(None),
             tail_render_cache: Mutex::new(None),
+            block_break: false,
             completed: false,
             is_first_line,
         }
@@ -416,14 +419,19 @@ impl HistoryCell for AgentMessageCell {
                 width,
                 self.is_first_line,
                 self.stable_revision,
+                true,
             );
             if !self.stream_tail_source.is_empty() {
+                if self.block_break {
+                    lines.push(blank_block_separator());
+                }
                 lines.extend(render_stream_part(
                     &self.tail_render_cache,
                     &self.stream_tail_source,
                     width,
                     false,
                     self.tail_revision,
+                    false,
                 ));
             }
             lines
@@ -459,7 +467,8 @@ impl AgentMessageCell {
         self.clear_stream_parts();
     }
 
-    pub(crate) fn set_stream_parts(&mut self, source: &str, stable_len: usize) {
+    /// Atualiza as partes do stream; `block_break` marca que o tail abre um bloco novo.
+    pub(crate) fn set_stream_parts(&mut self, source: &str, stable_len: usize, block_break: bool) {
         let stable_len = stable_len.min(source.len());
         let stable = source[..stable_len].to_owned();
         let tail = source[stable_len..].to_owned();
@@ -473,11 +482,13 @@ impl AgentMessageCell {
         self.markdown_source.push_str(source);
         self.stream_stable_source = Some(stable);
         self.stream_tail_source = tail;
+        self.block_break = block_break;
     }
 
     pub(crate) fn clear_stream_parts(&mut self) {
         self.stream_stable_source = None;
         self.stream_tail_source.clear();
+        self.block_break = false;
         self.stable_revision = self.stable_revision.wrapping_add(1);
         self.tail_revision = self.tail_revision.wrapping_add(1);
         self.stable_render_cache
@@ -536,12 +547,21 @@ impl HistoryCell for AgentMarkdownCell {
     }
 }
 
+fn blank_block_separator() -> Line<'static> {
+    prefixed_line(Line::default(), "  ", secondary_style())
+}
+
+/// Renderiza uma parte do stream mantendo o cache incremental.
+///
+/// `block_separator_on_append` vale para a regiao estavel, que cresce por blocos completos:
+/// sem a linha em branco a materializacao incremental colaria dois blocos consecutivos.
 fn render_stream_part(
     cache: &Mutex<Option<StreamingRenderCache>>,
     source: &str,
     width: u16,
     first: bool,
     revision: u64,
+    block_separator_on_append: bool,
 ) -> Vec<Line<'static>> {
     let mut cache_guard = cache
         .lock()
@@ -559,6 +579,12 @@ fn render_stream_part(
                 return cached.lines.clone();
             }
             if appended.ends_with('\n') && safe_incremental_suffix(appended) {
+                if block_separator_on_append
+                    && !cached.lines.is_empty()
+                    && !appended.trim().is_empty()
+                {
+                    cached.lines.push(blank_block_separator());
+                }
                 cached
                     .lines
                     .extend(render_agent_lines(appended, width, false));
@@ -708,6 +734,51 @@ mod tests {
             .collect()
     }
 
+    fn cell_rows(lines: Vec<Line<'static>>) -> Vec<String> {
+        lines.iter().map(line_text).collect()
+    }
+
+    #[test]
+    fn agent_cell_keeps_the_separator_between_consecutive_paragraphs() {
+        let cell = AgentMarkdownCell::with_message_id(
+            None,
+            "**Bridge de capabilities**\n\nO bridge de capabilities funciona como uma camada.",
+        );
+
+        let rows = cell_rows(cell.display_lines(70));
+
+        assert_eq!(rows[0], "Bridge de capabilities");
+        assert_eq!(rows[1], "  ");
+        assert_eq!(
+            rows[2],
+            "  O bridge de capabilities funciona como uma camada."
+        );
+        assert!(!rows.iter().any(|row| row.contains("capabilitiesO")));
+    }
+
+    #[test]
+    fn incremental_stable_append_keeps_the_separator_between_blocks() {
+        let mut cell = AgentMessageCell::new("stable-blocks".to_owned(), "", true);
+        cell.set_stream_parts("primeiro paragrafo\n\n", 20, false);
+        let _ = cell.display_lines(60);
+        cell.set_stream_parts("primeiro paragrafo\n\nsegundo paragrafo\n\n", 41, true);
+        let rows = cell_rows(cell.display_lines(60));
+
+        assert_eq!(rows[0], "primeiro paragrafo");
+        assert_eq!(rows[1], "  ");
+        assert_eq!(rows[2], "  segundo paragrafo");
+    }
+
+    #[test]
+    fn materialized_tail_starts_with_the_block_separator() {
+        let mut cell = AgentMessageCell::new("tail-block".to_owned(), "", false);
+        cell.set_stream_parts("texto do bloco", 0, true);
+        let rows = cell_rows(cell.display_lines(60));
+
+        assert_eq!(rows[0], "  ");
+        assert_eq!(rows[1], "  texto do bloco");
+    }
+
     #[test]
     fn final_source_update_invalidates_same_width_markdown_cache() {
         let mut cell = AgentMarkdownCell::with_message_id(Some("message".to_owned()), "old");
@@ -722,13 +793,13 @@ mod tests {
     #[test]
     fn streaming_renderer_consumes_stable_region_and_mutable_tail() {
         let mut cell = AgentMessageCell::new("message".to_owned(), "", true);
-        cell.set_stream_parts("intro\n**tail**", "intro\n".len());
+        cell.set_stream_parts("intro\n**tail**", "intro\n".len(), true);
 
         let lines = cell.display_lines(80);
         assert!(cell.stable_render_cache.lock().unwrap().is_some());
         assert!(cell.tail_render_cache.lock().unwrap().is_some());
         let stable_revision = cell.stable_revision;
-        cell.set_stream_parts("intro\n**tail2**", "intro\n".len());
+        cell.set_stream_parts("intro\n**tail2**", "intro\n".len(), true);
         let _ = cell.display_lines(80);
         assert_eq!(cell.stable_revision, stable_revision);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
@@ -746,9 +817,9 @@ mod tests {
     #[test]
     fn stable_stream_appends_only_the_new_complete_region() {
         let mut cell = AgentMessageCell::new("stable".to_owned(), "", true);
-        cell.set_stream_parts("intro\n", 6);
+        cell.set_stream_parts("intro\n", 6, false);
         let _ = cell.display_lines(80);
-        cell.set_stream_parts("intro\nsecond\n", 13);
+        cell.set_stream_parts("intro\nsecond\n", 13, false);
         let rendered = cell.display_lines(80);
 
         let cache = cell.stable_render_cache.lock().unwrap();
@@ -766,9 +837,9 @@ mod tests {
     #[test]
     fn context_sensitive_list_suffix_falls_back_to_full_render() {
         let mut cell = AgentMessageCell::new("list".to_owned(), "", true);
-        cell.set_stream_parts("- first\n", 8);
+        cell.set_stream_parts("- first\n", 8, false);
         let _ = cell.display_lines(80);
-        cell.set_stream_parts("- first\n- second\n", 18);
+        cell.set_stream_parts("- first\n- second\n", 18, false);
         let _ = cell.display_lines(80);
 
         let cache = cell.stable_render_cache.lock().unwrap();
@@ -781,9 +852,9 @@ mod tests {
     #[test]
     fn tilde_code_stream_appends_to_the_existing_highlighter_cache() {
         let mut cell = AgentMessageCell::new("tilde-code".to_owned(), "", true);
-        cell.set_stream_parts("~~~rust\nlet answer = 42;\n", 0);
+        cell.set_stream_parts("~~~rust\nlet answer = 42;\n", 0, false);
         let _ = cell.display_lines(80);
-        cell.set_stream_parts("~~~rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0);
+        cell.set_stream_parts("~~~rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0, false);
         let rendered = cell.display_lines(80);
 
         let cache = cell.tail_render_cache.lock().unwrap();
@@ -801,9 +872,9 @@ mod tests {
     #[test]
     fn open_code_stream_appends_to_the_existing_highlighter_cache() {
         let mut cell = AgentMessageCell::new("code".to_owned(), "", true);
-        cell.set_stream_parts("```rust\nlet answer = 42;\n", 0);
+        cell.set_stream_parts("```rust\nlet answer = 42;\n", 0, false);
         let _ = cell.display_lines(80);
-        cell.set_stream_parts("```rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0);
+        cell.set_stream_parts("```rust\nlet answer = 42;\nprintln!(\"ok\");\n", 0, false);
         let rendered = cell.display_lines(80);
 
         let cache = cell.tail_render_cache.lock().unwrap();
