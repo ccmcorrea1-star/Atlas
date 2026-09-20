@@ -113,6 +113,42 @@ Seu objetivo é permitir que Atlas e usuário compartilhem o mesmo contexto de n
 
 Ele utiliza o Atlas Runtime e suas capabilities, sem implementar um Agent separado.
 
+## Atlas Torrent
+
+O **Atlas Torrent** é o cliente BitTorrent do ecossistema Atlas.
+
+Ele oferece as funções normais de um cliente torrent, incluindo downloads, uploads, fila, seleção de arquivos, peers, trackers, limites de velocidade e prioridades.
+
+A integração com o Atlas permite controlar transferências por linguagem natural e conectá-las a outras capacidades do Runtime, como filesystem, automações e notificações. O usuário pode, por exemplo, alterar prioridades, definir limites temporários, acompanhar transferências ou organizar arquivos concluídos sem navegar manualmente pela interface.
+
+A implementação deve reutilizar uma engine BitTorrent existente e manter protocolo, transferência e gerenciamento de peers fora do Agent. O Atlas Runtime orquestra ações e contexto; o cliente continua responsável pela experiência de gerenciamento das transferências.
+
+## Atlas Media
+
+O **Atlas Media** é o servidor e cliente de mídia do ecossistema Atlas.
+
+Ele organiza bibliotecas de filmes, séries, músicas, fotos e outros conteúdos locais, mantendo histórico de reprodução, progresso, perfis, metadata, legendas e disponibilidade por dispositivo.
+
+O Atlas Media deve permitir streaming para outros clientes e dispositivos, com direct play quando possível e transcoding quando necessário. A implementação pode reutilizar engines consolidadas para codecs e transcoding, mantendo essa responsabilidade fora do Agent.
+
+A integração com o Atlas permite consultar e controlar a biblioteca por linguagem natural, continuar reproduções, organizar arquivos, encontrar conteúdo e automatizar ações relacionadas à mídia.
+
+Atlas Torrent e Atlas Media podem trabalhar em conjunto por meio do Runtime: downloads concluídos podem ser organizados e adicionados à biblioteca quando solicitado ou configurado. Os dois apps permanecem desacoplados e podem funcionar independentemente.
+
+A arquitetura deve separar a interface do serviço residente responsável por biblioteca, sessões, streaming e transcoding, permitindo que Workstation, Mobile, Web e futuros clientes de TV consumam o mesmo servidor de mídia.
+
+## Atlas Music
+
+O **Atlas Music** é o player e a experiência dedicada a música do ecossistema Atlas.
+
+Ele apresenta artistas, álbuns, faixas, playlists, fila, letras, favoritos, histórico, recomendações e dispositivos de reprodução em uma interface própria para consumo musical.
+
+Quando a origem for local, Atlas Music deve reutilizar biblioteca, metadata e streaming do Atlas Media em vez de manter uma base de mídia duplicada.
+
+A integração com o Atlas permite controlar reprodução e fila por linguagem natural, criar playlists, consultar histórico, encontrar músicas e continuar a reprodução entre dispositivos.
+
+A arquitetura deve permitir fontes adicionais no futuro, como serviços externos de música, sem acoplar o app a um único provider. Atlas Music continua responsável pela experiência de reprodução, enquanto Atlas Media permanece responsável pelo serviço de mídia local.
+
 ## Atlas Mobile
 
 O **Atlas Mobile** é o companion móvel do Atlas.
@@ -157,8 +193,12 @@ Atlas Web não representa um Runtime diferente nem uma versão independente do A
         ├──────── Terminal ───────────────┤
         │                │                │
       Mobile           Browser           Web
-        │
-     Telegram
+        │                │
+     Telegram         Torrent
+                           │
+                         Media
+                           │
+                         Music
 ```
 
 Os apps podem apresentar diferentes partes do mesmo estado, mas a fonte de verdade permanece no Runtime.
@@ -176,6 +216,9 @@ Atlas Knowledge     → app
 Atlas Code          → app
 Atlas Terminal      → app
 Atlas Telegram      → app
+Atlas Torrent       → app
+Atlas Media         → app
+Atlas Music         → app
 
 GitHub              → integração
 Google Drive        → integração
