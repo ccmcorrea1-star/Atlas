@@ -288,9 +288,6 @@ test('allows the same failing call again in a new turn', async () => {
 });
 
 test('executes web.search without provider once and blocks the identical retry', async () => {
-  const savedProvider = process.env.ATLAS_WEB_SEARCH_COMMAND;
-  delete process.env.ATLAS_WEB_SEARCH_COMMAND;
-
   const native = new NativeCapabilityRuntime();
   let executions = 0;
   const capabilityRuntime: CapabilityRuntime = {
@@ -322,12 +319,9 @@ test('executes web.search without provider once and blocks the identical retry',
     assert.equal(executions, 1);
     const retryOutput = JSON.stringify(server.requests[2]?.input);
     assert.match(retryOutput, /already failed in this turn/);
-    assert.match(retryOutput, /no search provider configured/);
+    assert.match(retryOutput, /[Ss]earxng|search provider/);
   } finally {
     await native.close();
     await server.close();
-    if (savedProvider !== undefined) {
-      process.env.ATLAS_WEB_SEARCH_COMMAND = savedProvider;
-    }
   }
 });

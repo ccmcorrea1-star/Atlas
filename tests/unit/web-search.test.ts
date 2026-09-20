@@ -1,22 +1,27 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
 import { test } from 'node:test';
 
 import {
-  buildCommand,
   parseRequest,
   runSearch,
   sanitizeResults,
-  splitCommand,
+  type SearchProviderFactory,
 } from '../../src/capabilities/tools/web/search/search.js';
 
-function stubProvider(body: string): string {
-  const directory = mkdtempSync(join(tmpdir(), 'atlas-web-search-'));
-  const script = join(directory, 'provider.mjs');
-  writeFileSync(script, `process.stdout.write(${JSON.stringify(body)});\n`);
-  return `${process.execPath} ${script}`;
+async function listen(server: Server): Promise<{ endpoint: string; close: () => Promise<void> }> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('test server did not expose an address');
+  }
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
 }
 
 test('parseRequest extrai query e aplica limite padrão', () => {
@@ -35,22 +40,6 @@ test('parseRequest limita ao máximo e rejeita entradas inválidas', () => {
   assert.throws(() => parseRequest('{invalido}'), /invalid JSON/);
 });
 
-test('splitCommand respeita aspas', () => {
-  assert.deepEqual(splitCommand(`bin --opt 'a b' "c d" e`), ['bin', '--opt', 'a b', 'c d', 'e']);
-});
-
-test('buildCommand substitui placeholders ou anexa query e limit', () => {
-  assert.deepEqual(buildCommand('bin --q {query} --n {limit}', 'oi', 3), [
-    'bin',
-    '--q',
-    'oi',
-    '--n',
-    '3',
-  ]);
-  assert.deepEqual(buildCommand('bin', 'oi', 3), ['bin', 'oi', '3']);
-  assert.throws(() => buildCommand('   ', 'oi', 3), /empty/);
-});
-
 test('sanitizeResults mantém só entradas válidas', () => {
   assert.deepEqual(
     sanitizeResults([
@@ -65,42 +54,59 @@ test('sanitizeResults mantém só entradas válidas', () => {
   assert.throws(() => sanitizeResults({}), /array/);
 });
 
-test('runSearch retorna unavailable sem provider', () => {
-  const saved = process.env.ATLAS_WEB_SEARCH_COMMAND;
-  delete process.env.ATLAS_WEB_SEARCH_COMMAND;
+test('SearXNG é o backend local default e normaliza o envelope', async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      JSON.stringify({
+        results: [{ title: 'T', url: 'https://x.test', content: 'S', engine: 'local' }],
+      }),
+    );
+  });
+  const testServer = await listen(server);
   try {
-    assert.deepEqual(runSearch('atlas', 5, undefined), {
-      status: 'unavailable',
-      error: 'no search provider configured',
-      results: [],
+    const outcome = await runSearch('atlas', 5, { endpoint: testServer.endpoint });
+    assert.deepEqual(outcome, {
+      status: 'success',
+      error: '',
+      results: [{ title: 'T', url: 'https://x.test', snippet: 'S', source: 'local' }],
     });
   } finally {
-    if (saved !== undefined) {
-      process.env.ATLAS_WEB_SEARCH_COMMAND = saved;
-    }
+    await testServer.close();
   }
 });
 
-test('runSearch retorna resultados reais do provider', () => {
-  const provider = stubProvider(
-    JSON.stringify([{ title: 'T', url: 'https://x.test', snippet: 'S', source: 'w' }]),
-  );
-  const outcome = runSearch('atlas', 5, provider);
-  assert.equal(outcome.status, 'success');
-  assert.equal(outcome.error, '');
-  assert.deepEqual(outcome.results, [
-    { title: 'T', url: 'https://x.test', snippet: 'S', source: 'w' },
+test('fallback troca de adapter quando o provider primário falha', async () => {
+  const providers = new Map<string, SearchProviderFactory>([
+    [
+      'local',
+      () => ({
+        search: async () => {
+          throw new Error('local unavailable');
+        },
+      }),
+    ],
+    [
+      'hosted-test',
+      () => ({
+        search: async () => [{ title: 'Fallback', url: 'https://fallback.test' }],
+      }),
+    ],
   ]);
+
+  const outcome = await runSearch(
+    'atlas',
+    5,
+    { provider: 'local', fallbackProviders: ['hosted-test'] },
+    providers,
+  );
+  assert.equal(outcome.status, 'success');
+  assert.deepEqual(outcome.results, [{ title: 'Fallback', url: 'https://fallback.test' }]);
 });
 
-test('runSearch nunca inventa resultados', () => {
-  const outcome = runSearch('atlas', 5, stubProvider('[]'));
-  assert.deepEqual(outcome, { status: 'success', error: '', results: [] });
-});
-
-test('runSearch falha com provider inválido', () => {
-  assert.match(runSearch('atlas', 5, stubProvider('não json')).error, /invalid JSON/);
-  const failing = runSearch('atlas', 5, `${process.execPath} --eval "process.exit(3)"`);
-  assert.equal(failing.status, 'failed');
-  assert.match(failing.error, /exited with code 3/);
+test('provider desconhecido não é executado nem inventa resultados', async () => {
+  const outcome = await runSearch('atlas', 5, { provider: 'missing' }, new Map());
+  assert.equal(outcome.status, 'failed');
+  assert.match(outcome.error, /not installed/);
+  assert.deepEqual(outcome.results, []);
 });

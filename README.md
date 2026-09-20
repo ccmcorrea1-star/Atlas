@@ -65,3 +65,33 @@ está fora do controle de versão.
 arquivo em `providers[`_provider_`].apiKey`; se `OPENCODE_GO_API_KEY` existir no
 ambiente, ela sobrescreve o valor do arquivo. O contrato completo está em
 [`protocol/config.schema.json`](protocol/config.schema.json).
+
+Os adapters web também ficam nessa configuração global. O default local é
+SearXNG para `web.search`, o extractor nativo para `web.fetch`, Camoufox +
+Playwright para `web.browser` e Crawl4AI é opcional para `web.crawl`:
+
+```json
+{
+  "web": {
+    "search": {
+      "provider": "searxng",
+      "endpoint": "http://127.0.0.1:8080",
+      "fallbackProviders": []
+    },
+    "fetch": { "extractor": "native" },
+    "browser": {
+      "provider": "camoufox",
+      "executablePath": "/opt/camoufox/camoufox",
+      "headless": true
+    },
+    "crawl": {
+      "provider": "crawl4ai",
+      "endpoint": "http://127.0.0.1:11235/crawl"
+    }
+  }
+}
+```
+
+Use a menor capability suficiente na ordem `web.search → web.fetch →
+web.browser → web.crawl`. Browser Use não é o backend principal do browser; é
+uma integração opcional para Workers/Tasks longos.

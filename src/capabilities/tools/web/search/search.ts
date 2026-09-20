@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// Tool web.search: consulta o provider configurado e retorna resultados reais.
-import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+// Tool web.search: usa adapters substituiveis e mantém o SearXNG como default local.
+import { readFileSync } from 'node:fs';
 
 export interface SearchResult {
   title: string;
@@ -17,10 +15,87 @@ export interface SearchOutcome {
   results: SearchResult[];
 }
 
+export interface SearchConfig {
+  provider?: string;
+  endpoint?: string;
+  timeoutMs?: number;
+  fallbackProviders?: string[];
+  providers?: Record<string, { endpoint?: string; apiKey?: string }>;
+}
+
+export interface SearchProvider {
+  search(query: string, limit: number, config: SearchConfig): Promise<unknown>;
+}
+
+export type SearchProviderFactory = (config: SearchConfig) => SearchProvider;
+
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
-const PROVIDER_ENV = 'ATLAS_WEB_SEARCH_COMMAND';
-const PROVIDER_TIMEOUT_MS = 15000;
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:8080';
+const DEFAULT_TIMEOUT_MS = 15000;
+
+const providerFactories = new Map<string, SearchProviderFactory>();
+
+class ProviderError extends Error {}
+
+class SearXNGProvider implements SearchProvider {
+  public async search(query: string, limit: number, config: SearchConfig): Promise<unknown> {
+    const endpoint = config.endpoint ?? DEFAULT_ENDPOINT;
+    const url = new URL(
+      endpoint.endsWith('/search') ? endpoint : `${endpoint.replace(/\/$/, '')}/search`,
+    );
+    url.searchParams.set('q', query);
+    url.searchParams.set('format', 'json');
+    url.searchParams.set('categories', 'general');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new ProviderError(`SearXNG returned HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as { results?: unknown };
+      if (!Array.isArray(payload.results)) {
+        throw new ProviderError('SearXNG returned an invalid result envelope');
+      }
+      return payload.results.slice(0, limit).map((entry) => {
+        if (entry === null || typeof entry !== 'object') {
+          return entry;
+        }
+        const result = entry as Record<string, unknown>;
+        return {
+          title: result.title,
+          url: result.url,
+          snippet: result.content,
+          source: result.engine,
+        };
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new ProviderError('SearXNG request timed out');
+      }
+      throw error instanceof Error ? error : new ProviderError(String(error));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+providerFactories.set('searxng', () => new SearXNGProvider());
+
+export function registerSearchProvider(name: string, factory: SearchProviderFactory): void {
+  if (!name.trim()) {
+    throw new Error('search provider name cannot be empty');
+  }
+  providerFactories.set(name, factory);
+}
+
+export function unregisterSearchProvider(name: string): void {
+  if (name !== 'searxng') {
+    providerFactories.delete(name);
+  }
+}
 
 export function parseRequest(text: string): { target: string; query: string; limit: number } {
   let value: unknown;
@@ -49,56 +124,6 @@ export function parseRequest(text: string): { target: string; query: string; lim
   return { target: record.target, query: record.query.trim(), limit };
 }
 
-// Divide o comando respeitando aspas simples e duplas.
-export function splitCommand(template: string): string[] {
-  const parts: string[] = [];
-  let current = '';
-  let quote = '';
-  for (const char of template) {
-    if (quote !== '') {
-      if (char === quote) {
-        quote = '';
-      } else {
-        current += char;
-      }
-    } else if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === ' ' || char === '\t') {
-      if (current !== '') {
-        parts.push(current);
-        current = '';
-      }
-    } else {
-      current += char;
-    }
-  }
-  if (current !== '') {
-    parts.push(current);
-  }
-  return parts;
-}
-
-// Substitui {query} e {limit}; sem placeholders, anexa query e limit ao final.
-export function buildCommand(template: string, query: string, limit: number): string[] {
-  if (template.trim() === '') {
-    throw new Error('search provider command is empty');
-  }
-  const parts = splitCommand(template).map((part) => {
-    if (part === '{query}') {
-      return query;
-    }
-    return part === '{limit}' ? String(limit) : part;
-  });
-  if (!template.includes('{query}') && !template.includes('{limit}')) {
-    parts.push(query, String(limit));
-  }
-  if (parts.length === 0) {
-    throw new Error('search provider command is empty');
-  }
-  return parts;
-}
-
-// Mantém só entradas com título e URL; o resto é descartado, nunca inventado.
 export function sanitizeResults(value: unknown): SearchResult[] {
   if (!Array.isArray(value)) {
     throw new Error('search provider returned invalid JSON: expected an array');
@@ -127,74 +152,80 @@ export function sanitizeResults(value: unknown): SearchResult[] {
   return results;
 }
 
-export function runSearch(
+export function searchConfigFromEnvironment(env: NodeJS.ProcessEnv = process.env): SearchConfig {
+  const inline = env.ATLAS_WEB_CONFIG_JSON;
+  if (inline) {
+    try {
+      const parsed = JSON.parse(inline) as { search?: SearchConfig };
+      return parsed.search ?? {};
+    } catch {
+      return {};
+    }
+  }
+  const path = env.ATLAS_CONFIG;
+  if (path) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { web?: { search?: SearchConfig } };
+      return parsed.web?.search ?? {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+export async function runSearch(
   query: string,
   limit: number,
-  provider = process.env[PROVIDER_ENV],
-): SearchOutcome {
-  if (provider === undefined || provider.trim() === '') {
-    return { status: 'unavailable', error: 'no search provider configured', results: [] };
+  config: SearchConfig = searchConfigFromEnvironment(),
+  providers: ReadonlyMap<string, SearchProviderFactory> = providerFactories,
+): Promise<SearchOutcome> {
+  const names = [config.provider ?? 'searxng', ...(config.fallbackProviders ?? [])];
+  const attempted = new Set<string>();
+  let lastError = 'no search provider configured';
+
+  for (const name of names) {
+    if (attempted.has(name)) {
+      continue;
+    }
+    attempted.add(name);
+    const factory = providers.get(name);
+    if (factory === undefined) {
+      lastError = `search provider '${name}' is not installed`;
+      continue;
+    }
+    try {
+      const raw = await factory(config).search(query, limit, config);
+      return { status: 'success', error: '', results: sanitizeResults(raw).slice(0, limit) };
+    } catch (error) {
+      lastError = `${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
-  let command: string[];
-  try {
-    command = buildCommand(provider, query, limit);
-  } catch (error) {
-    return { status: 'failed', error: String(error), results: [] };
-  }
-  const [program, ...args] = command;
-  // Sem shell: o provider executa direto, sem interpretação.
-  const completed = spawnSync(program, args, { encoding: 'utf8', timeout: PROVIDER_TIMEOUT_MS });
-  if (completed.error !== undefined) {
-    return {
-      status: 'failed',
-      error: `search provider failed: ${completed.error.message}`,
-      results: [],
-    };
-  }
-  if (completed.status !== 0) {
-    const detail = completed.stderr.trim().slice(0, 500);
-    return {
-      status: 'failed',
-      error: `search provider exited with code ${String(completed.status)}${detail === '' ? '' : `: ${detail}`}`,
-      results: [],
-    };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(completed.stdout.trim());
-  } catch {
-    return { status: 'failed', error: 'search provider returned invalid JSON', results: [] };
-  }
-  try {
-    return { status: 'success', error: '', results: sanitizeResults(parsed).slice(0, limit) };
-  } catch (error) {
-    return { status: 'failed', error: String(error), results: [] };
-  }
+
+  return {
+    status: names.length === 0 ? 'unavailable' : 'failed',
+    error: lastError,
+    results: [],
+  };
 }
 
-function respond(target: string, outcome: SearchOutcome): void {
-  process.stdout.write(
-    `${JSON.stringify({ target, status: outcome.status, error: outcome.error, results: outcome.results })}\n`,
-  );
-}
-
-function main(): void {
+async function main(): Promise<void> {
   let input = '';
   process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk: string) => {
+  for await (const chunk of process.stdin) {
     input += chunk;
-  });
-  process.stdin.on('end', () => {
-    try {
-      const request = parseRequest(input);
-      respond(request.target, runSearch(request.query, request.limit));
-    } catch (error) {
-      respond('', { status: 'failed', error: String(error), results: [] });
-    }
-  });
+  }
+  try {
+    const request = parseRequest(input);
+    const outcome = await runSearch(request.query, request.limit);
+    process.stdout.write(`${JSON.stringify({ target: request.target, ...outcome })}\n`);
+  } catch (error) {
+    process.stdout.write(
+      `${JSON.stringify({ target: '', status: 'failed', error: String(error), results: [] })}\n`,
+    );
+  }
 }
 
-const invoked = process.argv[1] === undefined ? '' : resolve(process.argv[1]);
-if (import.meta.url === pathToFileURL(invoked).href) {
-  main();
+if (process.argv[1]?.endsWith('/search.js') || process.argv[1]?.endsWith('/search/runtime')) {
+  await main();
 }

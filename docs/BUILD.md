@@ -18,8 +18,9 @@ npm run sync:client
 ```
 
 `check` valida rapidamente o código TypeScript. Para uma área específica, use
-`test:tui`, `test:runtime`, `test:native`, `test:lsp`, `test:web-fetch` ou
-`test:web-search`. `check:tui` inclui lint, build incremental e testes da TUI.
+`test:tui`, `test:runtime`, `test:native`, `test:lsp`, `test:web-fetch`,
+`test:web-search`, `test:web-browser` ou `test:web-crawl`. `check:tui` inclui lint,
+build incremental e testes da TUI.
 `check:full` combina os checks estáticos, todos os builds e toda a suíte.
 
 O smoke test é local e não precisa de `OPENCODE_GO_API_KEY`.
@@ -55,8 +56,8 @@ ctest --test-dir .native-cmake --output-on-failure
 
 Os comandos de teste por área constroem apenas os alvos necessários e
 reaproveitam `.native-cmake/` e os diretórios `target/` do Cargo. `dist/`,
-`.native-cmake/` e `.web-search-build/` são artefatos gerados e não devem ser
-versionados.
+`.native-cmake/`, `.web-search-build/` e `.web-tools-build/` são artefatos
+gerados e não devem ser versionados.
 
 ## Execução
 
@@ -84,34 +85,36 @@ atlas server stop
 
 ## Comandos disponíveis
 
-| Comando                   | Finalidade                                               |
-| ------------------------- | -------------------------------------------------------- |
-| `npm run dev`             | Executa o TypeScript em modo watch                       |
-| `atlas server run`        | Inicia o servidor local do Atlas Runtime                 |
-| `atlas server status`     | Consulta o estado do servidor sem alterá-lo              |
-| `atlas server restart`    | Reinicia o servidor local do Atlas Runtime               |
-| `atlas server stop`       | Desliga o servidor local do Atlas Runtime                |
-| `npm run format`          | Formata os arquivos com Prettier                         |
-| `npm run format:check`    | Verifica a formatação sem alterar arquivos               |
-| `npm run lint`            | Executa o ESLint                                         |
-| `npm run lint:client`     | Executa o Clippy no cliente TUI                          |
-| `npm run lint:fix`        | Corrige automaticamente problemas do ESLint              |
-| `npm run typecheck`       | Verifica o código de produção e os testes com TypeScript |
-| `npm test`                | Executa os testes automatizados por domínio              |
-| `npm run smoke`           | Executa o smoke test do provider e das conversas         |
-| `npm run build`           | Gera TypeScript e runtimes de todas as capabilities      |
-| `npm run build:client`    | Compila o cliente TUI em Rust                            |
-| `npm run test:client`     | Executa os testes unitários do cliente TUI               |
-| `npm run test:tui`        | Executa somente os testes da TUI                         |
-| `npm run test:runtime`    | Executa somente os testes TypeScript do Runtime          |
-| `npm run test:native`     | Executa somente os testes nativos C++                    |
-| `npm run test:lsp`        | Executa somente os testes do runtime LSP                 |
-| `npm run test:web-fetch`  | Executa somente os testes do runtime web.fetch           |
-| `npm run test:web-search` | Executa somente os testes do runtime web.search          |
-| `npm run check`           | Executa checks estáticos rápidos do Runtime              |
-| `npm run check:tui`       | Executa lint, build e testes da TUI                      |
-| `npm run check:full`      | Executa a validação completa de todos os domínios        |
-| `npm run sync:client`     | Sincroniza o binário incremental da TUI no PATH          |
+| Comando                    | Finalidade                                               |
+| -------------------------- | -------------------------------------------------------- |
+| `npm run dev`              | Executa o TypeScript em modo watch                       |
+| `atlas server run`         | Inicia o servidor local do Atlas Runtime                 |
+| `atlas server status`      | Consulta o estado do servidor sem alterá-lo              |
+| `atlas server restart`     | Reinicia o servidor local do Atlas Runtime               |
+| `atlas server stop`        | Desliga o servidor local do Atlas Runtime                |
+| `npm run format`           | Formata os arquivos com Prettier                         |
+| `npm run format:check`     | Verifica a formatação sem alterar arquivos               |
+| `npm run lint`             | Executa o ESLint                                         |
+| `npm run lint:client`      | Executa o Clippy no cliente TUI                          |
+| `npm run lint:fix`         | Corrige automaticamente problemas do ESLint              |
+| `npm run typecheck`        | Verifica o código de produção e os testes com TypeScript |
+| `npm test`                 | Executa os testes automatizados por domínio              |
+| `npm run smoke`            | Executa o smoke test do provider e das conversas         |
+| `npm run build`            | Gera TypeScript e runtimes de todas as capabilities      |
+| `npm run build:client`     | Compila o cliente TUI em Rust                            |
+| `npm run test:client`      | Executa os testes unitários do cliente TUI               |
+| `npm run test:tui`         | Executa somente os testes da TUI                         |
+| `npm run test:runtime`     | Executa somente os testes TypeScript do Runtime          |
+| `npm run test:native`      | Executa somente os testes nativos C++                    |
+| `npm run test:lsp`         | Executa somente os testes do runtime LSP                 |
+| `npm run test:web-fetch`   | Executa somente os testes do runtime web.fetch           |
+| `npm run test:web-search`  | Executa somente os testes do runtime web.search          |
+| `npm run test:web-browser` | Executa somente os testes do runtime web.browser         |
+| `npm run test:web-crawl`   | Executa somente os testes do runtime web.crawl           |
+| `npm run check`            | Executa checks estáticos rápidos do Runtime              |
+| `npm run check:tui`        | Executa lint, build e testes da TUI                      |
+| `npm run check:full`       | Executa a validação completa de todos os domínios        |
+| `npm run sync:client`      | Sincroniza o binário incremental da TUI no PATH          |
 
 ## CI
 

@@ -5,6 +5,7 @@ export {
   ATLAS_DEFAULT_PROVIDER,
   AtlasConfigError,
   DEFAULT_ATLAS_CONFIG,
+  DEFAULT_ATLAS_WEB_CONFIG,
   atlasApiKey,
   atlasRuntimeSessionData,
   loadAtlasConfig,
@@ -12,4 +13,9 @@ export {
   parseAtlasConfig,
   resolveAtlasConfigPath,
 } from './loader.js';
-export type { AtlasConfig, ProviderCredentials } from './loader.js';
+export type {
+  AtlasConfig,
+  AtlasWebConfig,
+  ProviderCredentials,
+  WebProviderConfig,
+} from './loader.js';

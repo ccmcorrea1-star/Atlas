@@ -1,0 +1,28 @@
+{
+  "id": "web.browser",
+  "type": "tool",
+  "summary": "navegar, clicar, digitar e interagir com uma sessão persistente de browser",
+  "description": "opera uma sessão local persistente Camoufox + Playwright com navegação, snapshot, cliques, digitação, scroll, screenshot, abas e fechamento; o Agent continua responsável pelo planejamento",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["navigate", "snapshot", "click", "type", "scroll", "screenshot", "tabs", "close"]
+      },
+      "url": { "type": "string", "description": "URL HTTP ou HTTPS para navigate" },
+      "selector": { "type": "string", "description": "seletor CSS para click ou type" },
+      "text": { "type": "string", "description": "texto para type" },
+      "amount": { "type": "number", "description": "pixels para scroll" },
+      "maxChars": { "type": "integer", "minimum": 1, "description": "limite do snapshot" }
+    },
+    "required": ["operation"],
+    "additionalProperties": false
+  },
+  "parent": "web",
+  "aliases": ["browser", "camoufox", "navegue", "clique"],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

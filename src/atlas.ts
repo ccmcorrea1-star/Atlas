@@ -20,6 +20,7 @@ import {
   withOpenCodeGoSession,
 } from './opencode-go.js';
 import { HookableCapabilityRuntime, RetryGuard, stableSerialize } from './capability-hooks.js';
+import type { AtlasConfig } from './config/index.js';
 import {
   createCapabilityRuntime,
   type CapabilityDefinition,
@@ -90,6 +91,8 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // O ID explicito permite continuar a mesma conversa entre chamadas.
   conversationId?: string;
   capabilityRuntime?: CapabilityRuntime;
+  // Configuração global também alimenta os adapters das capabilities.
+  atlasConfig?: AtlasConfig;
   // Desligar mantem apenas o caminho generico (list_tools/discover/describe/execute).
   coreTools?: boolean;
   onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
@@ -222,7 +225,10 @@ function getRuntimeKey(options: OpenCodeGoProviderOptions): string {
 }
 
 // Reutiliza o Runner por configuração e mantém as sessões separadas por conversa.
-function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
+function getAtlasRuntime(
+  options: OpenCodeGoProviderOptions,
+  atlasConfig?: AtlasConfig,
+): AtlasRuntime {
   const key = getRuntimeKey(options);
   const existingRuntime = atlasRuntimes.get(key);
   if (existingRuntime) {
@@ -233,7 +239,7 @@ function getAtlasRuntime(options: OpenCodeGoProviderOptions): AtlasRuntime {
   const runtime: AtlasRuntime = {
     runner: createRunner(options),
     sessions: new Map(),
-    capabilityRuntime: createCapabilityRuntime(),
+    capabilityRuntime: createCapabilityRuntime({ webConfig: atlasConfig?.web }),
   };
   atlasRuntimes.set(key, runtime);
   return runtime;
@@ -859,13 +865,14 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const {
     conversationId: _conversationId,
     capabilityRuntime: requestedCapabilityRuntime,
+    atlasConfig,
     abortSignal,
     onEvent,
     model: requestedModel,
     coreTools = true,
     ...providerOptions
   } = options;
-  const runtime = getAtlasRuntime(providerOptions);
+  const runtime = getAtlasRuntime(providerOptions, atlasConfig);
   const sessionId = getConversationId(options);
   const capabilityRuntime = requestedCapabilityRuntime ?? runtime.capabilityRuntime;
   // Cada turno recebe um RetryGuard novo para permitir a mesma chamada apos falha.

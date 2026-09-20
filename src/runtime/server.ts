@@ -81,6 +81,7 @@ export class AtlasRuntimeServer {
   private readonly contextWindow: number | undefined;
   private readonly sessionData: RuntimeSessionUpdatedData;
   private readonly atlasModel: string;
+  private readonly atlasConfig: AtlasConfig;
   private readonly transport: UnixSocketServer;
   private readonly conversationQueues = new Map<string, Promise<void>>();
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
@@ -89,7 +90,8 @@ export class AtlasRuntimeServer {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
     this.runOptions = options.runOptions ?? {};
     // Provider/model da sessão são definidos pela configuração global do Atlas.
-    this.sessionData = atlasRuntimeSessionData(options.atlasConfig ?? DEFAULT_ATLAS_CONFIG);
+    this.atlasConfig = options.atlasConfig ?? DEFAULT_ATLAS_CONFIG;
+    this.sessionData = atlasRuntimeSessionData(this.atlasConfig);
     this.atlasModel = `${OPENCODE_GO_PROVIDER}/${this.sessionData.model}`;
     // Modelos fora do registro inicial usam o endpoint de responses por padrão.
     const registry = OPENCODE_GO_MODELS as Readonly<Record<string, OpenCodeGoModelDefinition>>;
@@ -217,6 +219,7 @@ export class AtlasRuntimeServer {
         abortSignal,
         // O provider é fixo nesta fase; o modelo vem da configuração global.
         model: this.atlasModel,
+        atlasConfig: this.atlasConfig,
         conversationId: request.conversation_id,
         onEvent: (event) => {
           messageId = eventMessageId(event) ?? messageId;

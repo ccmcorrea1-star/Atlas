@@ -1,0 +1,22 @@
+{
+  "id": "web.crawl",
+  "type": "tool",
+  "summary": "rastrear múltiplas páginas relacionadas",
+  "description": "inicia um crawling opcional via adapter local Crawl4AI; use somente quando uma página única não for suficiente",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "URL HTTP ou HTTPS inicial" },
+      "maxPages": { "type": "integer", "minimum": 1, "description": "limite de páginas" },
+      "maxDepth": { "type": "integer", "minimum": 1, "description": "profundidade máxima" }
+    },
+    "required": ["url"],
+    "additionalProperties": false
+  },
+  "parent": "web",
+  "aliases": ["crawl", "crawler", "crawl4ai", "rastreie"],
+  "implementation": {
+    "kind": "executable",
+    "entrypoint": "runtime"
+  }
+}

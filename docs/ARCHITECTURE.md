@@ -54,4 +54,31 @@ criado por turno em [`runAtlas`](../src/atlas.ts) e não deve ser implementado d
 
 Antes de criar um novo módulo, verifique se a responsabilidade pertence a um módulo existente.
 
+## Fronteira web
+
+As capabilities públicas da web são independentes do provider e usam a menor
+capacidade suficiente para a tarefa:
+
+```text
+web.search → web.fetch → web.browser → web.crawl
+```
+
+- [`web.search`](../src/capabilities/tools/web/search/) usa SearXNG local como
+  default. Providers hospedados entram somente como adapters substituíveis,
+  selecionados na configuração global.
+- [`web.fetch`](../src/capabilities/tools/web/fetch/) permanece o fast path HTTP
+  nativo, sem JavaScript. Trafilatura é apenas um extractor interno opcional;
+  não é uma capability pública.
+- [`web.browser`](../src/capabilities/tools/web/browser/) mantém uma sessão local
+  residente quando possível, usando Camoufox + Playwright e operações
+  estruturadas. O Agent decide e planeja; o browser não contém planejamento.
+- [`web.crawl`](../src/capabilities/tools/web/crawl/) é separado e opcional,
+  usando um adapter local Crawl4AI para múltiplas páginas. Ele não substitui
+  fetch ou browser.
+
+Browser Use não faz parte do caminho principal de `web.browser`; quando adotado,
+fica como integração opcional para Workers/Tasks de automação longa e complexa.
+Endpoints, credenciais e seleção de adapters pertencem à configuração global do
+Atlas, nunca às regras específicas do Agent.
+
 Mudanças na estrutura ou nas fronteiras do projeto devem atualizar este documento.

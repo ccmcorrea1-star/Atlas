@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "runtime": "tsx src/runtime/server.ts",
-    "build": "npm run build:runtime && npm run build:native",
+    "build": "npm run build:runtime && npm run build:web-search && npm run build:web-browser && npm run build:web-crawl && npm run build:native",
     "build:runtime": "tsc",
     "build:native": "node scripts/build-native.mjs all",
     "start": "node dist/index.js",
@@ -22,6 +22,8 @@
     "build:lsp": "node scripts/build-capability-runtime.mjs lsp release",
     "test:client": "cargo test --locked --manifest-path clients/tui/Cargo.toml",
     "build:web-search": "node scripts/build-web-search.mjs",
+    "build:web-browser": "node scripts/build-web-tools.mjs browser",
+    "build:web-crawl": "node scripts/build-web-tools.mjs crawl",
     "build:web-fetch": "node scripts/build-capability-runtime.mjs web-fetch release",
     "test:tui": "npm run test:client",
     "test:runtime": "node scripts/run-typescript-tests.mjs runtime",
@@ -29,6 +31,8 @@
     "test:lsp": "cargo test --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml",
     "test:web-fetch": "cargo test --locked --manifest-path src/capabilities/tools/web/fetch/Cargo.toml",
     "test:web-search": "node scripts/run-typescript-tests.mjs web-search",
+    "test:web-browser": "node scripts/run-typescript-tests.mjs web-browser",
+    "test:web-crawl": "node scripts/run-typescript-tests.mjs web-crawl",
     "check:tui": "npm run lint:client && npm run build:client && npm run test:tui",
     "check": "npm run format:check && npm run lint && npm run typecheck",
     "check:full": "npm run check && npm run lint:lsp && npm run lint:web-fetch && npm run build && npm test && npm run smoke && npm run check:tui",
@@ -36,7 +40,7 @@
     "lint:lsp": "cargo clippy --locked --manifest-path src/capabilities/tools/lsp/Cargo.toml --all-targets -- -D warnings",
     "smoke": "tsx src/smoke.ts",
     "bench:capabilities": "tsx scripts/benchmark-capability-bridge.ts",
-    "test": "npm run test:runtime && npm run test:native && npm run test:lsp && npm run test:web-fetch && npm run test:web-search"
+    "test": "npm run test:runtime && npm run test:native && npm run test:lsp && npm run test:web-fetch && npm run test:web-search && npm run test:web-browser && npm run test:web-crawl"
   },
   "repository": {
     "type": "git",
@@ -56,6 +60,7 @@
     "@openai/agents": "^0.18.0",
     "@openai/agents-extensions": "^0.18.0",
     "ai": "^7.0.99",
+    "playwright-core": "1.63.0",
     "zod": "^4.6.3"
   },
   "devDependencies": {

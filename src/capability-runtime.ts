@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 
+import type { AtlasWebConfig } from './config/index.js';
+
 export type CapabilityDiscoveryRequest = {
   query?: string;
   limit?: number;
@@ -53,6 +55,7 @@ export interface CapabilityRuntime {
 
 export type NativeCapabilityRuntimeOptions = {
   executablePath?: string;
+  webConfig?: AtlasWebConfig;
 };
 
 type PendingRequest = {
@@ -140,6 +143,7 @@ function jsonSchema(value: unknown): Record<string, unknown> {
 // enquanto este runtime existir e reiniciado de forma limpa depois de crash ou EOF.
 export class NativeCapabilityRuntime implements CapabilityRuntime {
   private readonly executablePath: string;
+  private readonly environment: NodeJS.ProcessEnv;
   private child: ChildProcessWithoutNullStreams | undefined;
   private terminate: BridgeTerminator | undefined;
   private stdoutBuffer = '';
@@ -152,6 +156,12 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
       options.executablePath ??
       process.env.ATLAS_CAPABILITY_RUNTIME ??
       resolve(process.cwd(), 'src/capabilities/runtime/bridge/runtime');
+    this.environment = {
+      ...process.env,
+      ...(options.webConfig === undefined
+        ? {}
+        : { ATLAS_WEB_CONFIG_JSON: JSON.stringify(options.webConfig) }),
+    };
   }
 
   public async discover(
@@ -301,6 +311,7 @@ export class NativeCapabilityRuntime implements CapabilityRuntime {
     const child = spawn(this.executablePath, [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
+      env: this.environment,
     });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');

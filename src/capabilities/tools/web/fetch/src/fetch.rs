@@ -1,7 +1,9 @@
 //! Cliente HTTP/HTTPS com redirects limitados, timeout e teto de tamanho.
 //! Sem JavaScript, sem browser: so o corpo da resposta.
 
-use std::io::Read;
+use std::env;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::extract;
@@ -42,7 +44,7 @@ pub fn fetch(url: &str) -> Result<Fetched, String> {
             url: final_url,
             content_type,
             title: extract::page_title(&text),
-            content: extract::html_to_text(&text),
+            content: extract_html(&text),
         });
     }
     if extract::is_plain_text(&content_type) {
@@ -54,6 +56,54 @@ pub fn fetch(url: &str) -> Result<Fetched, String> {
         });
     }
     Err(format!("unsupported content type '{content_type}'"))
+}
+
+fn extract_html(html: &str) -> String {
+    if configured_extractor() != "trafilatura" {
+        return extract::html_to_text(html);
+    }
+
+    let child = Command::new("trafilatura")
+        .args(["--stdin", "--output-format", "txt", "--no-comments"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return extract::html_to_text(html);
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(html.as_bytes()).is_err() {
+            return extract::html_to_text(html);
+        }
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return extract::html_to_text(html);
+    };
+    if !output.status.success() {
+        return extract::html_to_text(html);
+    }
+    let content = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if content.is_empty() {
+        extract::html_to_text(html)
+    } else {
+        content
+    }
+}
+
+fn configured_extractor() -> String {
+    let Some(raw) = env::var_os("ATLAS_WEB_CONFIG_JSON") else {
+        return "native".to_string();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw.to_string_lossy().as_bytes()) else {
+        return "native".to_string();
+    };
+    value
+        .get("fetch")
+        .and_then(|fetch| fetch.get("extractor"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("native")
+        .to_string()
 }
 
 /// So HTTP e HTTPS; qualquer outro esquema e rejeitado antes de discar.

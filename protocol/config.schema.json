@@ -25,7 +25,7 @@
     "providers": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Credenciais por provider. Nesta fase, apenas \"opencode-go\".",
+      "description": "Credenciais por provider do Runtime.",
       "properties": {
         "opencode-go": {
           "type": "object",
@@ -35,6 +35,69 @@
               "type": "string",
               "minLength": 1,
               "description": "Chave usada pelo provider opencode-go. Sobrescrita por OPENCODE_GO_API_KEY."
+            }
+          }
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Seleção global dos adapters web; as capabilities públicas não dependem do provider.",
+      "properties": {
+        "search": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "type": "string", "minLength": 1, "default": "searxng" },
+            "endpoint": { "type": "string", "minLength": 1 },
+            "timeoutMs": { "type": "integer", "minimum": 1 },
+            "fallbackProviders": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "fetch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extractor": {
+              "type": "string",
+              "enum": ["native", "trafilatura"],
+              "default": "native"
+            }
+          }
+        },
+        "browser": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "camoufox", "default": "camoufox" },
+            "executablePath": { "type": "string", "minLength": 1 },
+            "userDataDir": { "type": "string", "minLength": 1 },
+            "socketPath": { "type": "string", "minLength": 1 },
+            "headless": { "type": "boolean", "default": true }
+          }
+        },
+        "crawl": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "const": "crawl4ai", "default": "crawl4ai" },
+            "endpoint": { "type": "string", "minLength": 1 },
+            "timeoutMs": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "providers": {
+          "type": "object",
+          "description": "Adapters web opcionais, inclusive providers hospedados.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "endpoint": { "type": "string", "minLength": 1 },
+              "apiKey": { "type": "string", "minLength": 1 }
             }
           }
         }

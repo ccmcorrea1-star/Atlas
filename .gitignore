@@ -15,6 +15,9 @@ coverage/
 /src/capabilities/tools/lsp/target/
 /src/capabilities/tools/web/search/runtime
 /.web-search-build/
+/src/capabilities/tools/web/browser/runtime
+/src/capabilities/tools/web/crawl/runtime
+/.web-tools-build/
 /src/capabilities/tools/web/fetch/runtime
 /src/capabilities/tools/web/fetch/target/
 /src/capabilities/tools/filesystem/read/runtime

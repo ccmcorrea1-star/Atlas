@@ -10,6 +10,8 @@ npm run test:native
 npm run test:lsp
 npm run test:web-fetch
 npm run test:web-search
+npm run test:web-browser
+npm run test:web-crawl
 ```
 
 `npm test` executa os mesmos testes agrupados acima. O provider usa um servidor

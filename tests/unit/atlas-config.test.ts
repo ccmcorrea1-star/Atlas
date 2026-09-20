@@ -73,6 +73,7 @@ test('loads a valid configuration file under ATLAS_CONFIG', async () => {
       version: 1,
       provider: 'opencode-go',
       model: 'model-test',
+      web: DEFAULT_ATLAS_CONFIG.web,
     });
     assert.deepEqual(atlasRuntimeSessionData(loaded.config), {
       provider: 'opencode-go',
@@ -81,6 +82,50 @@ test('loads a valid configuration file under ATLAS_CONFIG', async () => {
   } finally {
     await cleanup();
   }
+});
+
+test('carrega seleção web e adapters opcionais na configuração global', () => {
+  const config = parseAtlasConfig(
+    {
+      version: 1,
+      provider: 'opencode-go',
+      model: 'model-test',
+      web: {
+        search: {
+          provider: 'searxng',
+          endpoint: 'http://searxng.local',
+          fallbackProviders: ['hosted-search'],
+        },
+        fetch: { extractor: 'trafilatura' },
+        browser: { provider: 'camoufox', executablePath: '/opt/camoufox' },
+        crawl: { provider: 'crawl4ai', endpoint: 'http://crawl4ai.local/crawl' },
+        providers: { 'hosted-search': { endpoint: 'https://hosted.test', apiKey: 'secret' } },
+      },
+    },
+    'inline',
+  );
+  assert.equal(config.web?.search.provider, 'searxng');
+  assert.deepEqual(config.web?.search.fallbackProviders, ['hosted-search']);
+  assert.equal(config.web?.fetch.extractor, 'trafilatura');
+  assert.equal(config.web?.browser.executablePath, '/opt/camoufox');
+  assert.equal(config.web?.crawl.endpoint, 'http://crawl4ai.local/crawl');
+  assert.equal(config.web?.providers?.['hosted-search']?.apiKey, 'secret');
+});
+
+test('não aceita Browser Use como backend principal do browser', () => {
+  assert.throws(
+    () =>
+      parseAtlasConfig(
+        {
+          version: 1,
+          provider: 'opencode-go',
+          model: 'model-test',
+          web: { browser: { provider: 'browser-use' } },
+        },
+        'inline',
+      ),
+    /unsupported web.browser provider/,
+  );
 });
 
 test('rejects an invalid JSON configuration', async () => {

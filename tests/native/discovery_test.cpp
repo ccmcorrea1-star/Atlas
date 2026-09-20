@@ -75,6 +75,8 @@ int main() {
       "src/capabilities/tools/system/info/capability.json",
       "src/capabilities/tools/web/fetch/capability.json",
       "src/capabilities/tools/web/search/capability.json",
+      "src/capabilities/tools/web/browser/capability.json",
+      "src/capabilities/tools/web/crawl/capability.json",
   };
   for (const std::string& manifest : manifests) {
     require(loader.load(manifest), "manifesto real deve carregar: " + manifest);
@@ -119,6 +121,8 @@ int main() {
       {"buscar tutoriais de rust", "web.search"},
       {"procurar tutoriais na web", "web.search"},
       {"procure documentacao", "web.search"},
+      {"navegue no site", "web.browser"},
+      {"rastreie as paginas", "web.crawl"},
       {"abrir essa url", "web.fetch"},
       {"baixar a pagina", "web.fetch"},
       {"ler o conteudo do link", "web.fetch"},
@@ -161,7 +165,7 @@ int main() {
     DiscoveryRequest request;
     request.query = std::string("de o para com e");
     const auto results = discovery.discover(request);
-    require(results.size() == 10, "so stopwords equivale a query vazia: 10 capabilities");
+    require(results.size() == 12, "so stopwords equivale a query vazia: 12 capabilities");
   }
   expectTop(discovery, {"por favor me mostre o arquivo", "filesystem.read"});
   expectTop(discovery, {"informações do sistema", "system.info"});
