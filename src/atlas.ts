@@ -69,6 +69,8 @@ export const MATERIALIZED_CAPABILITY_IDS = [
   'lsp.diagnostics',
   'git.status',
   'git.diff',
+  'web.search',
+  'web.fetch',
 ] as const;
 
 // O provedor aceita apenas [a-zA-Z0-9_-] no nome da Function Tool.

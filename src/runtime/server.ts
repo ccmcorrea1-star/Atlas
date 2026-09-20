@@ -31,6 +31,75 @@ import { UnixSocketServer } from './transport/unix/server.js';
 
 export const DEFAULT_RUNTIME_SOCKET_PATH = '/tmp/atlas-runtime.sock';
 
+type AtlasRunResult = Awaited<ReturnType<typeof runAtlas>>;
+type RequestUsageEntry = NonNullable<
+  AtlasRunResult['runContext']['usage']['requestUsageEntries']
+>[number];
+
+type TurnUsage = {
+  currentRequest: RequestUsageEntry | undefined;
+  entries: RequestUsageEntry[];
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+};
+
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function getTurnUsage(result: AtlasRunResult): TurnUsage {
+  const usage = result.runContext.usage;
+  const entries = (usage.requestUsageEntries ?? []).filter(
+    (entry): entry is RequestUsageEntry =>
+      isTokenCount(entry.inputTokens) && isTokenCount(entry.outputTokens),
+  );
+  return {
+    currentRequest: entries.at(-1),
+    entries,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    requests: usage.requests,
+  };
+}
+
+function formatDebugTokens(tokens: number): string {
+  if (tokens < 1_000) {
+    return String(tokens);
+  }
+  if (tokens < 1_000_000) {
+    const value = Number((tokens / 1_000).toFixed(1));
+    return `${value}k`;
+  }
+  const value = Number((tokens / 1_000_000).toFixed(1));
+  return `${value}m`;
+}
+
+function debugTurnUsage(usage: TurnUsage): void {
+  if (process.env.ATLAS_DEBUG !== '1') {
+    return;
+  }
+
+  const requestLines = usage.entries.map(
+    (entry, index) =>
+      `request ${index + 1} · in ${formatDebugTokens(entry.inputTokens)} · out ${formatDebugTokens(entry.outputTokens)}`,
+  );
+  const current = usage.currentRequest;
+  const currentLine =
+    current === undefined
+      ? 'context current: unavailable (request usage unavailable)'
+      : `context current: ${formatDebugTokens(current.inputTokens)}`;
+  console.debug(
+    [
+      ...requestLines,
+      currentLine,
+      `turn input: ${formatDebugTokens(usage.inputTokens)}`,
+      `turn output: ${formatDebugTokens(usage.outputTokens)}`,
+      `requests: ${usage.requests}`,
+    ].join('\n'),
+  );
+}
+
 function defaultRuntimeSocketPath(): string {
   const runtimeDirectory = process.env.XDG_RUNTIME_DIR?.trim();
   return runtimeDirectory === undefined || runtimeDirectory.length === 0
@@ -242,11 +311,13 @@ export class AtlasRuntimeServer {
         typeof result.finalOutput === 'string'
           ? result.finalOutput
           : JSON.stringify(result.finalOutput);
+      const usage = getTurnUsage(result);
+      debugTurnUsage(usage);
       const context =
-        this.contextWindow === undefined
+        this.contextWindow === undefined || usage.currentRequest === undefined
           ? undefined
           : {
-              used_tokens: result.runContext.usage.inputTokens,
+              used_tokens: usage.currentRequest.inputTokens,
               context_window: this.contextWindow,
             };
       if (context !== undefined) {
@@ -255,7 +326,7 @@ export class AtlasRuntimeServer {
       const completedData: RuntimeTurnCompletedData = {
         ...(messageId === undefined ? {} : { message_id: messageId }),
         content: content ?? '',
-        // A UI recebe o uso agregado sem precisar conhecer o Agent SDK.
+        // A UI recebe somente o contexto da última chamada do modelo.
         ...(context === undefined ? {} : { context }),
       };
       publish(runtimeEvent(request, 'turn.completed', completedData));

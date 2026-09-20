@@ -52,3 +52,29 @@ test('keeps conversation identity and history while reusing the Runner', async (
     await server.close();
   }
 });
+
+test('starts independent conversations when no conversation ID is provided', async () => {
+  const server = await startOpenCodeGoTestServer([
+    'First independent turn.',
+    'Second independent turn.',
+  ]);
+
+  try {
+    const providerOptions = {
+      apiKey: 'atlas-test-key',
+      baseURL: server.baseURL,
+    };
+
+    await runAtlas('Do not reuse an earlier conversation.', providerOptions);
+    await runAtlas('This must start without the earlier history.', providerOptions);
+
+    const firstSession = server.requests[0]?.headers['x-opencode-session'];
+    const secondSession = server.requests[1]?.headers['x-opencode-session'];
+    assert.ok(firstSession);
+    assert.ok(secondSession);
+    assert.notEqual(firstSession, secondSession);
+    assert.doesNotMatch(JSON.stringify(server.requests[1]?.body.input), /earlier conversation/);
+  } finally {
+    await server.close();
+  }
+});

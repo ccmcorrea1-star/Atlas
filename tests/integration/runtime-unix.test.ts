@@ -59,7 +59,15 @@ const shellCapabilityRuntime: CapabilityRuntime = {
   },
 };
 
-function responseBody(status: string, output: WireMessage[] = []): WireMessage {
+function responseBody(
+  status: string,
+  output: WireMessage[] = [],
+  usage: WireMessage = {
+    input_tokens: 1,
+    output_tokens: 2,
+    total_tokens: 3,
+  },
+): WireMessage {
   return {
     id: 'runtime-integration-response',
     object: 'response',
@@ -67,11 +75,7 @@ function responseBody(status: string, output: WireMessage[] = []): WireMessage {
     status,
     model: 'gpt-5.6-luna',
     output,
-    usage: {
-      input_tokens: 1,
-      output_tokens: 2,
-      total_tokens: 3,
-    },
+    usage,
   };
 }
 
@@ -187,12 +191,19 @@ async function startStreamingModelServer(): Promise<{
   };
 }
 
-function functionCallStream(item: WireMessage): WireMessage[] {
+function functionCallStream(
+  item: WireMessage,
+  usage: WireMessage = {
+    input_tokens: 1,
+    output_tokens: 2,
+    total_tokens: 3,
+  },
+): WireMessage[] {
   return [
     {
       type: 'response.created',
       sequence_number: 1,
-      response: responseBody('in_progress'),
+      response: responseBody('in_progress', [], usage),
     },
     {
       type: 'response.output_item.added',
@@ -223,12 +234,19 @@ function functionCallStream(item: WireMessage): WireMessage[] {
     {
       type: 'response.completed',
       sequence_number: 6,
-      response: responseBody('completed', [item]),
+      response: responseBody('completed', [item], usage),
     },
   ];
 }
 
-function messageStream(text: string): WireMessage[] {
+function messageStream(
+  text: string,
+  usage: WireMessage = {
+    input_tokens: 1,
+    output_tokens: 2,
+    total_tokens: 3,
+  },
+): WireMessage[] {
   const message = {
     id: 'runtime-execution-message',
     type: 'message',
@@ -240,7 +258,7 @@ function messageStream(text: string): WireMessage[] {
     {
       type: 'response.created',
       sequence_number: 1,
-      response: responseBody('in_progress'),
+      response: responseBody('in_progress', [], usage),
     },
     {
       type: 'response.output_item.added',
@@ -289,7 +307,7 @@ function messageStream(text: string): WireMessage[] {
     {
       type: 'response.completed',
       sequence_number: 8,
-      response: responseBody('completed', [message]),
+      response: responseBody('completed', [message], usage),
     },
   ];
 }
@@ -402,9 +420,13 @@ async function startDirectToolStreamingModelServer(): Promise<{
             arguments: JSON.stringify({ command: 'node --version', cwd: '/tmp' }),
           }
         : undefined;
+    const usage =
+      requests.length === 1
+        ? { input_tokens: 6_800, output_tokens: 420, total_tokens: 7_220 }
+        : { input_tokens: 10_400, output_tokens: 1_200, total_tokens: 11_600 };
     const events = output
-      ? functionCallStream(output)
-      : messageStream('Executed node --version: v22.x.x');
+      ? functionCallStream(output, usage)
+      : messageStream('Executed node --version: v22.x.x', usage);
 
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const event of events) {
@@ -939,6 +961,10 @@ test('executes a materialized core tool directly and publishes the capability li
       target: 'local',
     });
     assert.equal((events.at(-1)?.data as WireMessage).content, 'Executed node --version: v22.x.x');
+    assert.deepEqual(events.find((event) => event.type === 'context.updated')?.data, {
+      used_tokens: 10_400,
+      context_window: 256_000,
+    });
 
     // Um round-trip para a tool e outro para a resposta: sem list_tools/describe.
     assert.equal(model.requests.length, 2);

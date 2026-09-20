@@ -145,6 +145,8 @@ const materializedToolNames = [
   'lsp_diagnostics',
   'git_status',
   'git_diff',
+  'web_search',
+  'web_fetch',
 ];
 const baseToolNames = ['list_tools', 'discover', 'describe', 'execute'];
 
@@ -239,6 +241,89 @@ test('materializes core capabilities as direct tools from the registry', async (
     );
     // A capability materializada nao aparece no payload como schema do describe.
     assert.doesNotMatch(JSON.stringify(firstRequest.input), /function-call-describe/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('materializes web.search and web.fetch as direct tools', async () => {
+  const definitions: CapabilityDefinition[] = [
+    {
+      id: 'web.search',
+      type: 'tool',
+      summary: 'pesquisar na web',
+      description: 'consultar resultados atualizados',
+      schema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+    {
+      id: 'web.fetch',
+      type: 'tool',
+      summary: 'ler uma página',
+      description: 'obter conteúdo HTTP',
+      schema: {
+        type: 'object',
+        properties: { url: { type: 'string' } },
+        required: ['url'],
+        additionalProperties: false,
+      },
+    },
+  ];
+  const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
+  const executed: string[] = [];
+  const capabilityRuntime: CapabilityRuntime = {
+    discover: async () => [],
+    listTools: async () => [],
+    getDefinition: async (id) => definitionsById.get(id),
+    execute: async (id, target, arguments_) => {
+      executed.push(`${id}:${JSON.stringify(arguments_)}`);
+      return { target, status: 'success', error: '', output: { results: [] } };
+    },
+  };
+  const server = await startCapabilityAgentServer((requestNumber, input) => {
+    const output =
+      requestNumber === 1
+        ? [
+            {
+              id: 'function-call-web-search',
+              type: 'function_call',
+              status: 'completed',
+              call_id: 'web-search-call',
+              name: 'web_search',
+              arguments: JSON.stringify({ query: 'Atlas' }),
+            },
+          ]
+        : [
+            {
+              id: 'final-web-search-message',
+              type: 'message',
+              status: 'completed',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Busca concluída.', annotations: [] }],
+            },
+          ];
+    return responseEnvelope(requestNumber, input, output);
+  });
+
+  try {
+    const result = await runAtlas('Pesquise Atlas na web.', {
+      apiKey: 'atlas-web-tools-test-key',
+      baseURL: server.baseURL,
+      conversationId: 'web-tools-conversation',
+      capabilityRuntime,
+    });
+
+    assert.equal(result.finalOutput, 'Busca concluída.');
+    assert.deepEqual(
+      tools(server.requests[0] as RequestBody).map((tool) => tool.name),
+      ['web_search', 'web_fetch', ...baseToolNames],
+    );
+    assert.deepEqual(executed, ['web.search:{"query":"Atlas"}']);
+    assert.doesNotMatch(JSON.stringify(server.requests[0]?.input), /function-call-discover/);
   } finally {
     await server.close();
   }

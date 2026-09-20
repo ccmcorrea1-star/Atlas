@@ -29,7 +29,11 @@ mod wrapping;
 
 use std::error::Error;
 use std::io::stdout;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use clap::Parser;
 use clap::Subcommand;
@@ -63,9 +67,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Identificador da conversa reutilizado em todos os turnos deste processo.
-    #[arg(long, default_value = "default")]
-    conversation_id: String,
+    /// Identificador da conversa a retomar explicitamente.
+    #[arg(long)]
+    conversation_id: Option<String>,
 
     /// Substitui o caminho do Unix Socket do Atlas Runtime.
     #[arg(long, env = "ATLAS_RUNTIME_SOCKET")]
@@ -82,6 +86,20 @@ enum Command {
 }
 
 struct TerminalGuard;
+
+static NEXT_CONVERSATION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn generated_conversation_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let sequence = NEXT_CONVERSATION_ID.fetch_add(1, Ordering::Relaxed);
+    format!("tui-{}-{timestamp}-{sequence}", std::process::id())
+}
+
+fn effective_conversation_id(requested: Option<String>) -> String {
+    requested.unwrap_or_else(generated_conversation_id)
+}
 
 impl TerminalGuard {
     fn enter() -> Result<Self, Box<dyn Error>> {
@@ -140,11 +158,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return server::execute(command, cli.socket.as_deref());
     }
 
+    let conversation_id = effective_conversation_id(cli.conversation_id);
     let (runtime, runtime_events) = match cli.socket {
         Some(socket) => {
-            AtlasRuntimeClient::with_transport(cli.conversation_id, UnixTransport::new(socket))
+            AtlasRuntimeClient::with_transport(conversation_id, UnixTransport::new(socket))
         }
-        None => AtlasRuntimeClient::new(cli.conversation_id),
+        None => AtlasRuntimeClient::new(conversation_id),
     };
     run(runtime, runtime_events).await
 }
@@ -307,5 +326,34 @@ mod tests {
                 command: server::ServerCommand::Status
             })
         ));
+
+        let new_conversation = Cli::try_parse_from(["atlas"]).unwrap();
+        assert_eq!(new_conversation.conversation_id, None);
+
+        let resumed =
+            Cli::try_parse_from(["atlas", "--conversation-id", "conversation-a"]).unwrap();
+        assert_eq!(resumed.conversation_id.as_deref(), Some("conversation-a"));
+    }
+
+    #[test]
+    fn generates_unique_ids_for_independent_executions() {
+        let first = effective_conversation_id(None);
+        let second = effective_conversation_id(None);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("tui-"));
+        assert!(second.starts_with("tui-"));
+    }
+
+    #[test]
+    fn keeps_one_effective_id_for_the_execution() {
+        let effective = effective_conversation_id(None);
+        let (runtime, _) = AtlasRuntimeClient::with_transport(
+            effective.clone(),
+            UnixTransport::new("/tmp/atlas-test-unused.sock"),
+        );
+
+        assert_eq!(runtime.conversation_id(), effective);
+        assert_eq!(runtime.clone().conversation_id(), runtime.conversation_id());
     }
 }
