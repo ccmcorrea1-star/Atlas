@@ -53,7 +53,7 @@ export type AtlasConfig = {
 export const DEFAULT_ATLAS_WEB_CONFIG: AtlasWebConfig = {
   search: {
     provider: 'searxng',
-    endpoint: 'http://127.0.0.1:8080',
+    endpoint: 'http://searxng.home',
     timeoutMs: 15000,
     fallbackProviders: [],
   },

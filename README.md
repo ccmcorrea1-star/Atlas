@@ -75,7 +75,7 @@ Playwright para `web.browser` e Crawl4AI é opcional para `web.crawl`:
   "web": {
     "search": {
       "provider": "searxng",
-      "endpoint": "http://127.0.0.1:8080",
+      "endpoint": "http://searxng.home",
       "fallbackProviders": []
     },
     "fetch": { "extractor": "native" },

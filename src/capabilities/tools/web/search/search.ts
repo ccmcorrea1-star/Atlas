@@ -31,7 +31,7 @@ export type SearchProviderFactory = (config: SearchConfig) => SearchProvider;
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:8080';
+const DEFAULT_ENDPOINT = 'http://searxng.home';
 const DEFAULT_TIMEOUT_MS = 15000;
 
 const providerFactories = new Map<string, SearchProviderFactory>();
