@@ -334,7 +334,9 @@ impl HistoryCell for ToolCell {
             .map(|duration| format!(" · {}", format_duration(duration)))
             .unwrap_or_default();
         let wrap_width = usize::from(width).saturating_sub(2).max(1);
-        let mut lines = wrap_text(&format!("{title}{duration}"), wrap_width)
+        let title_lines = wrap_text(&title, wrap_width);
+        let last_title_line = title_lines.len().saturating_sub(1);
+        let mut lines = title_lines
             .into_iter()
             .enumerate()
             .map(|(index, line)| {
@@ -356,6 +358,9 @@ impl HistoryCell for ToolCell {
                 ])
             })
             .collect::<Vec<_>>();
+        if !duration.is_empty() {
+            lines[last_title_line].push_span(Span::styled(duration, secondary_style()));
+        }
         if let Some(output) = &self.output {
             lines.extend(tool_summary_lines(&self.tool_name, output, width));
         }
@@ -750,22 +755,22 @@ fn filesystem_change_lines(
         } else {
             format!("Patched {path}")
         };
-        let title = format!(
-            "✓ {title}{}",
-            duration_ms
-                .map(|duration| format!(" · {}", format_duration(duration)))
-                .unwrap_or_default()
-        );
+        let duration = duration_ms
+            .map(|duration| format!(" · {}", format_duration(duration)))
+            .unwrap_or_default();
         if !lines.is_empty() {
             lines.push(Line::default());
         }
         lines.push(padded_diff_line(
-            vec![Span::styled(
-                title,
-                action_style()
-                    .bg(DIFF_BLOCK_BACKGROUND)
-                    .add_modifier(Modifier::BOLD),
-            )],
+            vec![
+                Span::styled(
+                    format!("✓ {title}"),
+                    action_style()
+                        .bg(DIFF_BLOCK_BACKGROUND)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(duration, secondary_style().bg(DIFF_BLOCK_BACKGROUND)),
+            ],
             DIFF_BLOCK_BACKGROUND,
             width,
         ));
