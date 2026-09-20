@@ -100,7 +100,7 @@ O contrato público entre Runtime e clientes está em [`protocol/runtime/v1`](..
 
 MCP é uma fronteira de integração, não a implementação interna obrigatória de Discovery.
 
-Clientes permanecem desacoplados do Runtime e usam contratos públicos. A documentação dos clientes está em [`clients/`](../clients/README.md).
+Clientes permanecem desacoplados do Runtime e usam contratos públicos. A documentação dos clientes está em [`clients/`](../clients/README.md) e a família de apps está definida em [`APPS.md`](./APPS.md).
 
 Atlas Workstation deve funcionar como um espaço de trabalho observável, não apenas como uma interface de chat maior.
 
