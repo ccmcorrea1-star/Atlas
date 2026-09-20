@@ -1,0 +1,28 @@
+---
+source: src/chatwidget/rendering.rs
+expression: "screen_rows(&mut app, 80, 24).join(\"\\n\")"
+---
+  Atlas                                                          …/clients/tui  
+                                                                                
+                                                                                
+  › question                                                                    
+                                                                                
+                                                                                
+  Thinking · 0.0s                                                               
+                                                                                
+  ✓ Read README.md · 0ms                                                        
+    └ README.md · 42 lines                                                      
+                                                                                
+  Thinking · 0.0s                                                               
+                                                                                
+  ✓ Patched src/main.rs · 0ms                                                   
+      1     │ -old                                                              
+          1 │ +new                                                              
+                                                                                
+  Thinking · 0.0s                                                               
+                                                                                
+  answer                                                                        
+                                                                                
+  › Ask Atlas to do anything                                                    
+                                                                                
+  ? shortcuts

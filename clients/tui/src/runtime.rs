@@ -83,6 +83,10 @@ pub enum RuntimeEvent {
         message_id: Option<String>,
         context: Option<ContextUsage>,
     },
+    TurnCancelled {
+        content: String,
+        message_id: Option<String>,
+    },
     Error {
         message: String,
     },
@@ -90,7 +94,10 @@ pub enum RuntimeEvent {
 
 impl RuntimeEvent {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::TurnCompleted { .. } | Self::Error { .. })
+        matches!(
+            self,
+            Self::TurnCompleted { .. } | Self::TurnCancelled { .. } | Self::Error { .. }
+        )
     }
 }
 
@@ -289,6 +296,19 @@ async fn send_turn(
                     .map_err(|_| RuntimeError::EventChannelClosed)?;
                 return Ok(());
             }
+            Some(RuntimeEvent::TurnCancelled {
+                content,
+                message_id,
+            }) => {
+                events
+                    .send(RuntimeEvent::TurnCancelled {
+                        content,
+                        message_id,
+                    })
+                    .await
+                    .map_err(|_| RuntimeError::EventChannelClosed)?;
+                return Ok(());
+            }
             Some(event) => events
                 .send(event)
                 .await
@@ -424,6 +444,7 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
             | "execution.output.delta"
             | "execution.completed"
             | "turn.completed"
+            | "turn.cancelled"
             | "error"
     );
     if !known {
@@ -551,6 +572,13 @@ fn parse_runtime_event(envelope: RuntimeEnvelope) -> Result<Option<RuntimeEvent>
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             context: optional_context(&data)?,
+        })),
+        "turn.cancelled" => Ok(Some(RuntimeEvent::TurnCancelled {
+            content: text_string(&data, "content")?,
+            message_id: data
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
         })),
         "error" => Err(RuntimeError::Remote(required_string(&data, "message")?)),
         _ => Ok(None),
@@ -756,6 +784,25 @@ mod tests {
                 provider: "opencode-go".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn parses_turn_cancellation_as_a_terminal_event_with_partial_content() {
+        let event = parse_runtime_event(envelope(
+            "turn.cancelled",
+            json!({"content": "partial", "message_id": "message-1"}),
+        ))
+        .expect("turn.cancelled should parse")
+        .expect("known event");
+
+        assert_eq!(
+            event,
+            RuntimeEvent::TurnCancelled {
+                content: "partial".to_owned(),
+                message_id: Some("message-1".to_owned()),
+            }
+        );
+        assert!(event.is_terminal());
     }
 
     #[test]

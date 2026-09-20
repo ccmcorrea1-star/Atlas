@@ -1,0 +1,5 @@
+---
+source: src/history_cell/messages.rs
+expression: "thinking.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\")"
+---
+⠋ Thinking · 0.0s

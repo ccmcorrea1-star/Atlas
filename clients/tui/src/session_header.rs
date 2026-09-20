@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Component;
 use std::path::Path;
 
 use ratatui::buffer::Buffer;
@@ -12,14 +13,14 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::ui_consts::primary_style;
+use crate::ui_consts::action_style;
+use crate::ui_consts::elevated_surface_style;
 use crate::ui_consts::secondary_style;
-use crate::ui_consts::surface_style;
 
-pub(crate) const HEIGHT: u16 = 1;
+pub(crate) const HEIGHT: u16 = 3;
 
 pub(crate) fn desired_height(width: u16) -> u16 {
-    u16::from(width > 0)
+    if width > 0 { HEIGHT } else { 0 }
 }
 
 pub(crate) fn render(area: Rect, buffer: &mut Buffer, _app: &App) {
@@ -29,9 +30,9 @@ pub(crate) fn render(area: Rect, buffer: &mut Buffer, _app: &App) {
 
     let header_area = Rect::new(area.x, area.y, area.width, HEIGHT.min(area.height));
     Clear.render(header_area, buffer);
-    buffer.set_style(header_area, surface_style());
+    buffer.set_style(header_area, elevated_surface_style());
 
-    let title = Span::styled("Atlas", primary_style().add_modifier(Modifier::BOLD));
+    let title = Span::styled("Atlas", action_style().add_modifier(Modifier::BOLD));
     let title_width = UnicodeWidthStr::width("Atlas");
     let directory = env::current_dir().ok().map(|path| compact_path(&path));
     let available_path_width = usize::from(header_area.width).saturating_sub(title_width + 1);
@@ -46,7 +47,8 @@ pub(crate) fn render(area: Rect, buffer: &mut Buffer, _app: &App) {
     if let Some(directory) = directory {
         line.push_span(Span::styled(directory, secondary_style()));
     }
-    line.render(header_area, buffer);
+    let title_area = Rect::new(header_area.x, header_area.y, header_area.width, 1);
+    line.render(title_area, buffer);
 }
 
 fn compact_path(path: &Path) -> String {
@@ -55,13 +57,31 @@ fn compact_path(path: &Path) -> String {
         return display.into_owned();
     };
     let home = Path::new(&home);
-    let Ok(relative) = path.strip_prefix(home) else {
-        return display.into_owned();
-    };
-    if relative.as_os_str().is_empty() {
-        "~".to_owned()
+    if let Ok(relative) = path.strip_prefix(home) {
+        if relative.as_os_str().is_empty() {
+            "~".to_owned()
+        } else {
+            format!("~/{}", relative.display())
+        }
+    } else if path.is_absolute() {
+        let components = path
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let suffix = components.iter().rev().take(2).cloned().collect::<Vec<_>>();
+        if suffix.is_empty() {
+            "…".to_owned()
+        } else {
+            format!(
+                "…/{}",
+                suffix.into_iter().rev().collect::<Vec<_>>().join("/")
+            )
+        }
     } else {
-        format!("~/{}", relative.display())
+        display.into_owned()
     }
 }
 
@@ -104,6 +124,7 @@ fn truncate_path(path: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_consts::COLOR_ACTION;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -124,6 +145,8 @@ mod tests {
 
         assert!(output.contains("Atlas"));
         assert!(output.contains(&compact_path(&env::current_dir().unwrap())));
+        assert_eq!(terminal.backend().buffer()[(0, 0)].fg, COLOR_ACTION);
+        assert_eq!(terminal.backend().buffer()[(0, 0)].fg, COLOR_ACTION);
         assert!(!output.contains("model:"));
         assert!(!output.contains("provider:"));
         assert!(!output.contains("unavailable"));

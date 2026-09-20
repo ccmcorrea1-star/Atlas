@@ -15,4 +15,4 @@ expression: "rows(&app, 100, 14)"
                                                                                                     
                                                                                                     
                                                                                                     
-  reverse-i-search: git
+reverse-i-search: git

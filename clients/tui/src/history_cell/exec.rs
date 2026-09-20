@@ -6,6 +6,7 @@ use ratatui::text::Span;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use super::HistoryCell;
 use super::plain_lines;
@@ -33,13 +34,16 @@ const DIFF_ADDED_BACKGROUND: Color = COLOR_SURFACE_DIFF_ADDED;
 const DIFF_REMOVED_BACKGROUND: Color = COLOR_SURFACE_DIFF_REMOVED;
 
 /// Atividade generica de tool do Runtime renderizada com a margem do Codex.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToolCell {
     tool_id: String,
     tool_name: String,
     target: Option<String>,
     output: Option<String>,
     completed: bool,
+    cancelled: bool,
+    duration_ms: Option<u64>,
+    started_at: Instant,
 }
 
 impl ToolCell {
@@ -58,6 +62,9 @@ impl ToolCell {
             target,
             output: None,
             completed: false,
+            cancelled: false,
+            duration_ms: None,
+            started_at: Instant::now(),
         }
     }
 
@@ -65,9 +72,40 @@ impl ToolCell {
         &self.tool_id
     }
 
+    #[allow(dead_code)]
     pub(crate) fn complete(&mut self, output: Option<String>) {
+        self.complete_with_duration(output, 0);
+    }
+
+    pub(crate) fn complete_with_elapsed(&mut self, output: Option<String>) {
+        let duration_ms = self
+            .started_at
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        self.complete_with_duration(output, duration_ms);
+    }
+
+    pub(crate) fn complete_with_duration(&mut self, output: Option<String>, duration_ms: u64) {
         self.output = output;
         self.completed = true;
+        self.cancelled = false;
+        self.duration_ms = Some(duration_ms);
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if !self.completed {
+            self.completed = true;
+            self.cancelled = true;
+            self.duration_ms = Some(
+                self.started_at
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            );
+        }
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -77,6 +115,10 @@ impl ToolCell {
     pub(crate) fn activity(&self) -> String {
         let target = self.display_target();
         capability_activity_with_target(&self.tool_name, target.as_deref())
+    }
+
+    pub(crate) fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
     }
 
     fn display_target(&self) -> Option<String> {
@@ -93,6 +135,172 @@ impl ToolCell {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ToolGroupCell {
+    tools: Vec<ToolCell>,
+}
+
+impl ToolGroupCell {
+    pub(crate) fn from_tool(tool: ToolCell) -> Self {
+        Self { tools: vec![tool] }
+    }
+
+    pub(crate) fn push(&mut self, tool: ToolCell) {
+        self.tools.push(tool);
+    }
+
+    pub(crate) fn can_group(&self, tool_name: &str) -> bool {
+        self.tools
+            .first()
+            .is_some_and(|tool| tool.tool_name == tool_name)
+    }
+
+    pub(crate) fn tool_mut(&mut self, tool_id: &str) -> Option<&mut ToolCell> {
+        self.tools.iter_mut().find(|tool| tool.tool_id() == tool_id)
+    }
+
+    pub(crate) fn contains_tool(&self, tool_id: &str) -> bool {
+        self.tools.iter().any(|tool| tool.tool_id() == tool_id)
+    }
+
+    pub(crate) fn all_completed(&self) -> bool {
+        !self.tools.is_empty() && self.tools.iter().all(|tool| !tool.is_running())
+    }
+
+    pub(crate) fn running_activities(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter(|tool| tool.is_running())
+            .map(ToolCell::activity)
+            .collect()
+    }
+
+    pub(crate) fn merge(&mut self, mut other: Self) {
+        self.tools.append(&mut other.tools);
+    }
+
+    pub(crate) fn cancel_all(&mut self) {
+        for tool in &mut self.tools {
+            tool.cancel();
+        }
+    }
+
+    pub(crate) fn can_merge(&self, other: &Self) -> bool {
+        self.tools
+            .first()
+            .zip(other.tools.first())
+            .is_some_and(|(left, right)| left.tool_name == right.tool_name)
+    }
+}
+
+impl HistoryCell for ToolGroupCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.tools.len() == 1 {
+            return self.tools[0].display_lines(width);
+        }
+        vec![self.summary_line()]
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.display_lines(width)
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.display_lines(u16::MAX))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl ToolGroupCell {
+    fn summary_line(&self) -> Line<'static> {
+        let first = &self.tools[0];
+        let count = self.tools.len();
+        let label = capability_label(&first.tool_name);
+        let title = format!("{label} {count} {}", group_noun(&first.tool_name, count));
+        let running = self.tools.iter().any(ToolCell::is_running);
+        let failed = self
+            .tools
+            .iter()
+            .any(|tool| tool.completed && tool_status(tool.output.as_deref()) == ToolStatus::Error);
+        let cancelled = self.tools.iter().any(|tool| tool.cancelled);
+        let (marker, style) = if running {
+            ("•", running_style())
+        } else if failed {
+            ("✗", error_style())
+        } else if cancelled {
+            ("•", secondary_style())
+        } else {
+            ("✓", success_style())
+        };
+        let duration = if !running {
+            let total = self
+                .tools
+                .iter()
+                .filter_map(ToolCell::duration_ms)
+                .fold(0u64, u64::saturating_add);
+            format!(" · {}", format_duration(total))
+        } else {
+            String::new()
+        };
+        Line::from(vec![
+            Span::styled(marker, style),
+            Span::raw(" "),
+            Span::styled(title, action_style()),
+            Span::styled(duration, secondary_style()),
+        ])
+    }
+}
+
+fn group_noun(tool_name: &str, count: usize) -> &'static str {
+    match tool_name {
+        "filesystem.read" | "filesystem.glob" => {
+            if count == 1 {
+                "file"
+            } else {
+                "files"
+            }
+        }
+        "filesystem.list" => {
+            if count == 1 {
+                "directory"
+            } else {
+                "directories"
+            }
+        }
+        "filesystem.search" => {
+            if count == 1 {
+                "result"
+            } else {
+                "results"
+            }
+        }
+        _ => {
+            if count == 1 {
+                "call"
+            } else {
+                "calls"
+            }
+        }
+    }
+}
+
+fn format_duration(duration_ms: u64) -> String {
+    if duration_ms < 1_000 {
+        format!("{duration_ms}ms")
+    } else if duration_ms < 60_000 {
+        format!("{:.1}s", duration_ms as f64 / 1_000.0)
+    } else {
+        format!("{}m {:02}s", duration_ms / 60_000, duration_ms / 1_000 % 60)
+    }
+}
+
 impl HistoryCell for ToolCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         if self.completed
@@ -100,6 +308,7 @@ impl HistoryCell for ToolCell {
                 &self.tool_name,
                 self.output.as_deref().unwrap_or_default(),
                 width,
+                self.duration_ms,
                 false,
             )
         {
@@ -111,15 +320,29 @@ impl HistoryCell for ToolCell {
         let title = self
             .display_target()
             .map_or(label.clone(), |target| format!("{label} {target}"));
-        let status = self.completed.then(|| tool_status(self.output.as_deref()));
-        let status_suffix = status.map_or("", ToolStatus::marker);
+        let status = self.completed.then(|| {
+            if self.cancelled {
+                ToolStatus::Cancelled
+            } else {
+                tool_status(self.output.as_deref())
+            }
+        });
         let header_style = status.map_or_else(running_style, ToolStatus::style);
+        let marker = status.map_or("•", ToolStatus::marker);
+        let duration = self
+            .duration_ms
+            .map(|duration| format!(" · {}", format_duration(duration)))
+            .unwrap_or_default();
         let wrap_width = usize::from(width).saturating_sub(2).max(1);
-        let mut lines = wrap_text(&format!("{title}{status_suffix}"), wrap_width)
+        let mut lines = wrap_text(&format!("{title}{duration}"), wrap_width)
             .into_iter()
             .enumerate()
             .map(|(index, line)| {
-                let prefix = if index == 0 { "• " } else { "  " };
+                let prefix = if index == 0 {
+                    format!("{marker} ")
+                } else {
+                    "  ".to_owned()
+                };
                 Line::from(vec![
                     Span::styled(
                         prefix,
@@ -145,6 +368,7 @@ impl HistoryCell for ToolCell {
                 &self.tool_name,
                 self.output.as_deref().unwrap_or_default(),
                 width,
+                self.duration_ms,
                 true,
             )
         {
@@ -170,13 +394,15 @@ impl HistoryCell for ToolCell {
 enum ToolStatus {
     Success,
     Error,
+    Cancelled,
 }
 
 impl ToolStatus {
     fn marker(self) -> &'static str {
         match self {
-            Self::Success => " ✓",
-            Self::Error => " ✗",
+            Self::Success => "✓",
+            Self::Error => "✗",
+            Self::Cancelled => "•",
         }
     }
 
@@ -184,6 +410,7 @@ impl ToolStatus {
         match self {
             Self::Success => success_style(),
             Self::Error => error_style(),
+            Self::Cancelled => secondary_style(),
         }
     }
 }
@@ -489,6 +716,7 @@ fn filesystem_change_lines(
     tool_name: &str,
     output: &str,
     width: u16,
+    duration_ms: Option<u64>,
     transcript: bool,
 ) -> Option<Vec<Line<'static>>> {
     if !matches!(tool_name, "filesystem.patch") {
@@ -522,6 +750,12 @@ fn filesystem_change_lines(
         } else {
             format!("Patched {path}")
         };
+        let title = format!(
+            "✓ {title}{}",
+            duration_ms
+                .map(|duration| format!(" · {}", format_duration(duration)))
+                .unwrap_or_default()
+        );
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -886,15 +1120,23 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
+    fn rendered_group(group: &ToolGroupCell, width: u16) -> Vec<String> {
+        group
+            .display_lines(width)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+    }
+
     #[test]
     fn uses_short_capability_labels_instead_of_raw_ids() {
         let mut cell = ToolCell::new("tool-1".to_owned(), "filesystem.read".to_owned());
         cell.complete(None);
-        assert_eq!(rendered(&cell, 80), ["• Read ✓"]);
+        assert_eq!(rendered(&cell, 80), ["✓ Read · 0ms"]);
 
         let mut search = ToolCell::new("tool-2".to_owned(), "filesystem.search".to_owned());
         search.complete(None);
-        assert_eq!(rendered(&search, 80), ["• Search ✓"]);
+        assert_eq!(rendered(&search, 80), ["✓ Search · 0ms"]);
     }
 
     #[test]
@@ -918,7 +1160,7 @@ mod tests {
         cell.complete(Some(output));
 
         let lines = rendered(&cell, 80);
-        assert_eq!(lines[0], "• Read ✓");
+        assert_eq!(lines[0], "✓ Read · 0ms");
         assert_eq!(lines[1], "  └ line-0");
         assert_eq!(lines.len(), 2);
         assert!(!lines.iter().any(|line| line.contains("line-49")));
@@ -930,7 +1172,7 @@ mod tests {
         cell.complete(Some("x".repeat(8 * 1024)));
         let lines = rendered(&cell, 80);
         assert!(lines.len() <= 3);
-        assert!(lines.join(" ").chars().count() < 140);
+        assert!(lines.join(" ").chars().count() < 150);
     }
 
     #[test]
@@ -950,7 +1192,7 @@ mod tests {
 
         assert_eq!(
             rendered(&cell, 80),
-            ["• System info ✓", "  └ Ubuntu 26.04 · x86_64 · Linux"]
+            ["✓ System info · 0ms", "  └ Ubuntu 26.04 · x86_64 · Linux"]
         );
     }
 
@@ -1000,7 +1242,7 @@ mod tests {
         assert_eq!(
             rendered(&status, 100),
             [
-                "• Git status ✓",
+                "✓ Git status · 0ms",
                 "  └ main · 1 staged · 2 modified · 1 untracked"
             ]
         );
@@ -1016,7 +1258,7 @@ mod tests {
         ));
         assert_eq!(
             rendered(&diff, 100),
-            ["• Git diff ✓", "  └ 2 files changed · +2 -1"]
+            ["✓ Git diff · 0ms", "  └ 2 files changed · +2 -1"]
         );
     }
 
@@ -1032,7 +1274,10 @@ mod tests {
                         "diff": "@@\n+Arquivo de teste.\n"
                     }]
                 }),
-                vec!["Patched teste.txt", "        1 │ +Arquivo de teste."],
+                vec![
+                    "✓ Patched teste.txt · 0ms",
+                    "        1 │ +Arquivo de teste.",
+                ],
             ),
             (
                 serde_json::json!({
@@ -1044,7 +1289,7 @@ mod tests {
                     }]
                 }),
                 vec![
-                    "Patched teste.txt",
+                    "✓ Patched teste.txt · 0ms",
                     "    1   1 │ Arquivo de teste.",
                     "        2 │ +Segunda edição realizada.",
                 ],
@@ -1059,7 +1304,7 @@ mod tests {
                     }]
                 }),
                 vec![
-                    "Patched teste.txt",
+                    "✓ Patched teste.txt · 0ms",
                     "    1     │ -Arquivo de teste.",
                     "    2     │ -Segunda edição realizada.",
                 ],
@@ -1074,7 +1319,7 @@ mod tests {
                         "diff": ""
                     }]
                 }),
-                vec!["Patched teste.txt → docs/teste.txt"],
+                vec!["✓ Patched teste.txt → docs/teste.txt · 0ms"],
             ),
         ];
 
@@ -1229,7 +1474,7 @@ mod tests {
         ));
 
         let lines = rendered(&cell, 100);
-        assert_eq!(lines, ["• Patch ✗", "  └ failed"]);
+        assert_eq!(lines, ["✗ Patch · 0ms", "  └ failed"]);
         assert!(!lines.join("\n").contains("/workspace/project"));
         assert!(!lines.join("\n").contains("status"));
     }
@@ -1299,11 +1544,11 @@ mod tests {
         assert_eq!(
             rendered(&cell, 100),
             [
-                "Patched src/main.cpp",
+                "✓ Patched src/main.cpp · 0ms",
                 "    1     │ -old",
                 "        1 │ +new",
                 "",
-                "Patched src/util.cpp",
+                "✓ Patched src/util.cpp · 0ms",
                 "    1     │ -old util",
                 "        1 │ +new util",
             ]
@@ -1340,7 +1585,7 @@ mod tests {
             .to_string(),
         ));
         let success_lines = rendered(&success, 100);
-        assert_eq!(success_lines, ["• Report ✓"]);
+        assert_eq!(success_lines, ["✓ Report · 0ms"]);
         assert!(!success_lines.iter().any(|line| line.contains("secret")));
         assert!(!success_lines.iter().any(|line| line.contains("status")));
 
@@ -1354,12 +1599,12 @@ mod tests {
             .to_string(),
         ));
         let structured_lines = rendered(&structured, 100);
-        assert_eq!(structured_lines, ["• Report ✓"]);
+        assert_eq!(structured_lines, ["✓ Report · 0ms"]);
         assert!(!structured_lines.join("\n").contains("Structured result"));
 
         let mut array_result = ToolCell::new("tool-3".to_owned(), "custom.report".to_owned());
         array_result.complete(Some("[\"first\",\"second\"]".to_owned()));
-        assert_eq!(rendered(&array_result, 100), ["• Report ✓"]);
+        assert_eq!(rendered(&array_result, 100), ["✓ Report · 0ms"]);
 
         let mut failure = ToolCell::new("tool-2".to_owned(), "custom.report".to_owned());
         failure.complete(Some(
@@ -1372,10 +1617,67 @@ mod tests {
         assert_eq!(
             rendered(&failure, 100),
             [
-                "• Report ✗",
+                "✗ Report · 0ms",
                 "  └ permission denied while reading the report"
             ]
         );
+    }
+
+    #[test]
+    fn shows_tool_duration_in_milliseconds() {
+        let mut cell = ToolCell::new_with_target(
+            "tool-1".to_owned(),
+            "filesystem.read".to_owned(),
+            Some("package.json".to_owned()),
+        );
+        cell.complete_with_duration(None, 12);
+
+        assert_eq!(rendered(&cell, 80), ["✓ Read package.json · 12ms"]);
+    }
+
+    #[test]
+    fn groups_similar_completed_tools_with_one_duration() {
+        let mut first = ToolCell::new_with_target(
+            "tool-1".to_owned(),
+            "filesystem.read".to_owned(),
+            Some("package.json".to_owned()),
+        );
+        first.complete_with_duration(None, 12);
+        let mut second = ToolCell::new_with_target(
+            "tool-2".to_owned(),
+            "filesystem.read".to_owned(),
+            Some("Cargo.toml".to_owned()),
+        );
+        second.complete_with_duration(None, 29);
+
+        let group = {
+            let mut group = ToolGroupCell::from_tool(first);
+            group.push(second);
+            group
+        };
+
+        assert_eq!(rendered_group(&group, 80), ["✓ Read 2 files · 41ms"]);
+    }
+
+    #[test]
+    fn names_grouped_directory_tools_by_their_domain() {
+        let mut first = ToolCell::new_with_target(
+            "tool-1".to_owned(),
+            "filesystem.list".to_owned(),
+            Some("src".to_owned()),
+        );
+        first.complete_with_duration(None, 3);
+        let mut second = ToolCell::new_with_target(
+            "tool-2".to_owned(),
+            "filesystem.list".to_owned(),
+            Some("tests".to_owned()),
+        );
+        second.complete_with_duration(None, 5);
+
+        let mut group = ToolGroupCell::from_tool(first);
+        group.push(second);
+
+        assert_eq!(rendered_group(&group, 80), ["✓ List 2 directories · 8ms"]);
     }
 
     #[test]

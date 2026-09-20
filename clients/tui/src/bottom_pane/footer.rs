@@ -13,8 +13,6 @@ use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::ui_consts::FOOTER_INDENT_COLS;
-use crate::ui_consts::action_style;
 use crate::ui_consts::error_style;
 use crate::ui_consts::secondary_style;
 use crate::ui_consts::warning_style;
@@ -112,70 +110,73 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     }
 
     let left = props.left;
-    let left_width = FOOTER_INDENT_COLS + UnicodeWidthStr::width(left.as_str());
+    let left_width = UnicodeWidthStr::width(left.as_str());
     let available_right = usize::from(area.width).saturating_sub(left_width + 1);
-    let session = props.session;
-    let context = props.context;
-    let combined = match (session.as_deref(), context.as_deref()) {
-        (Some(session), Some(context)) => Some(format!("{session} · {context}")),
-        (Some(session), None) => Some(session.to_owned()),
-        (None, Some(context)) => Some(context.to_owned()),
-        (None, None) => None,
-    };
-    let right = combined
-        .filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right)
-        .or_else(|| {
-            context.filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right)
-        })
-        .or(session.filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right));
-    let right_width = right.as_deref().map_or(0, UnicodeWidthStr::width);
-    let left_span = Span::styled(
-        format!("{}{}", " ".repeat(FOOTER_INDENT_COLS), left),
-        secondary_style(),
-    );
-    let mut line = Line::from(left_span);
+    let right = metadata_line(props.session, props.context, available_right);
+    let right_width = right.as_ref().map_or(0, Line::width);
+    let mut line = Line::from(Span::styled(left, secondary_style()));
     if let Some(right) = right {
         let padding = usize::from(area.width)
             .saturating_sub(left_width + right_width)
             .max(1);
         line.push_span(Span::raw(" ".repeat(padding)));
-        line.push_span(Span::styled(right, secondary_style()));
+        line.extend(right.spans);
     }
     line.render(area, buffer);
 }
 
-pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
-    let line_area = Rect::new(
-        area.x.saturating_add(FOOTER_INDENT_COLS as u16),
-        area.y,
-        area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
-        area.height,
-    );
-    let Some(line) = status_line(app, line_area.width) else {
-        return;
-    };
-    line.render(line_area, buffer);
+fn metadata_line(
+    session: Option<String>,
+    context: Option<String>,
+    available_width: usize,
+) -> Option<Line<'static>> {
+    let separator_width = UnicodeWidthStr::width(" · ");
+    match (session, context) {
+        (Some(session), Some(context))
+            if UnicodeWidthStr::width(session.as_str())
+                .saturating_add(separator_width)
+                .saturating_add(UnicodeWidthStr::width(context.as_str()))
+                <= available_width =>
+        {
+            Some(Line::from(vec![
+                Span::styled(session, secondary_style()),
+                Span::styled(" · ", secondary_style()),
+                Span::styled(context, secondary_style()),
+            ]))
+        }
+        (Some(session), Some(context)) => {
+            if UnicodeWidthStr::width(context.as_str()) <= available_width {
+                Some(Line::from(Span::styled(context, secondary_style())))
+            } else if UnicodeWidthStr::width(session.as_str()) <= available_width {
+                Some(Line::from(Span::styled(session, secondary_style())))
+            } else {
+                None
+            }
+        }
+        (Some(session), None) if UnicodeWidthStr::width(session.as_str()) <= available_width => {
+            Some(Line::from(Span::styled(session, secondary_style())))
+        }
+        (None, Some(context)) if UnicodeWidthStr::width(context.as_str()) <= available_width => {
+            Some(Line::from(Span::styled(context, secondary_style())))
+        }
+        _ => None,
+    }
 }
 
+#[allow(dead_code)]
+pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
+    let Some(line) = status_line(app, area.width) else {
+        return;
+    };
+    line.render(area, buffer);
+}
+
+#[allow(dead_code)]
 fn status_line(app: &App, width: u16) -> Option<Line<'static>> {
     match app.status() {
         crate::app::Status::Ready => None,
         crate::app::Status::Thinking | crate::app::Status::Executing => {
-            let activity = app
-                .current_activity()
-                .unwrap_or_else(|| "Thinking".to_owned());
-            let detail = format!(
-                " ({} • esc to interrupt)",
-                format_duration(app.working_seconds())
-            );
-            let mut line = Line::from(vec![
-                Span::styled("• ", action_style()),
-                Span::styled(activity, action_style()),
-            ]);
-            if line.width().saturating_add(detail.width()) <= usize::from(width) {
-                line.push_span(Span::styled(detail, secondary_style()));
-            }
-            Some(line)
+            (width > 0).then(|| Line::from(Span::styled("esc to interrupt", secondary_style())))
         }
         crate::app::Status::Error(message) => Some(Line::from(Span::styled(
             format!("! {message}"),
@@ -184,7 +185,7 @@ fn status_line(app: &App, width: u16) -> Option<Line<'static>> {
     }
 }
 
-/// Formata a duração do turno em unidades compactas: `42s`, `1m 13s`, `1h 4m`.
+#[cfg(test)]
 fn format_duration(total_seconds: u64) -> String {
     let seconds = total_seconds % 60;
     let minutes = (total_seconds / 60) % 60;
@@ -205,15 +206,15 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         "tab to submit message"
     };
     let rows = [
-        ("  / for commands", ""),
-        ("  shift + enter for newline", queue_hint),
-        ("  @ for file paths", ""),
+        ("/ for commands", ""),
+        ("shift + enter for newline", queue_hint),
+        ("@ for file paths", ""),
         (
-            "  ctrl + g to edit in external editor",
+            "ctrl + g to edit in external editor",
             "esc again to edit previous message",
         ),
-        ("  ctrl + r search history", "ctrl + c to exit"),
-        ("  ctrl + t to view transcript", ""),
+        ("ctrl + r search history", "ctrl + c to exit"),
+        ("ctrl + t to view transcript", ""),
         ("", ""),
         ("", ""),
         ("", ""),
@@ -240,17 +241,45 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             1,
         );
         buffer.set_span(
-            area.x + FOOTER_INDENT_COLS as u16,
+            area.x + 2,
             area.y + 1,
             &Span::styled("Ask Atlas to do anything", secondary_style()),
-            area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
+            area.width.saturating_sub(2),
         );
     }
 }
 
 fn format_context(used: u64, window: u64) -> String {
     let remaining = window.saturating_sub(used).saturating_mul(100) / window.max(1);
-    format!("{remaining}% left")
+    format!(
+        "{}/{} · {remaining}% left",
+        format_token_count(used),
+        format_token_count(window)
+    )
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    if tokens < 1_000_000 {
+        return format_compact_count(tokens, 1_000, 'k');
+    }
+    format_compact_count(tokens, 1_000_000, 'm')
+}
+
+fn format_compact_count(tokens: u64, unit: u64, suffix: char) -> String {
+    let whole = tokens / unit;
+    let remainder = tokens % unit;
+    if remainder == 0 || whole >= 100 {
+        return format!("{whole}{suffix}");
+    }
+    let tenths = (remainder.saturating_mul(10) + unit / 2) / unit;
+    if tenths >= 10 {
+        format!("{}{}", whole + 1, suffix)
+    } else {
+        format!("{whole}.{tenths}{suffix}")
+    }
 }
 
 #[cfg(test)]
@@ -277,11 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn selects_codex_footer_modes_from_composer_state() {
+    fn starts_ready_for_the_first_turn() {
         let app = App::new("footer".to_owned());
         assert_eq!(
             super::FooterProps::from_app(&app).mode,
-            FooterMode::Connecting
+            FooterMode::ComposerEmpty
         );
     }
 
@@ -302,7 +331,8 @@ mod tests {
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
         let output = status_output(&app);
-        assert!(output.contains("• Thinking ("));
+        assert!(output.contains("esc to interrupt"));
+        assert!(!output.contains("Thinking"));
         assert!(output.contains("esc to interrupt"));
         assert!(!output.contains("Working"));
     }
@@ -317,14 +347,15 @@ mod tests {
             target: Some("tsconfig.json".to_owned()),
         });
 
-        assert!(status_output(&app).contains("• Reading tsconfig.json ("));
+        assert_eq!(status_output(&app).trim(), "esc to interrupt");
 
         app.handle_runtime_event(RuntimeEvent::ToolCompleted {
             tool_id: "tool-1".to_owned(),
             tool_name: "filesystem.read".to_owned(),
             output: None,
         });
-        assert!(status_output(&app).contains("• Thinking ("));
+        assert!(status_output(&app).contains("esc to interrupt"));
+        assert!(!status_output(&app).contains("Thinking"));
     }
 
     #[test]
@@ -340,7 +371,7 @@ mod tests {
             target: None,
         });
 
-        assert!(status_output(&app).contains("• Running npm test ("));
+        assert_eq!(status_output(&app).trim(), "esc to interrupt");
     }
 
     #[test]
@@ -385,8 +416,15 @@ mod tests {
 
     #[test]
     fn formats_context_as_remaining_percentage() {
-        assert_eq!(super::format_context(100, 156_000), "99% left");
-        assert_eq!(super::format_context(1_234, 1_000_000), "99% left");
+        assert_eq!(super::format_context(100, 156_000), "100/156k · 99% left");
+        assert_eq!(
+            super::format_context(12_000, 200_000),
+            "12k/200k · 94% left"
+        );
+        assert_eq!(
+            super::format_context(1_234, 1_000_000),
+            "1.2k/1m · 99% left"
+        );
     }
 
     #[test]
@@ -402,11 +440,11 @@ mod tests {
     }
 
     #[test]
-    fn connecting_footer_omits_missing_session_metadata() {
-        let app = App::new("footer-connecting".to_owned());
+    fn ready_footer_omits_missing_session_metadata() {
+        let app = App::new("footer-ready".to_owned());
         let props = super::FooterProps::from_app(&app);
-        assert_eq!(props.mode, FooterMode::Connecting);
-        assert_eq!(props.left, "Connecting…");
+        assert_eq!(props.mode, FooterMode::ComposerEmpty);
+        assert_eq!(props.left, "? shortcuts");
         assert!(props.session.is_none());
     }
 }

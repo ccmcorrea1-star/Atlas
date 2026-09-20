@@ -1,6 +1,8 @@
 ---
 source: src/history_cell/messages.rs
-expression: "user.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\")"
+expression: "format!(\"height: {}\\n{}\", user.desired_height(60),\nuser.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\"))"
 ---
+height: 4
+
 › Review the auth flow
   and keep the error path visible.

@@ -4,9 +4,9 @@ expression: "rows(&shortcuts, 100, super::desired_height(&shortcuts, 100))"
 ---
                                                                                                     
 › Ask Atlas to do anything                                                                          
-  / for commands                                                                                    
-  shift + enter for newline                       tab to submit message                             
-  @ for file paths                                                                                  
-  ctrl + g to edit in external editor             esc again to edit previous message                
-  ctrl + r search history                         ctrl + c to exit                                  
-  ctrl + t to view transcript
+/ for commands                                                                                      
+shift + enter for newline                         tab to submit message                             
+@ for file paths                                                                                    
+ctrl + g to edit in external editor               esc again to edit previous message                
+ctrl + r search history                           ctrl + c to exit                                  
+ctrl + t to view transcript

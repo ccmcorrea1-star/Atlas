@@ -2,5 +2,5 @@
 source: src/history_cell/exec.rs
 expression: "rendered(&completed, 60).join(\"\\n\")"
 ---
-• Search src ✓
+✓ Search src · 0ms
   └ 4 results

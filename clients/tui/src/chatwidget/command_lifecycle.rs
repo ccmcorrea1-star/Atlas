@@ -8,9 +8,8 @@ impl ChatWidget {
             RuntimeEvent::SessionUpdated { .. } => {}
             RuntimeEvent::TurnStarted => {
                 self.status = Status::Thinking;
-                self.activity = Some("Thinking".to_owned());
                 self.turn_active = true;
-                self.turn_started_at = Some(Instant::now());
+                self.begin_thinking();
             }
             RuntimeEvent::ContextUpdated { context } => {
                 self.context_usage = Some(context);
@@ -20,17 +19,25 @@ impl ChatWidget {
                 tool_name,
                 target,
             } => {
+                self.finalize_thinking();
                 self.status = Status::Executing;
-                self.activity = Some(crate::capability_names::capability_activity_with_target(
-                    &tool_name,
-                    target.as_deref(),
-                ));
                 if self.find_active_tool_mut(&tool_id).is_none() {
-                    self.active_cells.push(Box::new(ToolCell::new_with_target(
+                    let tool = ToolCell::new_with_target(
                         tool_id,
                         bounded_metadata(&tool_name),
                         target.map(|value| bounded_metadata(&value)),
-                    )));
+                    );
+                    let can_group = self
+                        .active_tool_group_mut()
+                        .is_some_and(|group| group.can_group(&tool_name));
+                    if can_group {
+                        self.active_tool_group_mut()
+                            .expect("active tool group disappeared")
+                            .push(tool);
+                    } else {
+                        self.active_cells
+                            .push(Box::new(ToolGroupCell::from_tool(tool)));
+                    }
                     self.bump_active_revision();
                 }
             }
@@ -40,16 +47,20 @@ impl ChatWidget {
                 output,
             } => {
                 self.status = Status::Thinking;
-                self.activity = Some("Thinking".to_owned());
                 if let Some(cell) = self.find_active_tool_mut(&tool_id) {
-                    cell.complete(output);
+                    cell.complete_with_elapsed(output);
                     self.commit_active_tool(&tool_id);
                 } else if let Some(cell) = self.find_tool_mut(&tool_id) {
-                    cell.complete(output);
+                    cell.complete_with_elapsed(output);
                 } else {
                     let mut cell = ToolCell::new(tool_id, bounded_metadata(&tool_name));
-                    cell.complete(output);
+                    cell.complete_with_elapsed(output);
                     self.cells.push(Box::new(cell));
+                }
+                if self.active_running_tool_activities().is_empty() {
+                    self.begin_thinking();
+                } else {
+                    self.status = Status::Executing;
                 }
                 self.history_changed();
             }
@@ -58,6 +69,10 @@ impl ChatWidget {
                 message_id,
                 context,
             } => self.finish_turn(content, message_id, context),
+            RuntimeEvent::TurnCancelled {
+                content,
+                message_id,
+            } => self.cancel_turn(content, message_id),
             RuntimeEvent::Error { message } => self.fail_turn(message),
             _ => {}
         }
@@ -69,6 +84,7 @@ impl ChatWidget {
         message_id: Option<String>,
         context: Option<ContextUsage>,
     ) {
+        self.finalize_thinking();
         if let Some(context) = context {
             self.context_usage = Some(context);
         }
@@ -95,14 +111,21 @@ impl ChatWidget {
             }
         }
         self.commit_all_active_cells();
+        self.stream_states.clear();
         self.status = Status::Ready;
-        self.activity = None;
         self.turn_active = false;
-        self.turn_started_at = None;
+        self.history_changed();
+    }
+
+    fn cancel_turn(&mut self, content: String, message_id: Option<String>) {
+        self.cancel_active_cells();
+        self.finish_turn(content, message_id, None);
+        self.cells.push(Box::new(CancelledCell));
         self.history_changed();
     }
 
     fn fail_turn(&mut self, message: String) {
+        self.finalize_thinking();
         for cell in &mut self.cells {
             abort_exec_cell(cell.as_mut());
         }
@@ -114,19 +137,26 @@ impl ChatWidget {
         self.cells
             .push(Box::new(ErrorCell::new(bounded_metadata(&message))));
         self.status = Status::Error(bounded_metadata(&message));
-        self.activity = None;
         self.turn_active = false;
-        self.turn_started_at = None;
         self.history_changed();
     }
 }
 
-fn abort_exec_cell(cell: &mut dyn HistoryCell) {
+pub(super) fn abort_exec_cell(cell: &mut dyn HistoryCell) {
     if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
         exec.abort();
     }
     if let Some(group) = cell.as_any_mut().downcast_mut::<RunningGroupCell>() {
         group.abort_all();
+    }
+}
+
+pub(super) fn abort_tool_cell(cell: &mut dyn HistoryCell) {
+    if let Some(tool) = cell.as_any_mut().downcast_mut::<ToolCell>() {
+        tool.cancel();
+    }
+    if let Some(group) = cell.as_any_mut().downcast_mut::<ToolGroupCell>() {
+        group.cancel_all();
     }
 }
 
@@ -157,7 +187,153 @@ mod tests {
             output: Some("done".to_owned()),
         });
 
-        assert!(widget.active_cells().is_empty());
+        assert!(
+            widget
+                .active_cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<ThinkingCell>())
+        );
+        assert_eq!(widget.cells().len(), 2);
+    }
+
+    #[test]
+    fn groups_repeated_completed_tools_in_one_history_cell() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        for (tool_id, target) in [("tool-1", "package.json"), ("tool-2", "Cargo.toml")] {
+            widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+                tool_id: tool_id.to_owned(),
+                tool_name: "filesystem.read".to_owned(),
+                target: Some(target.to_owned()),
+            });
+            widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
+                tool_id: tool_id.to_owned(),
+                tool_name: "filesystem.read".to_owned(),
+                output: None,
+            });
+        }
+
+        assert_eq!(widget.cells().len(), 4);
+        assert_eq!(
+            widget
+                .cells()
+                .iter()
+                .filter(|cell| cell.as_any().is::<ToolGroupCell>())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn creates_thinking_after_a_tool_and_removes_it_for_the_response() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        assert!(widget.active_cells()[0].as_any().is::<ThinkingCell>());
+
+        widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: None,
+        });
+        assert!(
+            !widget
+                .active_cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<ThinkingCell>())
+        );
+
         assert_eq!(widget.cells().len(), 1);
+        assert!(
+            widget.cells()[0].display_lines(80)[0]
+                .spans
+                .iter()
+                .all(|span| !span.content.contains("⠋"))
+        );
+
+        widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: None,
+        });
+        assert!(
+            widget
+                .active_cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<ThinkingCell>())
+        );
+
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message-1".to_owned(),
+            delta: "answer".to_owned(),
+        });
+        assert!(
+            !widget
+                .active_cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<ThinkingCell>())
+        );
+        assert_eq!(widget.cells().len(), 3);
+    }
+
+    #[test]
+    fn cancellation_preserves_partial_output_and_marks_the_turn_without_error() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        widget.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "message-1".to_owned(),
+            delta: "partial answer".to_owned(),
+        });
+        widget.handle_runtime_event(RuntimeEvent::TurnCancelled {
+            content: "partial answer".to_owned(),
+            message_id: Some("message-1".to_owned()),
+        });
+
+        assert!(!widget.turn_active());
+        assert!(!matches!(widget.status(), Status::Error(_)));
+        assert!(widget.cells().iter().any(|cell| {
+            cell.as_any()
+                .downcast_ref::<AgentMarkdownCell>()
+                .is_some_and(|message| message.markdown_source == "partial answer")
+        }));
+        assert!(
+            widget
+                .cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<CancelledCell>())
+        );
+    }
+
+    #[test]
+    fn cancellation_commits_tools_that_were_already_started() {
+        let mut widget = ChatWidget::new();
+        widget.handle_runtime_event(RuntimeEvent::TurnStarted);
+        widget.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: Some("README.md".to_owned()),
+        });
+        widget.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: Some("done".to_owned()),
+        });
+        widget.handle_runtime_event(RuntimeEvent::TurnCancelled {
+            content: String::new(),
+            message_id: None,
+        });
+
+        assert!(widget.active_cells().is_empty());
+        assert!(
+            widget
+                .cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<ToolGroupCell>())
+        );
+        assert!(
+            widget
+                .cells()
+                .iter()
+                .any(|cell| cell.as_any().is::<CancelledCell>())
+        );
     }
 }

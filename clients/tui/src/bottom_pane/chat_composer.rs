@@ -10,7 +10,6 @@ use crate::bottom_pane::footer;
 use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::bottom_pane::selection_popup::SelectionPopupState;
 use crate::bottom_pane::textarea::TextArea;
-use crate::ui_consts::LIVE_PREFIX_COLS;
 use crate::ui_consts::action_style;
 use crate::ui_consts::elevated_surface_style;
 use crate::ui_consts::primary_style;
@@ -19,7 +18,8 @@ use crate::wrapping::display_width;
 use crate::wrapping::wrap_text;
 
 const PROMPT: &str = "›";
-const COMPOSER_TOP: u16 = 1;
+const COMPOSER_PROMPT_COLS: u16 = 2;
+const COMPOSER_VERTICAL_PADDING: u16 = 1;
 const SHORTCUT_HEIGHT: u16 = 11;
 
 /// State owned by the canonical bottom-pane composer.
@@ -70,17 +70,17 @@ pub(crate) fn desired_height(app: &App, width: u16) -> u16 {
     if app.bottom_pane().shortcuts_open() {
         return SHORTCUT_HEIGHT;
     }
-    let input_width = usize::from(width.saturating_sub(LIVE_PREFIX_COLS + 1)).max(1);
-    let input_rows = app
-        .textarea()
-        .desired_height(u16::try_from(input_width).unwrap_or(u16::MAX))
-        .max(1);
+    let input_rows = input_rows(app, width);
     let popup_height = completion_popup_height(app, width);
-    (COMPOSER_TOP + input_rows + popup_height + footer::desired_height(app, width) + 1).max(4)
+    (input_rows
+        .saturating_add(COMPOSER_VERTICAL_PADDING.saturating_mul(2))
+        .saturating_add(popup_height)
+        .saturating_add(footer::desired_height(app, width)))
+    .max(4)
 }
 
 pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
-    if area.is_empty() || area.height <= COMPOSER_TOP {
+    if area.is_empty() {
         return;
     }
     if app.bottom_pane().shortcuts_open() {
@@ -88,22 +88,11 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         return;
     }
 
-    footer::render_status_line(app, Rect::new(area.x, area.y, area.width, 1), buffer);
-
-    let popup_height = completion_popup_height(app, area.width);
-    let input_area = Rect {
-        x: area.x + LIVE_PREFIX_COLS,
-        y: area.y + COMPOSER_TOP,
-        width: area.width.saturating_sub(LIVE_PREFIX_COLS + 1),
-        height: area.height.saturating_sub(
-            COMPOSER_TOP + popup_height + footer::desired_height(app, area.width) + 1,
-        ),
-    };
-    let composer_surface = Rect::new(area.x, input_area.y, area.width, input_area.height);
-    buffer.set_style(composer_surface, elevated_surface_style());
+    let (input_area, popup_area, footer_area, input_surface) = layout_areas(app, area);
+    buffer.set_style(input_surface, elevated_surface_style());
     let prompt_style = action_style().add_modifier(Modifier::BOLD);
     buffer.set_span(
-        input_area.x.saturating_sub(LIVE_PREFIX_COLS),
+        input_area.x.saturating_sub(COMPOSER_PROMPT_COLS),
         input_area.y,
         &Span::styled(PROMPT, prompt_style),
         1,
@@ -127,26 +116,42 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         Paragraph::new(lines).render(input_area, buffer);
     }
 
-    if popup_height > 0 {
-        let popup_area = Rect {
-            x: area.x + LIVE_PREFIX_COLS,
-            y: input_area.y + input_area.height,
-            width: area.width.saturating_sub(LIVE_PREFIX_COLS),
-            height: popup_height,
-        };
+    if !popup_area.is_empty() {
         render_completion_popup(app, popup_area, buffer);
     }
 
-    let footer_area = Rect {
-        x: area.x,
-        y: area.y
-            + area
-                .height
-                .saturating_sub(footer::desired_height(app, area.width)),
-        width: area.width,
-        height: footer::desired_height(app, area.width),
-    };
     footer::render(app, footer_area, buffer);
+}
+
+fn input_rows(app: &App, width: u16) -> u16 {
+    let input_width = usize::from(width.saturating_sub(COMPOSER_PROMPT_COLS)).max(1);
+    app.textarea()
+        .desired_height(u16::try_from(input_width).unwrap_or(u16::MAX))
+        .max(1)
+}
+
+fn layout_areas(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
+    let popup_height = completion_popup_height(app, area.width);
+    let footer_height = footer::desired_height(app, area.width);
+    let footer_y = area.bottom().saturating_sub(footer_height);
+    let popup_y = footer_y.saturating_sub(popup_height);
+    let input_surface = Rect::new(area.x, area.y, area.width, popup_y.saturating_sub(area.y));
+    let input_area = Rect::new(
+        area.x + COMPOSER_PROMPT_COLS,
+        area.y + COMPOSER_VERTICAL_PADDING,
+        area.width.saturating_sub(COMPOSER_PROMPT_COLS),
+        input_surface
+            .height
+            .saturating_sub(COMPOSER_VERTICAL_PADDING.saturating_mul(2)),
+    );
+    let popup_area = Rect::new(
+        area.x + COMPOSER_PROMPT_COLS,
+        popup_y,
+        area.width.saturating_sub(COMPOSER_PROMPT_COLS),
+        popup_height,
+    );
+    let footer_area = Rect::new(area.x, footer_y, area.width, footer_height);
+    (input_area, popup_area, footer_area, input_surface)
 }
 
 fn completion_popup_height(app: &App, width: u16) -> u16 {
@@ -230,15 +235,7 @@ pub(crate) fn cursor_position_for(app: &App, area: Rect) -> Option<(u16, u16)> {
     if app.bottom_pane().shortcuts_open() || area.is_empty() {
         return None;
     }
-    let popup_height = completion_popup_height(app, area.width);
-    let input_area = Rect {
-        x: area.x + LIVE_PREFIX_COLS,
-        y: area.y + COMPOSER_TOP,
-        width: area.width.saturating_sub(LIVE_PREFIX_COLS + 1),
-        height: area.height.saturating_sub(
-            COMPOSER_TOP + popup_height + footer::desired_height(app, area.width) + 1,
-        ),
-    };
+    let (input_area, _, _, _) = layout_areas(app, area);
     if input_area.is_empty() {
         return None;
     }
@@ -411,7 +408,8 @@ mod tests {
         let mut app = App::new("status".to_owned());
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
 
-        assert!(rows(&app, 100, 14).contains("• Thinking ("));
+        assert!(!rows(&app, 100, 14).contains("Thinking"));
+        assert!(!rows(&app, 100, 14).contains("Running npm test"));
     }
 
     #[test]

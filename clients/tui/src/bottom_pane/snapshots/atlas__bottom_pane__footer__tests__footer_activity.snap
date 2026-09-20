@@ -2,4 +2,4 @@
 source: src/bottom_pane/footer.rs
 expression: status_output(&app)
 ---
-  • Reading src/main.rs (0s • esc to interrupt)
+esc to interrupt

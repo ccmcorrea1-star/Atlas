@@ -18,6 +18,10 @@ use crate::ui_consts::user_surface_style;
 use crate::ui_consts::warning_style;
 use crate::wrapping::wrap_line;
 use crate::wrapping::wrap_text;
+use std::time::Instant;
+
+const USER_MESSAGE_VERTICAL_PADDING: usize = 1;
+const THINKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
@@ -43,8 +47,8 @@ impl HistoryCell for UserHistoryCell {
             return Vec::new();
         }
         let message_style = user_message_style();
-        let wrap_width = usize::from(width).saturating_sub(3).max(1);
-        let mut result = Vec::new();
+        let wrap_width = usize::from(width).saturating_sub(2).max(1);
+        let mut result = vec![Line::default(); USER_MESSAGE_VERTICAL_PADDING];
         for (line_index, source) in message.split('\n').enumerate() {
             let wrapped = wrap_line(
                 crate::markdown::render_ansi_line(source, message_style),
@@ -65,6 +69,10 @@ impl HistoryCell for UserHistoryCell {
                 ));
             }
         }
+        result.extend(std::iter::repeat_n(
+            Line::default(),
+            USER_MESSAGE_VERTICAL_PADDING,
+        ));
         result
     }
 
@@ -136,6 +144,94 @@ impl HistoryCell for ThoughtCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.source.lines().map(|line| Line::from(line.to_owned())))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ThinkingCell {
+    started_at: Instant,
+    duration_ms: Option<u64>,
+    frame: usize,
+}
+
+impl ThinkingCell {
+    pub(crate) fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            duration_ms: None,
+            frame: 0,
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        if self.duration_ms.is_none() {
+            self.duration_ms = Some(
+                self.started_at
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            );
+        }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+}
+
+impl HistoryCell for ThinkingCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        let duration_ms = self.duration_ms.unwrap_or_else(|| {
+            self.started_at
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX)
+        });
+        let duration = format_thinking_duration(duration_ms);
+        let mut line = if self.duration_ms.is_some() {
+            Line::from(Span::styled("Thinking", secondary_style()))
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    THINKING_FRAMES[self.frame % THINKING_FRAMES.len()],
+                    action_style(),
+                ),
+                Span::styled(" Thinking", secondary_style()),
+            ])
+        };
+        line.push_span(Span::styled(format!(" · {duration}"), secondary_style()));
+        vec![line]
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.duration_ms.is_none().then_some(self.frame as u64)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CancelledCell;
+
+impl HistoryCell for CancelledCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        vec![Line::from(Span::styled("Cancelled", secondary_style()))]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -450,15 +546,11 @@ fn safe_incremental_suffix(source: &str) -> bool {
 }
 
 fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static>> {
-    let usable_width = usize::from(width).saturating_sub(2).max(1);
+    let usable_width = usize::from(width).max(1);
     let rendered = render_markdown_agent(source, None);
     let mut result = Vec::new();
     for (line_index, line) in rendered.into_iter().enumerate() {
-        let prefix = if first && line_index == 0 {
-            "• "
-        } else {
-            "  "
-        };
+        let prefix = if first && line_index == 0 { "" } else { "  " };
         let wrap_width = usable_width.saturating_sub(prefix.width()).max(1);
         for (part_index, part) in wrap_line(line, wrap_width).into_iter().enumerate() {
             result.push(prefixed_line(
@@ -473,6 +565,18 @@ fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static
         }
     }
     result
+}
+
+fn format_thinking_duration(duration_ms: u64) -> String {
+    if duration_ms < 60_000 {
+        format!("{:.1}s", duration_ms as f64 / 1_000.0)
+    } else {
+        format!(
+            "{}m {:.1}s",
+            duration_ms / 60_000,
+            (duration_ms % 60_000) as f64 / 1_000.0
+        )
+    }
 }
 
 fn prefixed_line(mut line: Line<'static>, prefix: &str, style: Style) -> Line<'static> {
@@ -607,11 +711,15 @@ mod tests {
         let user = UserHistoryCell::new("Review the auth flow\nand keep the error path visible.");
         insta::assert_snapshot!(
             "user_message",
-            user.display_lines(60)
-                .iter()
-                .map(line_text)
-                .collect::<Vec<_>>()
-                .join("\n")
+            format!(
+                "height: {}\n{}",
+                user.desired_height(60),
+                user.display_lines(60)
+                    .iter()
+                    .map(line_text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         );
 
         let agent = AgentMarkdownCell::with_message_id(
@@ -627,6 +735,42 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    #[test]
+    fn adds_vertical_breathing_room_to_user_messages() {
+        let message = UserHistoryCell::new("Review the auth flow");
+        let lines = message.display_lines(60);
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].spans.is_empty());
+        assert_eq!(line_text(&lines[1]), "› Review the auth flow");
+        assert!(lines[2].spans.is_empty());
+    }
+
+    #[test]
+    fn snapshots_temporary_thinking_cell() {
+        let thinking = ThinkingCell::new();
+        insta::assert_snapshot!(
+            "thinking",
+            thinking
+                .display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn finalized_thinking_keeps_its_duration() {
+        let mut thinking = ThinkingCell::new();
+        thinking.finish();
+        let duration = thinking.duration_ms;
+        thinking.finish();
+
+        assert_eq!(thinking.duration_ms, duration);
+        assert!(!line_text(&thinking.display_lines(60)[0]).contains("⠋"));
     }
 
     #[test]

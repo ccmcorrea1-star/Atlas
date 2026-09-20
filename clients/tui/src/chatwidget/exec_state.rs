@@ -13,6 +13,7 @@ impl ChatWidget {
                 cwd: _,
                 target: _,
             } => {
+                self.finalize_thinking();
                 self.status = Status::Executing;
                 if self.find_active_exec_mut(&execution_id).is_none() {
                     let exec = ExecCell::new(
@@ -87,6 +88,9 @@ impl ChatWidget {
                 } else {
                     Status::Thinking
                 };
+                if !self.has_running_exec() && self.active_running_tool_activities().is_empty() {
+                    self.begin_thinking();
+                }
                 self.history_changed();
             }
             _ => {}

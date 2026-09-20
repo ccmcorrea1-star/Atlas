@@ -65,7 +65,6 @@ pub(crate) fn user_surface_style() -> Style {
     primary_style().bg(COLOR_SURFACE_USER)
 }
 
-/// Colunas reservadas pela margem esquerda e pelo prefixo do composer.
-pub(crate) const LIVE_PREFIX_COLS: u16 = 2;
-pub(crate) const FOOTER_INDENT_COLS: usize = LIVE_PREFIX_COLS as usize;
+/// Inset compartilhado pela coluna principal da conversa.
+pub(crate) const CONVERSATION_HORIZONTAL_INSET: u16 = 2;
 pub(crate) const TRANSCRIPT_HINT: &str = "ctrl + t to view transcript";

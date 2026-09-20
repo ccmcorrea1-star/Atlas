@@ -2,7 +2,7 @@
 source: src/history_cell/exec.rs
 expression: "rendered(&cell, 80).join(\"\\n\")"
 ---
-Patched src/main.cpp
+✓ Patched src/main.cpp · 0ms
     1   1 │ #include <iostream>
     2     │ -int main() {
         2 │ +int main(int argc) {

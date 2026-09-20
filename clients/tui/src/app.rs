@@ -122,7 +122,9 @@ impl App {
             oversized_paste_pending: false,
             cancel_requested: false,
             external_editor_requested: false,
-            runtime_connected: false,
+            // A tela inicial já está pronta para uso; a primeira troca com o
+            // Runtime confirma a sessão sem bloquear o composer.
+            runtime_connected: true,
             session_model: None,
             session_provider: None,
         }
@@ -160,6 +162,7 @@ impl App {
         &self.bottom_pane
     }
 
+    #[allow(dead_code)]
     pub fn status(&self) -> &Status {
         self.chatwidget.status()
     }
@@ -178,14 +181,6 @@ impl App {
 
     pub fn take_external_editor_requested(&mut self) -> bool {
         std::mem::take(&mut self.external_editor_requested)
-    }
-
-    pub(crate) fn working_seconds(&self) -> u64 {
-        self.chatwidget.working_seconds()
-    }
-
-    pub(crate) fn current_activity(&self) -> Option<String> {
-        self.chatwidget.current_activity()
     }
 
     pub fn context_usage(&self) -> Option<ContextUsage> {
@@ -1130,7 +1125,7 @@ mod tests {
             context: None,
         });
         assert_eq!(app.take_queued_input().as_deref(), Some("second"));
-        assert_eq!(app.cells().len(), 3);
+        assert_eq!(app.cells().len(), 4);
     }
 
     #[test]

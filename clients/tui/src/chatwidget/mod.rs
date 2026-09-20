@@ -9,20 +9,21 @@ mod exec_state;
 pub(crate) mod rendering;
 mod streaming;
 
-use std::collections::HashMap;
-use std::time::Instant;
-
 use self::streaming::MarkdownStreamState;
 use crate::app::Status;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::RunningGroupCell;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
+use crate::history_cell::CancelledCell;
 use crate::history_cell::ErrorCell;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::ThinkingCell;
 use crate::history_cell::ToolCell;
+use crate::history_cell::ToolGroupCell;
 use crate::runtime::ContextUsage;
 use crate::runtime::RuntimeEvent;
+use std::collections::HashMap;
 
 const MAX_CELLS: usize = 500;
 const MAX_CELL_BYTES: usize = 16 * 1024 * 1024;
@@ -33,13 +34,11 @@ pub(crate) struct ChatWidget {
     cells: Vec<Box<dyn HistoryCell>>,
     active_cells: Vec<Box<dyn HistoryCell>>,
     status: Status,
-    activity: Option<String>,
     turn_active: bool,
     context_usage: Option<ContextUsage>,
     active_revision: u64,
     history_revision: u64,
     stream_states: HashMap<String, MarkdownStreamState>,
-    turn_started_at: Option<Instant>,
 }
 
 impl ChatWidget {
@@ -48,13 +47,11 @@ impl ChatWidget {
             cells: Vec::new(),
             active_cells: Vec::new(),
             status: Status::Ready,
-            activity: None,
             turn_active: false,
             context_usage: None,
             active_revision: 0,
             history_revision: 0,
             stream_states: HashMap::new(),
-            turn_started_at: None,
         }
     }
 
@@ -74,6 +71,7 @@ impl ChatWidget {
         self.history_revision
     }
 
+    #[allow(dead_code)]
     pub(crate) fn status(&self) -> &Status {
         &self.status
     }
@@ -84,31 +82,6 @@ impl ChatWidget {
 
     pub(crate) fn context_usage(&self) -> Option<ContextUsage> {
         self.context_usage
-    }
-
-    pub(crate) fn working_seconds(&self) -> u64 {
-        self.turn_started_at
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0)
-    }
-
-    // A atividade e derivada do estado do turno; execucoes concorrentes viram
-    // um resumo compacto para nao competir com o restante do footer.
-    pub(crate) fn current_activity(&self) -> Option<String> {
-        let executions = self.active_running_execution_activities();
-        if !executions.is_empty() {
-            return match executions.len() {
-                1 => Some(executions[0].clone()),
-                count => Some(format!("Running {count} commands")),
-            };
-        }
-
-        let tools = self.active_running_tool_activities();
-        match tools.len() {
-            0 => self.activity.clone(),
-            1 => Some(tools[0].clone()),
-            count => Some(format!("Using {count} tools")),
-        }
     }
 
     fn active_running_execution_activities(&self) -> Vec<String> {
@@ -128,9 +101,19 @@ impl ChatWidget {
     fn active_running_tool_activities(&self) -> Vec<String> {
         self.active_cells
             .iter()
-            .filter_map(|cell| cell.as_any().downcast_ref::<ToolCell>())
-            .filter(|tool| tool.is_running())
-            .map(ToolCell::activity)
+            .flat_map(|cell| {
+                if let Some(group) = cell.as_any().downcast_ref::<ToolGroupCell>() {
+                    group.running_activities()
+                } else if let Some(tool) = cell.as_any().downcast_ref::<ToolCell>() {
+                    if tool.is_running() {
+                        vec![tool.activity()]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            })
             .collect()
     }
 
@@ -139,6 +122,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn tick(&mut self) {
+        for cell in &mut self.active_cells {
+            if let Some(thinking) = cell.as_any_mut().downcast_mut::<ThinkingCell>() {
+                thinking.tick();
+            }
+        }
         let committed_parts = self
             .stream_states
             .iter_mut()
@@ -207,6 +195,7 @@ impl ChatWidget {
             | RuntimeEvent::ToolStarted { .. }
             | RuntimeEvent::ToolCompleted { .. }
             | RuntimeEvent::TurnCompleted { .. }
+            | RuntimeEvent::TurnCancelled { .. }
             | RuntimeEvent::Error { .. } => {
                 self.handle_command_lifecycle_event(event);
             }
@@ -278,18 +267,36 @@ impl ChatWidget {
 
     fn find_tool_mut(&mut self, id: &str) -> Option<&mut ToolCell> {
         self.cells.iter_mut().rev().find_map(|cell| {
-            cell.as_any_mut()
-                .downcast_mut::<ToolCell>()
+            let any = cell.as_any_mut();
+            if any.is::<ToolGroupCell>() {
+                return any
+                    .downcast_mut::<ToolGroupCell>()
+                    .expect("checked tool group")
+                    .tool_mut(id);
+            }
+            any.downcast_mut::<ToolCell>()
                 .filter(|tool| tool.tool_id() == id)
         })
     }
 
     fn find_active_tool_mut(&mut self, id: &str) -> Option<&mut ToolCell> {
         self.active_cells.iter_mut().rev().find_map(|cell| {
-            cell.as_any_mut()
-                .downcast_mut::<ToolCell>()
+            let any = cell.as_any_mut();
+            if any.is::<ToolGroupCell>() {
+                return any
+                    .downcast_mut::<ToolGroupCell>()
+                    .expect("checked tool group")
+                    .tool_mut(id);
+            }
+            any.downcast_mut::<ToolCell>()
                 .filter(|tool| tool.tool_id() == id)
         })
+    }
+
+    fn active_tool_group_mut(&mut self) -> Option<&mut ToolGroupCell> {
+        self.active_cells
+            .last_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolGroupCell>())
     }
 
     fn materialize_stream_commit(&mut self, id: &str, source: &str, stable_len: usize) {
@@ -412,6 +419,20 @@ impl ChatWidget {
     }
 
     fn commit_active_tool(&mut self, id: &str) {
+        let completed_group = self
+            .active_cells
+            .iter()
+            .enumerate()
+            .find_map(|(index, cell)| {
+                let group = cell.as_any().downcast_ref::<ToolGroupCell>()?;
+                (group.contains_tool(id) && group.all_completed()).then_some(index)
+            });
+        if let Some(index) = completed_group {
+            let group = self.active_cells.remove(index);
+            self.append_tool_group(group);
+            self.bump_active_revision();
+            return;
+        }
         if let Some(index) = self.active_cells.iter().rposition(|cell| {
             cell.as_any()
                 .downcast_ref::<ToolCell>()
@@ -422,10 +443,72 @@ impl ChatWidget {
         }
     }
 
+    fn append_tool_group(&mut self, cell: Box<dyn HistoryCell>) {
+        let Some(group) = cell.as_any().downcast_ref::<ToolGroupCell>() else {
+            self.cells.push(cell);
+            return;
+        };
+        if let Some(previous) = self
+            .cells
+            .last_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolGroupCell>())
+            && previous.can_merge(group)
+        {
+            let group = cell
+                .as_any()
+                .downcast_ref::<ToolGroupCell>()
+                .expect("tool group was checked");
+            previous.merge(group.clone());
+        } else {
+            self.cells.push(cell);
+        }
+    }
+
     fn commit_all_active_cells(&mut self) {
         if !self.active_cells.is_empty() {
             self.cells.append(&mut self.active_cells);
             self.bump_active_revision();
+        }
+    }
+
+    fn finalize_thinking(&mut self) {
+        let positions = self
+            .active_cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| cell.as_any().is::<ThinkingCell>().then_some(index))
+            .collect::<Vec<_>>();
+        if positions.is_empty() {
+            return;
+        }
+        for index in positions.into_iter().rev() {
+            let mut cell = self.active_cells.remove(index);
+            if let Some(thinking) = cell.as_any_mut().downcast_mut::<ThinkingCell>() {
+                thinking.finish();
+            }
+            self.cells.push(cell);
+        }
+        self.bump_active_revision();
+        self.history_changed();
+    }
+
+    fn begin_thinking(&mut self) {
+        if self
+            .active_cells
+            .iter()
+            .any(|cell| cell.as_any().is::<ThinkingCell>())
+        {
+            return;
+        }
+        self.active_cells.push(Box::new(ThinkingCell::new()));
+        self.status = Status::Thinking;
+        self.bump_active_revision();
+    }
+
+    fn cancel_active_cells(&mut self) {
+        for cell in &mut self.active_cells {
+            command_lifecycle::abort_exec_cell(cell.as_mut());
+            command_lifecycle::abort_tool_cell(cell.as_mut());
         }
     }
 

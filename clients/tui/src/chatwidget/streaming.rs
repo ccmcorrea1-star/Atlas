@@ -142,6 +142,7 @@ impl ChatWidget {
     pub(super) fn handle_streaming_event(&mut self, event: RuntimeEvent) {
         match event {
             RuntimeEvent::MessageDelta { message_id, delta } => {
+                self.finalize_thinking();
                 self.status = Status::Thinking;
                 let (source, stable_len) = {
                     let stream = self.stream_states.entry(message_id.clone()).or_default();
@@ -165,6 +166,7 @@ impl ChatWidget {
                 message_id,
                 content,
             } => {
+                self.finalize_thinking();
                 self.status = Status::Thinking;
                 self.stream_states.remove(&message_id);
                 if let Some(message) = self.find_active_agent_mut(&message_id) {

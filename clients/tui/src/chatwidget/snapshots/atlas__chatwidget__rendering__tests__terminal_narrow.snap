@@ -2,15 +2,15 @@
 source: src/chatwidget/rendering.rs
 expression: "screen_rows(&mut app, 24, 12).join(\"\\n\")"
 ---
-Atlas      …/clients/tui
+  Atlas  …/clients/tui  
+                        
+                        
+  ⠋ Thinking · 0.0s     
                         
                         
                         
                         
                         
-                        
-                        
-  • Thinking            
-› fix the error path    
+  › fix the error path  
                         
   ? shortcuts

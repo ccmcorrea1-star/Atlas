@@ -12,6 +12,7 @@ use crate::bottom_pane::BottomPaneView;
 use crate::history_cell::HistoryCell;
 use crate::render::renderable::Renderable;
 use crate::session_header;
+use crate::ui_consts::CONVERSATION_HORIZONTAL_INSET;
 use crate::ui_consts::surface_style;
 
 pub(crate) fn render(
@@ -26,15 +27,23 @@ pub(crate) fn render(
     buffer.set_style(area, surface_style());
     let header_height =
         session_header::desired_height(area.width).min(area.height.saturating_sub(2));
+    let conversation_x = area.x.saturating_add(CONVERSATION_HORIZONTAL_INSET);
+    let conversation_width = area
+        .width
+        .saturating_sub(CONVERSATION_HORIZONTAL_INSET.saturating_mul(2));
+    let conversation_area = Rect::new(
+        conversation_x,
+        area.y.saturating_add(header_height),
+        conversation_width,
+        area.height.saturating_sub(header_height),
+    );
     let composer_height = bottom_pane
-        .desired_height(app, area.width)
-        .min(area.height.saturating_sub(header_height).saturating_sub(1));
-    let [header_area, history_area, composer_area] = Layout::vertical([
-        Constraint::Length(header_height),
-        Constraint::Min(1),
-        Constraint::Length(composer_height),
-    ])
-    .areas(area);
+        .desired_height(app, conversation_area.width)
+        .min(conversation_area.height.saturating_sub(1));
+    let header_area = Rect::new(conversation_x, area.y, conversation_width, header_height);
+    let [history_area, composer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)])
+            .areas(conversation_area);
 
     session_header::render(header_area, buffer, app);
     app.set_stream_width(history_area.width);
@@ -62,7 +71,6 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
             } else {
                 1
             },
-            right: 0,
         };
         let height = usize::from(rendered.desired_height(width));
         cells.push((total_height, height, rendered));
@@ -108,7 +116,6 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
 struct TranscriptAreaRenderable<'a> {
     child: &'a dyn HistoryCell,
     top: u16,
-    right: u16,
 }
 
 impl Renderable for TranscriptAreaRenderable<'_> {
@@ -124,10 +131,8 @@ impl Renderable for TranscriptAreaRenderable<'_> {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.top.saturating_add(
-            self.child
-                .desired_height(width.saturating_sub(self.right).max(1)),
-        )
+        self.top
+            .saturating_add(self.child.desired_height(width.max(1)))
     }
 
     fn render_scrolled(&self, area: Rect, buffer: &mut Buffer, scroll_offset: u16) -> bool {
@@ -136,7 +141,7 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         let child_area = Rect::new(
             area.x,
             area.y.saturating_add(top_visible),
-            area.width.saturating_sub(self.right).max(1),
+            area.width.max(1),
             area.height.saturating_sub(top_visible),
         );
         if child_area.is_empty() {
@@ -157,7 +162,7 @@ impl TranscriptAreaRenderable<'_> {
         Rect::new(
             area.x,
             area.y.saturating_add(self.top),
-            area.width.saturating_sub(self.right).max(1),
+            area.width.max(1),
             area.height.saturating_sub(self.top),
         )
     }
@@ -229,7 +234,7 @@ mod tests {
             .collect::<String>();
 
         assert!(screen.contains("Running node --version"));
-        assert!(screen.contains("Running node --version ("));
+        assert!(screen.contains("Running node --version"));
         assert!(screen.contains("Ask Atlas to do anything"));
     }
 
@@ -331,7 +336,6 @@ mod tests {
         let renderable = TranscriptAreaRenderable {
             child: &cell,
             top: 0,
-            right: 0,
         };
 
         renderable.render(area, &mut buffer);
@@ -352,7 +356,7 @@ mod tests {
         for (width, height) in [(80, 24), (120, 40), (80, 24)] {
             let rows = screen_rows(&mut app, width, height);
             assert_eq!(rows.len(), usize::from(height));
-            assert!(rows.iter().any(|row| row.contains("Thinking (")));
+            assert!(rows.iter().any(|row| row.contains("Thinking")));
             assert!(
                 rows.iter()
                     .any(|row| row.contains("Ask Atlas to do anything"))
@@ -365,15 +369,14 @@ mod tests {
     }
 
     #[test]
-    fn reserves_codex_separator_and_right_inset() {
+    fn reserves_transcript_separator_without_a_local_right_inset() {
         let cell = TestCell;
         let renderable = TranscriptAreaRenderable {
             child: &cell,
             top: 1,
-            right: 2,
         };
 
-        assert_eq!(renderable.desired_height(10), 3);
+        assert_eq!(renderable.desired_height(10), 2);
     }
 
     #[test]
@@ -405,9 +408,100 @@ mod tests {
                 context_window: 156_000,
             },
         });
+
+        insta::assert_snapshot!("connected_layout", screen_rows(&mut app, 80, 12).join("\n"));
+    }
+
+    #[test]
+    fn snapshots_user_message_layout() {
+        let mut app = App::new("render-user-message".to_owned());
+        app.handle_runtime_event(RuntimeEvent::SessionUpdated {
+            model: "gpt-5.6-luna".to_owned(),
+            provider: "opencode-go".to_owned(),
+        });
         app.insert_text("Review the auth flow");
         assert_eq!(app.submit_input().as_deref(), Some("Review the auth flow"));
 
-        insta::assert_snapshot!("connected_layout", screen_rows(&mut app, 80, 12).join("\n"));
+        insta::assert_snapshot!(
+            "user_message_layout",
+            screen_rows(&mut app, 80, 12).join("\n")
+        );
+    }
+
+    #[test]
+    fn snapshots_turn_lifecycle_with_one_conversation_inset() {
+        let mut app = App::new("render-lifecycle".to_owned());
+        app.insert_text("question");
+        assert_eq!(app.submit_input().as_deref(), Some("question"));
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "read-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: Some("README.md".to_owned()),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "read-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            output: Some(
+                serde_json::json!({
+                    "status": "success",
+                    "path": "README.md",
+                    "total_lines": 42
+                })
+                .to_string(),
+            ),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "patch-1".to_owned(),
+            tool_name: "filesystem.patch".to_owned(),
+            target: Some("src/main.rs".to_owned()),
+        });
+        app.handle_runtime_event(RuntimeEvent::ToolCompleted {
+            tool_id: "patch-1".to_owned(),
+            tool_name: "filesystem.patch".to_owned(),
+            output: Some(
+                serde_json::json!({
+                    "status": "success",
+                    "changes": [{
+                        "action": "edit",
+                        "path": "src/main.rs",
+                        "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    }]
+                })
+                .to_string(),
+            ),
+        });
+        app.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "answer-1".to_owned(),
+            delta: "answer".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TurnCompleted {
+            content: "answer".to_owned(),
+            message_id: Some("answer-1".to_owned()),
+            context: None,
+        });
+
+        insta::assert_snapshot!(
+            "turn_lifecycle_shared_inset",
+            screen_rows(&mut app, 80, 24).join("\n")
+        );
+    }
+
+    #[test]
+    fn snapshots_cancelled_turn_without_error_cell_or_footer_thinking() {
+        let mut app = App::new("render-cancelled".to_owned());
+        app.insert_text("long task");
+        assert_eq!(app.submit_input().as_deref(), Some("long task"));
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::MessageDelta {
+            message_id: "partial-1".to_owned(),
+            delta: "partial result".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TurnCancelled {
+            content: "partial result".to_owned(),
+            message_id: Some("partial-1".to_owned()),
+        });
+
+        insta::assert_snapshot!("cancelled_turn", screen_rows(&mut app, 80, 16).join("\n"));
     }
 }
