@@ -45,11 +45,18 @@ export class FetchTelegramApi implements TelegramApi {
     messageId: number,
     text: string,
   ): Promise<void> {
-    await this.call<boolean>('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-    });
+    try {
+      await this.call<boolean>('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('message is not modified')) {
+        return;
+      }
+      throw error;
+    }
   }
 
   public getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
