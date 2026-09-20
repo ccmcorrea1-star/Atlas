@@ -123,6 +123,20 @@ A integração com o Atlas permite controlar transferências por linguagem natur
 
 A implementação deve reutilizar uma engine BitTorrent existente e manter protocolo, transferência e gerenciamento de peers fora do Agent. O Atlas Runtime orquestra ações e contexto; o cliente continua responsável pela experiência de gerenciamento das transferências.
 
+## Atlas Media
+
+O **Atlas Media** é o servidor e cliente de mídia do ecossistema Atlas.
+
+Ele organiza bibliotecas de filmes, séries, músicas, fotos e outros conteúdos locais, mantendo histórico de reprodução, progresso, perfis, metadata, legendas e disponibilidade por dispositivo.
+
+O Atlas Media deve permitir streaming para outros clientes e dispositivos, com direct play quando possível e transcoding quando necessário. A implementação pode reutilizar engines consolidadas para codecs e transcoding, mantendo essa responsabilidade fora do Agent.
+
+A integração com o Atlas permite consultar e controlar a biblioteca por linguagem natural, continuar reproduções, organizar arquivos, encontrar conteúdo e automatizar ações relacionadas à mídia.
+
+Atlas Torrent e Atlas Media podem trabalhar em conjunto por meio do Runtime: downloads concluídos podem ser organizados e adicionados à biblioteca quando solicitado ou configurado. Os dois apps permanecem desacoplados e podem funcionar independentemente.
+
+A arquitetura deve separar a interface do serviço residente responsável por biblioteca, sessões, streaming e transcoding, permitindo que Workstation, Mobile, Web e futuros clientes de TV consumam o mesmo servidor de mídia.
+
 ## Atlas Mobile
 
 O **Atlas Mobile** é o companion móvel do Atlas.
@@ -169,6 +183,8 @@ Atlas Web não representa um Runtime diferente nem uma versão independente do A
       Mobile           Browser           Web
         │                │
      Telegram         Torrent
+                           │
+                         Media
 ```
 
 Os apps podem apresentar diferentes partes do mesmo estado, mas a fonte de verdade permanece no Runtime.
@@ -187,6 +203,7 @@ Atlas Code          → app
 Atlas Terminal      → app
 Atlas Telegram      → app
 Atlas Torrent       → app
+Atlas Media         → app
 
 GitHub              → integração
 Google Drive        → integração
