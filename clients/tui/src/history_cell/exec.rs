@@ -1,7 +1,6 @@
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use serde_json::Value;
@@ -13,6 +12,15 @@ use super::plain_lines;
 use crate::capability_names::capability_activity_with_target;
 use crate::capability_names::capability_label;
 use crate::markdown::sanitize_terminal_text;
+use crate::ui_consts::COLOR_SURFACE_DIFF;
+use crate::ui_consts::COLOR_SURFACE_DIFF_ADDED;
+use crate::ui_consts::COLOR_SURFACE_DIFF_REMOVED;
+use crate::ui_consts::action_style;
+use crate::ui_consts::error_style;
+use crate::ui_consts::primary_style;
+use crate::ui_consts::running_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::success_style;
 use crate::wrapping::display_width;
 use crate::wrapping::wrap_line;
 use crate::wrapping::wrap_text;
@@ -20,9 +28,9 @@ use crate::wrapping::wrap_text;
 const TOOL_SUMMARY_MAX_CHARS: usize = 120;
 const FILESYSTEM_DIFF_PREVIEW_MAX_CHARS: usize = 600;
 const FILESYSTEM_DIFF_PREVIEW_MAX_LINES: usize = 10;
-const DIFF_BLOCK_BACKGROUND: Color = Color::Rgb(28, 32, 38);
-const DIFF_ADDED_BACKGROUND: Color = Color::Rgb(26, 60, 38);
-const DIFF_REMOVED_BACKGROUND: Color = Color::Rgb(60, 30, 36);
+const DIFF_BLOCK_BACKGROUND: Color = COLOR_SURFACE_DIFF;
+const DIFF_ADDED_BACKGROUND: Color = COLOR_SURFACE_DIFF_ADDED;
+const DIFF_REMOVED_BACKGROUND: Color = COLOR_SURFACE_DIFF_REMOVED;
 
 /// Atividade generica de tool do Runtime renderizada com a margem do Codex.
 #[derive(Debug)]
@@ -103,19 +111,26 @@ impl HistoryCell for ToolCell {
         let title = self
             .display_target()
             .map_or(label.clone(), |target| format!("{label} {target}"));
-        let status = self
-            .completed
-            .then(|| tool_status(self.output.as_deref()))
-            .map_or("", ToolStatus::marker);
-        let mut lines = wrap_text(&format!("• {title}{status}"), usize::from(width))
+        let status = self.completed.then(|| tool_status(self.output.as_deref()));
+        let status_suffix = status.map_or("", ToolStatus::marker);
+        let header_style = status.map_or_else(running_style, ToolStatus::style);
+        let wrap_width = usize::from(width).saturating_sub(2).max(1);
+        let mut lines = wrap_text(&format!("{title}{status_suffix}"), wrap_width)
             .into_iter()
             .enumerate()
             .map(|(index, line)| {
-                Line::from(if index == 0 {
-                    line
-                } else {
-                    format!("  {line}")
-                })
+                let prefix = if index == 0 { "• " } else { "  " };
+                Line::from(vec![
+                    Span::styled(
+                        prefix,
+                        if index == 0 {
+                            header_style
+                        } else {
+                            secondary_style()
+                        },
+                    ),
+                    Span::styled(line, action_style()),
+                ])
             })
             .collect::<Vec<_>>();
         if let Some(output) = &self.output {
@@ -164,6 +179,13 @@ impl ToolStatus {
             Self::Error => " ✗",
         }
     }
+
+    fn style(self) -> Style {
+        match self {
+            Self::Success => success_style(),
+            Self::Error => error_style(),
+        }
+    }
 }
 
 fn tool_status(output: Option<&str>) -> ToolStatus {
@@ -203,10 +225,9 @@ fn tool_summary_lines(tool_name: &str, output: &str, width: u16) -> Vec<Line<'st
                 .into_iter()
                 .map(|span| span.content.into_owned())
                 .collect::<String>();
-            Line::from(format!(
-                "{}{}",
-                if index == 0 { "  └ " } else { "    " },
-                content
+            Line::from(Span::styled(
+                format!("{}{}", if index == 0 { "  └ " } else { "    " }, content),
+                secondary_style(),
             ))
         })
         .collect()
@@ -507,8 +528,7 @@ fn filesystem_change_lines(
         lines.push(padded_diff_line(
             vec![Span::styled(
                 title,
-                Style::default()
-                    .fg(Color::Cyan)
+                action_style()
                     .bg(DIFF_BLOCK_BACKGROUND)
                     .add_modifier(Modifier::BOLD),
             )],
@@ -670,10 +690,7 @@ fn filesystem_diff_line(
         FilesystemDiffItem::Hunk(header) => padded_diff_line(
             vec![Span::styled(
                 format!("  {header}"),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .bg(DIFF_BLOCK_BACKGROUND)
-                    .add_modifier(Modifier::DIM),
+                secondary_style().bg(DIFF_BLOCK_BACKGROUND),
             )],
             DIFF_BLOCK_BACKGROUND,
             width,
@@ -702,19 +719,13 @@ fn filesystem_diff_line(
                 _ => DIFF_BLOCK_BACKGROUND,
             };
             let content_style = match marker {
-                '+' => Style::default().fg(Color::Green).bg(line_background),
-                '-' => Style::default().fg(Color::Red).bg(line_background),
-                _ => Style::default()
-                    .fg(Color::Gray)
-                    .bg(line_background)
-                    .add_modifier(Modifier::DIM),
+                '+' => success_style().bg(line_background),
+                '-' => error_style().bg(line_background),
+                _ => secondary_style().bg(line_background),
             };
             padded_diff_line(
                 vec![
-                    Span::styled(
-                        gutter,
-                        Style::default().fg(Color::Gray).bg(line_background).dim(),
-                    ),
+                    Span::styled(gutter, secondary_style().bg(line_background)),
                     Span::styled(content, content_style),
                 ],
                 line_background,
@@ -822,15 +833,16 @@ impl HistoryCell for ErrorCell {
         for (line_index, source) in self.message.lines().enumerate() {
             for (part_index, line) in wrap_text(source, usable).into_iter().enumerate() {
                 result.push(Line::from(vec![
-                    (if line_index == 0 && part_index == 0 {
-                        prefix
-                    } else {
-                        "  "
-                    })
-                    .to_string()
-                    .red()
-                    .dim(),
-                    line.into(),
+                    Span::styled(
+                        (if line_index == 0 && part_index == 0 {
+                            prefix
+                        } else {
+                            "  "
+                        })
+                        .to_owned(),
+                        error_style(),
+                    ),
+                    Span::styled(line, primary_style()),
                 ]));
             }
         }
@@ -1118,17 +1130,23 @@ mod tests {
 
         assert!(cell.background_style().is_none());
         let lines = cell.display_lines(100);
-        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Red));
-        assert_eq!(lines[3].spans[1].style.fg, Some(Color::Green));
-        assert_eq!(lines[2].spans[1].style.bg, Some(Color::Rgb(60, 30, 36)));
-        assert_eq!(lines[3].spans[1].style.bg, Some(Color::Rgb(26, 60, 38)));
+        assert_eq!(
+            lines[2].spans[1].style.fg,
+            Some(crate::ui_consts::COLOR_ERROR)
+        );
+        assert_eq!(
+            lines[3].spans[1].style.fg,
+            Some(crate::ui_consts::COLOR_SUCCESS)
+        );
+        assert_eq!(lines[2].spans[1].style.bg, Some(COLOR_SURFACE_DIFF_REMOVED));
+        assert_eq!(lines[3].spans[1].style.bg, Some(COLOR_SURFACE_DIFF_ADDED));
         assert!(
             lines[0].spans[0]
                 .style
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
-        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(28, 32, 38)));
+        assert_eq!(lines[0].spans[0].style.bg, Some(COLOR_SURFACE_DIFF));
         assert!(lines[1].spans[1].style.add_modifier.contains(Modifier::DIM));
     }
 
@@ -1357,6 +1375,44 @@ mod tests {
                 "• Report ✗",
                 "  └ permission denied while reading the report"
             ]
+        );
+    }
+
+    #[test]
+    fn snapshots_tool_running_and_completed_states() {
+        let running = ToolCell::new_with_target(
+            "tool-running".to_owned(),
+            "filesystem.search".to_owned(),
+            Some("src".to_owned()),
+        );
+        insta::assert_snapshot!("tool_running", rendered(&running, 60).join("\n"));
+
+        let mut completed = ToolCell::new_with_target(
+            "tool-complete".to_owned(),
+            "filesystem.search".to_owned(),
+            Some("src".to_owned()),
+        );
+        completed.complete(Some(
+            serde_json::json!({
+                "status": "success",
+                "total_matches": 4,
+                "truncated": false
+            })
+            .to_string(),
+        ));
+        insta::assert_snapshot!("tool_completed", rendered(&completed, 60).join("\n"));
+    }
+
+    #[test]
+    fn snapshots_error_cell() {
+        let cell = ErrorCell::new("Runtime connection failed");
+        insta::assert_snapshot!(
+            "runtime_error",
+            cell.display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 

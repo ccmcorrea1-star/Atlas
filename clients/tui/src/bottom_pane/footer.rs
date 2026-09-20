@@ -5,11 +5,8 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use std::env;
 
-use ratatui::style::Color;
-use ratatui::style::Style;
-use ratatui::style::Stylize;
+use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
@@ -17,6 +14,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::ui_consts::FOOTER_INDENT_COLS;
+use crate::ui_consts::action_style;
+use crate::ui_consts::error_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::warning_style;
 
 const SHORTCUT_HEIGHT: u16 = 11;
 
@@ -25,6 +26,7 @@ pub(crate) enum FooterMode {
     HistorySearch,
     QuitShortcutReminder,
     ShortcutOverlay,
+    Connecting,
     EscHint,
     ComposerEmpty,
     ComposerHasDraft,
@@ -34,6 +36,7 @@ pub(crate) enum FooterMode {
 pub(crate) struct FooterProps {
     mode: FooterMode,
     left: String,
+    session: Option<String>,
     context: Option<String>,
 }
 
@@ -47,6 +50,8 @@ impl FooterProps {
             FooterMode::QuitShortcutReminder
         } else if app.esc_backtrack_hint() {
             FooterMode::EscHint
+        } else if !app.runtime_connected() {
+            FooterMode::Connecting
         } else if app.input().is_empty() {
             FooterMode::ComposerEmpty
         } else {
@@ -63,16 +68,18 @@ impl FooterProps {
                     format!("reverse-i-search: {query} (no match)")
                 }
             }
-            FooterMode::ComposerHasDraft if app.turn_active() => "tab to queue message".to_owned(),
-            FooterMode::ComposerEmpty => "? for shortcuts".to_owned(),
-            FooterMode::ShortcutOverlay | FooterMode::ComposerHasDraft => String::new(),
+            FooterMode::Connecting => "Connecting…".to_owned(),
+            FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft => "? shortcuts".to_owned(),
+            FooterMode::ShortcutOverlay => String::new(),
         };
+        let session = session_info(app);
         let context = app
             .context_usage()
             .map(|usage| format_context(usage.used_tokens, usage.context_window));
         Self {
             mode,
             left,
+            session,
             context,
         }
     }
@@ -86,13 +93,12 @@ pub(crate) fn desired_height(app: &App, _width: u16) -> u16 {
     }
 }
 
-fn session_info(app: &App) -> String {
-    let model = app.session_model().unwrap_or("unavailable");
-    let provider = app.session_provider().unwrap_or("unavailable");
-    let directory = env::current_dir()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "unavailable".to_owned());
-    format!("model: {model}  provider: {provider}  directory: {directory}")
+fn session_info(app: &App) -> Option<String> {
+    match (app.session_model(), app.session_provider()) {
+        (Some(model), Some(provider)) => Some(format!("{model} · {provider}")),
+        (Some(model), None) | (None, Some(model)) => Some(model.to_owned()),
+        (None, None) => None,
+    }
 }
 
 pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -105,90 +111,76 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut Buffer) {
         return;
     }
 
-    let context_width = props.context.as_deref().map_or(0, UnicodeWidthStr::width);
-    let mut left = props.left.clone();
-    let mut show_context = props.context.is_some();
-    if !fits(area.width, &left, context_width) {
-        if props.mode == FooterMode::ComposerHasDraft && left == "tab to queue message" {
-            left = "tab to queue".to_owned();
-        }
-        show_context = fits(area.width, &left, context_width);
-        if !show_context && props.mode == FooterMode::ComposerEmpty {
-            show_context = false;
-        }
-        if !fits(area.width, &left, 0) {
-            left.clear();
-        }
-    }
-
-    let info = session_info(app);
+    let left = props.left;
     let left_width = FOOTER_INDENT_COLS + UnicodeWidthStr::width(left.as_str());
-    let info_width = UnicodeWidthStr::width(info.as_str());
-    let show_info = left_width + info_width + context_width + 4 <= usize::from(area.width);
+    let available_right = usize::from(area.width).saturating_sub(left_width + 1);
+    let session = props.session;
+    let context = props.context;
+    let combined = match (session.as_deref(), context.as_deref()) {
+        (Some(session), Some(context)) => Some(format!("{session} · {context}")),
+        (Some(session), None) => Some(session.to_owned()),
+        (None, Some(context)) => Some(context.to_owned()),
+        (None, None) => None,
+    };
+    let right = combined
+        .filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right)
+        .or_else(|| {
+            context.filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right)
+        })
+        .or(session.filter(|value| UnicodeWidthStr::width(value.as_str()) <= available_right));
+    let right_width = right.as_deref().map_or(0, UnicodeWidthStr::width);
     let left_span = Span::styled(
         format!("{}{}", " ".repeat(FOOTER_INDENT_COLS), left),
-        Style::default().dim(),
+        secondary_style(),
     );
     let mut line = Line::from(left_span);
-    let mut line_width = left_width;
-    if show_info {
+    if let Some(right) = right {
         let padding = usize::from(area.width)
-            .saturating_sub(
-                left_width + info_width + if show_context { context_width + 2 } else { 0 },
-            )
-            .max(2);
-        line.push_span(Span::raw(" ".repeat(padding)));
-        line.push_span(Span::styled(info, Style::default().dim()));
-        line_width += padding + info_width;
-    }
-    if show_context && let Some(context) = props.context {
-        let padding = usize::from(area.width)
-            .saturating_sub(line_width + context.width())
+            .saturating_sub(left_width + right_width)
             .max(1);
         line.push_span(Span::raw(" ".repeat(padding)));
-        line.push_span(Span::styled(context, Style::default().dim()));
+        line.push_span(Span::styled(right, secondary_style()));
     }
     line.render(area, buffer);
 }
 
 pub(crate) fn render_status_line(app: &App, area: Rect, buffer: &mut Buffer) {
-    let Some(line) = status_line(app) else {
-        return;
-    };
     let line_area = Rect::new(
         area.x.saturating_add(FOOTER_INDENT_COLS as u16),
         area.y,
         area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
         area.height,
     );
+    let Some(line) = status_line(app, line_area.width) else {
+        return;
+    };
     line.render(line_area, buffer);
 }
 
-fn status_line(app: &App) -> Option<Line<'static>> {
+fn status_line(app: &App, width: u16) -> Option<Line<'static>> {
     match app.status() {
         crate::app::Status::Ready => None,
         crate::app::Status::Thinking | crate::app::Status::Executing => {
             let activity = app
                 .current_activity()
                 .unwrap_or_else(|| "Thinking".to_owned());
-            Some(
-                Line::from(Span::styled(
-                    format!(
-                        "• {activity} ({} • esc to interrupt)",
-                        format_duration(app.working_seconds())
-                    ),
-                    Style::default(),
-                ))
-                .dim(),
-            )
+            let detail = format!(
+                " ({} • esc to interrupt)",
+                format_duration(app.working_seconds())
+            );
+            let mut line = Line::from(vec![
+                Span::styled("• ", action_style()),
+                Span::styled(activity, action_style()),
+            ]);
+            if line.width().saturating_add(detail.width()) <= usize::from(width) {
+                line.push_span(Span::styled(detail, secondary_style()));
+            }
+            Some(line)
         }
-        crate::app::Status::Error(message) => Some(
-            Line::from(Span::styled(
-                format!("! {message}"),
-                Style::default().fg(Color::Red),
-            ))
-            .dim(),
-        ),
+        crate::app::Status::Error(message) => Some(Line::from(Span::styled(
+            format!("! {message}"),
+            error_style(),
+        ))),
     }
 }
 
@@ -204,11 +196,6 @@ fn format_duration(total_seconds: u64) -> String {
     } else {
         format!("{seconds}s")
     }
-}
-
-fn fits(width: u16, left: &str, right_width: usize) -> bool {
-    FOOTER_INDENT_COLS + UnicodeWidthStr::width(left) + usize::from(right_width > 0) + right_width
-        <= usize::from(width)
 }
 
 fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -239,9 +226,9 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         }
         let left_width = usize::from(area.width) / 2;
         Line::from(vec![
-            Span::styled(left, Style::default().dim()),
+            Span::styled(left, secondary_style()),
             Span::raw(" ".repeat(left_width.saturating_sub(left.width()))),
-            Span::styled(right, Style::default().dim()),
+            Span::styled(right, secondary_style()),
         ])
         .render(Rect::new(area.x, y, area.width, 1), buffer);
     }
@@ -249,13 +236,13 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         buffer.set_span(
             area.x,
             area.y + 1,
-            &Span::styled("›", Style::default().fg(Color::Yellow).bold()),
+            &Span::styled("›", warning_style().add_modifier(Modifier::BOLD)),
             1,
         );
         buffer.set_span(
             area.x + FOOTER_INDENT_COLS as u16,
             area.y + 1,
-            &Span::styled("Ask Atlas to do anything", Style::default().dim()),
+            &Span::styled("Ask Atlas to do anything", secondary_style()),
             area.width.saturating_sub(FOOTER_INDENT_COLS as u16),
         );
     }
@@ -263,44 +250,7 @@ fn render_shortcut_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn format_context(used: u64, window: u64) -> String {
     let remaining = window.saturating_sub(used).saturating_mul(100) / window.max(1);
-    format!(
-        "{}/{} ({}% left)",
-        format_tokens_compact(used),
-        format_tokens_compact(window),
-        remaining
-    )
-}
-
-fn format_tokens_compact(value: u64) -> String {
-    if value < 1_000 {
-        return value.to_string();
-    }
-
-    let value_f64 = value as f64;
-    let (scaled, suffix) = if value >= 1_000_000_000 {
-        (value_f64 / 1_000_000_000.0, "b")
-    } else if value >= 1_000_000 {
-        (value_f64 / 1_000_000.0, "m")
-    } else {
-        (value_f64 / 1_000.0, "k")
-    };
-    let decimals = if scaled < 10.0 {
-        2
-    } else if scaled < 100.0 {
-        1
-    } else {
-        0
-    };
-    let mut formatted = format!("{scaled:.decimals$}");
-    if formatted.contains('.') {
-        while formatted.ends_with('0') {
-            formatted.pop();
-        }
-        if formatted.ends_with('.') {
-            formatted.pop();
-        }
-    }
-    format!("{formatted}{suffix}")
+    format!("{remaining}% left")
 }
 
 #[cfg(test)]
@@ -331,7 +281,7 @@ mod tests {
         let app = App::new("footer".to_owned());
         assert_eq!(
             super::FooterProps::from_app(&app).mode,
-            FooterMode::ComposerEmpty
+            FooterMode::Connecting
         );
     }
 
@@ -394,6 +344,19 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_active_footer_hierarchy() {
+        let mut app = App::new("footer-snapshot".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.handle_runtime_event(RuntimeEvent::ToolStarted {
+            tool_id: "tool-1".to_owned(),
+            tool_name: "filesystem.read".to_owned(),
+            target: Some("src/main.rs".to_owned()),
+        });
+
+        insta::assert_snapshot!("footer_activity", status_output(&app));
+    }
+
+    #[test]
     fn formats_turn_duration_in_compact_units() {
         assert_eq!(super::format_duration(0), "0s");
         assert_eq!(super::format_duration(42), "42s");
@@ -421,24 +384,29 @@ mod tests {
     }
 
     #[test]
-    fn formats_context_as_used_over_window_with_remaining_percentage() {
-        assert_eq!(super::format_context(100, 156_000), "100/156k (99% left)");
-        assert_eq!(
-            super::format_context(1_234, 1_000_000),
-            "1.23k/1m (99% left)"
-        );
+    fn formats_context_as_remaining_percentage() {
+        assert_eq!(super::format_context(100, 156_000), "99% left");
+        assert_eq!(super::format_context(1_234, 1_000_000), "99% left");
     }
 
     #[test]
-    fn renders_session_info_with_model_provider_and_directory() {
+    fn renders_session_info_with_model_and_provider_only() {
         let mut app = App::new("footer-session-info".to_owned());
         app.handle_runtime_event(RuntimeEvent::SessionUpdated {
             model: "gpt-5.6-luna".to_owned(),
             provider: "opencode-go".to_owned(),
         });
         let output = super::session_info(&app);
-        assert!(output.contains("model: gpt-5.6-luna"));
-        assert!(output.contains("provider: opencode-go"));
-        assert!(output.contains("directory:"));
+        assert_eq!(output.as_deref(), Some("gpt-5.6-luna · opencode-go"));
+        assert!(!output.as_deref().unwrap().contains("directory:"));
+    }
+
+    #[test]
+    fn connecting_footer_omits_missing_session_metadata() {
+        let app = App::new("footer-connecting".to_owned());
+        let props = super::FooterProps::from_app(&app);
+        assert_eq!(props.mode, FooterMode::Connecting);
+        assert_eq!(props.left, "Connecting…");
+        assert!(props.session.is_none());
     }
 }

@@ -1,0 +1,5 @@
+---
+source: src/exec_cell/render.rs
+expression: "rendered.join(\"\\n\")"
+---
+• Running npm test

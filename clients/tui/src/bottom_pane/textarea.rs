@@ -12,12 +12,12 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::ui_consts::primary_style;
 use crate::wrapping::cursor_position;
 use crate::wrapping::display_width;
 use crate::wrapping::position_at_display_column;
@@ -335,7 +335,7 @@ impl TextArea {
             .map(Line::from)
             .collect::<Vec<_>>();
         Paragraph::new(lines)
-            .style(Style::default())
+            .style(primary_style())
             .scroll((state.scroll, 0))
             .render(area, buffer);
     }

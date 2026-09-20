@@ -1,0 +1,16 @@
+---
+source: src/chatwidget/rendering.rs
+expression: "screen_rows(&mut app, 24, 12).join(\"\\n\")"
+---
+Atlas      …/clients/tui
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+  • Thinking            
+› fix the error path    
+                        
+  ? shortcuts

@@ -4,12 +4,16 @@
 //! `Running ...` por execucao, o grupo mostra um unico cabecalho com os
 //! comandos em arvore.
 
-use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 
 use super::model::ExecCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
+use crate::ui_consts::error_style;
+use crate::ui_consts::running_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::success_style;
 
 const MAX_GROUP_COMMANDS: usize = 8;
 
@@ -100,22 +104,26 @@ fn group_lines(execs: &[ExecCell], width: u16) -> Vec<Line<'static>> {
     } else {
         format!("Running {running} of {total} commands")
     };
-    let marker = if running == 0 {
-        "•".green().bold()
+    let marker_style = if running == 0 {
+        success_style()
     } else {
-        "•".cyan().bold()
+        running_style()
     };
-    let mut lines = vec![Line::from(vec![marker, " ".into(), title.bold()])];
+    let mut lines = vec![Line::from(vec![
+        Span::styled("•", marker_style),
+        Span::raw(" "),
+        Span::styled(title, marker_style),
+    ])];
     for (index, exec) in execs.iter().take(shown).enumerate() {
         let last = index + 1 == shown && total <= MAX_GROUP_COMMANDS;
         let branch = if last { "  └ " } else { "  ├ " };
         let continuation = if last { "    " } else { "  │ " };
-        let result = if exec.is_running() {
-            "•"
+        let (result, result_style) = if exec.is_running() {
+            ("•", running_style())
         } else if exec.succeeded() {
-            "✓"
+            ("✓", success_style())
         } else {
-            "✗"
+            ("✗", error_style())
         };
         let command = if let Some(duration_ms) = exec.duration_ms() {
             format!(
@@ -131,20 +139,23 @@ fn group_lines(execs: &[ExecCell], width: u16) -> Vec<Line<'static>> {
             .into_iter()
             .enumerate()
         {
-            lines.push(Line::from(format!(
-                "{}{}",
-                if part_index == 0 {
-                    branch
-                } else {
-                    continuation
-                },
-                part
-            )));
+            let prefix = if part_index == 0 {
+                branch
+            } else {
+                continuation
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, secondary_style()),
+                Span::styled(part, result_style),
+            ]));
         }
     }
     let omitted = total.saturating_sub(shown);
     if omitted > 0 {
-        lines.push(Line::from(format!("  └ … +{omitted} commands")));
+        lines.push(Line::from(Span::styled(
+            format!("  └ … +{omitted} commands"),
+            secondary_style(),
+        )));
     }
     lines
 }

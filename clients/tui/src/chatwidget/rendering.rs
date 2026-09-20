@@ -12,6 +12,7 @@ use crate::bottom_pane::BottomPaneView;
 use crate::history_cell::HistoryCell;
 use crate::render::renderable::Renderable;
 use crate::session_header;
+use crate::ui_consts::surface_style;
 
 pub(crate) fn render(
     area: Rect,
@@ -22,6 +23,7 @@ pub(crate) fn render(
     if area.is_empty() {
         return None;
     }
+    buffer.set_style(area, surface_style());
     let header_height =
         session_header::desired_height(area.width).min(area.height.saturating_sub(2));
     let composer_height = bottom_pane
@@ -67,6 +69,7 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
         total_height = total_height.saturating_add(height);
     }
     Clear.render(area, buffer);
+    buffer.set_style(area, surface_style());
     let max_scroll = total_height.saturating_sub(usize::from(area.height));
     let scroll = max_scroll
         .saturating_sub(app.history_scroll())
@@ -169,9 +172,9 @@ mod tests {
     use crate::history_cell::UserHistoryCell;
     use crate::render::renderable::Renderable;
     use crate::runtime::RuntimeEvent;
+    use crate::ui_consts::COLOR_SURFACE_USER;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Color;
     use ratatui::text::Line;
     use ratatui::text::Span;
 
@@ -337,7 +340,7 @@ mod tests {
             buffer
                 .content
                 .iter()
-                .all(|cell| cell.bg == Color::Rgb(51, 51, 51))
+                .all(|cell| cell.bg == COLOR_SURFACE_USER)
         );
     }
 
@@ -371,5 +374,40 @@ mod tests {
         };
 
         assert_eq!(renderable.desired_height(10), 3);
+    }
+
+    #[test]
+    fn snapshots_narrow_terminal_priority() {
+        let mut app = App::new("render-narrow".to_owned());
+        app.handle_runtime_event(RuntimeEvent::TurnStarted);
+        app.insert_text("fix the error path");
+
+        insta::assert_snapshot!("terminal_narrow", screen_rows(&mut app, 24, 12).join("\n"));
+    }
+
+    #[test]
+    fn snapshots_initial_layout() {
+        let mut app = App::new("render-initial".to_owned());
+
+        insta::assert_snapshot!("initial_layout", screen_rows(&mut app, 80, 12).join("\n"));
+    }
+
+    #[test]
+    fn snapshots_connected_layout() {
+        let mut app = App::new("render-connected".to_owned());
+        app.handle_runtime_event(RuntimeEvent::SessionUpdated {
+            model: "gpt-5.6-luna".to_owned(),
+            provider: "opencode-go".to_owned(),
+        });
+        app.handle_runtime_event(RuntimeEvent::ContextUpdated {
+            context: crate::runtime::ContextUsage {
+                used_tokens: 1_560,
+                context_window: 156_000,
+            },
+        });
+        app.insert_text("Review the auth flow");
+        assert_eq!(app.submit_input().as_deref(), Some("Review the auth flow"));
+
+        insta::assert_snapshot!("connected_layout", screen_rows(&mut app, 80, 12).join("\n"));
     }
 }

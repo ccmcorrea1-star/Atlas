@@ -1,7 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
-use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -13,6 +11,10 @@ use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::bottom_pane::selection_popup::SelectionPopupState;
 use crate::bottom_pane::textarea::TextArea;
 use crate::ui_consts::LIVE_PREFIX_COLS;
+use crate::ui_consts::action_style;
+use crate::ui_consts::elevated_surface_style;
+use crate::ui_consts::primary_style;
+use crate::ui_consts::secondary_style;
 use crate::wrapping::display_width;
 use crate::wrapping::wrap_text;
 
@@ -98,13 +100,8 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
         ),
     };
     let composer_surface = Rect::new(area.x, input_area.y, area.width, input_area.height);
-    buffer.set_style(
-        composer_surface,
-        Style::default().bg(Color::Rgb(51, 51, 51)),
-    );
-    let prompt_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
+    buffer.set_style(composer_surface, elevated_surface_style());
+    let prompt_style = action_style().add_modifier(Modifier::BOLD);
     buffer.set_span(
         input_area.x.saturating_sub(LIVE_PREFIX_COLS),
         input_area.y,
@@ -115,7 +112,7 @@ pub(crate) fn render(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer
     let lines = if app.input().is_empty() {
         vec![Line::from(Span::styled(
             "Ask Atlas to do anything",
-            Style::default().dim(),
+            secondary_style(),
         ))]
     } else {
         Vec::new()
@@ -170,6 +167,7 @@ fn completion_popup_height(app: &App, width: u16) -> u16 {
 fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
     let selected = app.completion_popup_selected_row();
     let items = app.completion_popup_items();
+    buffer.set_style(area, elevated_surface_style());
     let label_width = items
         .iter()
         .map(|(label, _)| display_width(label) + 2)
@@ -183,14 +181,14 @@ fn render_completion_popup(app: &App, area: Rect, buffer: &mut ratatui::buffer::
         let is_selected = selected == Some(item_index);
         let marker = if is_selected { "› " } else { "  " };
         let label_style = if is_selected {
-            Style::default().fg(Color::Cyan)
+            action_style()
         } else {
-            Style::default().fg(Color::Yellow)
+            secondary_style()
         };
         let description_style = if is_selected {
-            Style::default().fg(Color::Cyan)
+            action_style()
         } else {
-            Style::default()
+            primary_style()
         };
         for (line_index, description_line) in wrap_text(&description, description_width)
             .into_iter()
@@ -255,9 +253,10 @@ mod tests {
     use crate::app::App;
     use crate::runtime::ContextUsage;
     use crate::runtime::RuntimeEvent;
+    use crate::ui_consts::COLOR_ACTION;
+    use crate::ui_consts::COLOR_SURFACE_ELEVATED;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::style::Color;
 
     fn rows(app: &App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -293,6 +292,10 @@ mod tests {
         for character in "short".chars() {
             draft.insert_character(character);
         }
+        draft.handle_runtime_event(RuntimeEvent::SessionUpdated {
+            model: "gpt-5.6-luna".to_owned(),
+            provider: "opencode-go".to_owned(),
+        });
         with_context(&mut draft);
         insta::assert_snapshot!("composer_draft", rows(&draft, 100, 14));
 
@@ -351,7 +354,7 @@ mod tests {
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "/" && cell.style().fg == Some(Color::Cyan))
+                .any(|cell| cell.symbol() == "/" && cell.style().fg == Some(COLOR_ACTION))
         );
     }
 
@@ -421,7 +424,7 @@ mod tests {
 
         assert_eq!(
             terminal.backend().buffer()[(20, 1)].bg,
-            Color::Rgb(51, 51, 51)
+            COLOR_SURFACE_ELEVATED
         );
     }
 }

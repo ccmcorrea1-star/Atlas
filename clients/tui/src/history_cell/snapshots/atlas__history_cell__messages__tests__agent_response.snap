@@ -1,0 +1,7 @@
+---
+source: src/history_cell/messages.rs
+expression: "agent.display_lines(60).iter().map(line_text).collect::<Vec<_>>().join(\"\\n\")"
+---
+• ## Ready
+  
+  The error path is covered by the patch.

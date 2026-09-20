@@ -57,6 +57,7 @@ pub struct App {
     oversized_paste_pending: bool,
     cancel_requested: bool,
     external_editor_requested: bool,
+    runtime_connected: bool,
     session_model: Option<String>,
     session_provider: Option<String>,
 }
@@ -121,6 +122,7 @@ impl App {
             oversized_paste_pending: false,
             cancel_requested: false,
             external_editor_requested: false,
+            runtime_connected: false,
             session_model: None,
             session_provider: None,
         }
@@ -196,6 +198,10 @@ impl App {
 
     pub(crate) fn session_provider(&self) -> Option<&str> {
         self.session_provider.as_deref()
+    }
+
+    pub(crate) fn runtime_connected(&self) -> bool {
+        self.runtime_connected
     }
 
     pub fn shortcuts_open(&self) -> bool {
@@ -567,6 +573,7 @@ impl App {
     }
 
     pub fn handle_runtime_event(&mut self, event: RuntimeEvent) {
+        self.runtime_connected = true;
         if let RuntimeEvent::SessionUpdated { model, provider } = event {
             self.session_model = Some(model);
             self.session_provider = Some(provider);

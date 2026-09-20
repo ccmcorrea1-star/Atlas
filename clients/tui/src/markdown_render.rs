@@ -18,6 +18,10 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
+use crate::ui_consts::action_style;
+use crate::ui_consts::primary_style;
+use crate::ui_consts::secondary_style;
+
 #[path = "markdown_render/math.rs"]
 mod math;
 
@@ -433,7 +437,7 @@ mod writer {
                 Event::Start(tag) => self.start(tag),
                 Event::End(tag) => self.end(tag),
                 Event::Text(text) => self.push_text(&text),
-                Event::Code(code) => self.push_styled_text(&code, Style::default().cyan()),
+                Event::Code(code) => self.push_styled_text(&code, action_style()),
                 Event::SoftBreak | Event::HardBreak => self.flush_line(),
                 Event::Rule => {
                     self.flush_line();
@@ -444,7 +448,7 @@ mod writer {
                 Event::InlineMath(math) => {
                     let rendered = super::math::render_formula(&math, false)
                         .unwrap_or_else(|| math.to_string());
-                    self.push_styled_text(&rendered, Style::default().cyan());
+                    self.push_styled_text(&rendered, action_style());
                 }
                 Event::DisplayMath(math) => {
                     self.flush_line();
@@ -525,7 +529,7 @@ mod writer {
                         .push(safe_link_destination(&dest_url));
                     self.styles.push(
                         self.current_style()
-                            .fg(Color::Cyan)
+                            .patch(action_style())
                             .add_modifier(Modifier::UNDERLINED),
                     );
                 }
@@ -701,7 +705,7 @@ mod writer {
             if self.quote_depth > 0 {
                 self.current.push(Span::styled(
                     "> ".repeat(self.quote_depth),
-                    Style::default().green(),
+                    secondary_style(),
                 ));
             }
             if let Some(prefix) = self.item_prefix.as_deref() {
@@ -791,7 +795,7 @@ mod writer {
             self.lines.extend(render_table_row(
                 &header,
                 &widths,
-                Style::default().bold().cyan(),
+                action_style().add_modifier(Modifier::BOLD),
             ));
             self.lines.push(
                 Line::from(
@@ -801,11 +805,11 @@ mod writer {
                         .collect::<Vec<_>>()
                         .join("  "),
                 )
-                .style(Style::default().dim()),
+                .style(secondary_style()),
             );
             for (index, row) in rows.iter().enumerate() {
                 self.lines
-                    .extend(render_table_row(row, &widths, Style::default()));
+                    .extend(render_table_row(row, &widths, primary_style()));
                 if index + 1 < rows.len() {
                     self.lines.push(
                         Line::from(
@@ -815,7 +819,7 @@ mod writer {
                                 .collect::<Vec<_>>()
                                 .join("  "),
                         )
-                        .style(Style::default().dim()),
+                        .style(secondary_style()),
                     );
                 }
             }
@@ -915,10 +919,14 @@ mod writer {
 
     fn heading_style(level: pulldown_cmark::HeadingLevel) -> Style {
         match level {
-            pulldown_cmark::HeadingLevel::H1 => Style::default().bold().underlined(),
-            pulldown_cmark::HeadingLevel::H2 => Style::default().bold(),
-            pulldown_cmark::HeadingLevel::H3 => Style::default().bold().italic(),
-            _ => Style::default().italic(),
+            pulldown_cmark::HeadingLevel::H1 => {
+                primary_style().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            }
+            pulldown_cmark::HeadingLevel::H2 => primary_style().add_modifier(Modifier::BOLD),
+            pulldown_cmark::HeadingLevel::H3 => {
+                primary_style().add_modifier(Modifier::BOLD | Modifier::ITALIC)
+            }
+            _ => primary_style().add_modifier(Modifier::ITALIC),
         }
     }
 

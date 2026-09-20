@@ -5,7 +5,6 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Clear;
@@ -16,6 +15,9 @@ use std::cell::RefCell;
 use crate::app::App;
 use crate::keymap::Action;
 use crate::render::renderable::Renderable;
+use crate::ui_consts::action_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::surface_style;
 use crate::wrapping::wrap_line;
 
 #[derive(Debug, Default)]
@@ -195,14 +197,12 @@ impl TranscriptOverlay {
             return;
         }
         Clear.render(area, buffer);
+        buffer.set_style(area, surface_style());
 
         let header = Rect::new(area.x, area.y, area.width, 1);
-        Span::styled(
-            "/ ".repeat(usize::from(area.width) / 2),
-            Style::default().dim(),
-        )
-        .render(header, buffer);
-        Span::styled("/ T R A N S C R I P T", Style::default().dim()).render(header, buffer);
+        Span::styled("/ ".repeat(usize::from(area.width) / 2), secondary_style())
+            .render(header, buffer);
+        Span::styled("/ T R A N S C R I P T", action_style()).render(header, buffer);
 
         let content_height = area.height.saturating_sub(5);
         let content = Rect::new(area.x, area.y.saturating_add(1), area.width, content_height);
@@ -289,17 +289,14 @@ impl TranscriptOverlay {
         }
 
         let separator = Rect::new(area.x, content.bottom(), area.width, 1);
-        Span::styled(
-            "─".repeat(usize::from(separator.width)),
-            Style::default().dim(),
-        )
-        .render(separator, buffer);
+        Span::styled("─".repeat(usize::from(separator.width)), secondary_style())
+            .render(separator, buffer);
         let percent = if max_scroll == 0 {
             100
         } else {
             ((scroll as f32 / max_scroll as f32) * 100.0).round() as u8
         };
-        Span::styled(format!(" {percent}% "), Style::default().dim()).render(
+        Span::styled(format!(" {percent}% "), secondary_style()).render(
             Rect::new(
                 separator.right().saturating_sub(6),
                 separator.y,
@@ -318,14 +315,13 @@ impl TranscriptOverlay {
             crate::keymap::hint(Action::JumpTop),
             crate::keymap::hint(Action::JumpBottom),
         );
-        Line::from(Span::styled(navigation_hint, Style::default().dim()))
-            .render(navigation, buffer);
+        Line::from(Span::styled(navigation_hint, secondary_style())).render(navigation, buffer);
         let close_hint = format!(
             " {} close   {} to edit prev",
             crate::keymap::hint(Action::CloseOverlay),
             crate::keymap::hint(Action::Cancel),
         );
-        Line::from(Span::styled(close_hint, Style::default().dim())).render(
+        Line::from(Span::styled(close_hint, secondary_style())).render(
             Rect::new(area.x, navigation.y.saturating_add(1), area.width, 1),
             buffer,
         );

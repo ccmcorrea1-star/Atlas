@@ -1,4 +1,3 @@
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -12,17 +11,21 @@ use super::plain_lines;
 use crate::markdown::render_markdown_agent;
 use crate::markdown::sanitize_terminal_text;
 use crate::render::highlight_streaming::StreamingCodeHighlighter;
+use crate::ui_consts::action_style;
+use crate::ui_consts::primary_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::user_surface_style;
+use crate::ui_consts::warning_style;
 use crate::wrapping::wrap_line;
+use crate::wrapping::wrap_text;
 
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
     pub(crate) message: String,
 }
 
-const USER_MESSAGE_BACKGROUND: Color = Color::Rgb(51, 51, 51);
-
 pub(crate) fn user_message_style() -> Style {
-    Style::default().bg(USER_MESSAGE_BACKGROUND)
+    user_surface_style()
 }
 
 impl UserHistoryCell {
@@ -41,7 +44,7 @@ impl HistoryCell for UserHistoryCell {
         }
         let message_style = user_message_style();
         let wrap_width = usize::from(width).saturating_sub(3).max(1);
-        let mut result = vec![Line::from("").style(message_style)];
+        let mut result = Vec::new();
         for (line_index, source) in message.split('\n').enumerate() {
             let wrapped = wrap_line(
                 crate::markdown::render_ansi_line(source, message_style),
@@ -53,14 +56,15 @@ impl HistoryCell for UserHistoryCell {
                     line,
                     if first { "› " } else { "  " },
                     if first {
-                        message_style.add_modifier(Modifier::BOLD | Modifier::DIM)
+                        action_style()
+                            .bg(message_style.bg.unwrap_or_default())
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        message_style.dim()
+                        secondary_style().bg(message_style.bg.unwrap_or_default())
                     },
                 ));
             }
         }
-        result.push(Line::from("").style(message_style));
         result
     }
 
@@ -71,6 +75,67 @@ impl HistoryCell for UserHistoryCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let message = sanitize_terminal_text(self.message.trim_end_matches(['\r', '\n']));
         plain_lines(message.split('\n').map(|line| Line::from(line.to_owned())))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Bloco de reasoning recolhido por padrao para nao competir com a resposta.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ThoughtCell {
+    source: String,
+    expanded: bool,
+}
+
+#[allow(dead_code)]
+impl ThoughtCell {
+    pub(crate) fn new(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            expanded: false,
+        }
+    }
+
+    pub(crate) fn toggle(&mut self) {
+        self.expanded = !self.expanded;
+    }
+
+    pub(crate) fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+}
+
+impl HistoryCell for ThoughtCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let marker = if self.expanded { "v " } else { "> " };
+        let mut lines = vec![Line::from(vec![
+            Span::styled(marker, warning_style().add_modifier(Modifier::BOLD)),
+            Span::styled("Thought", warning_style()),
+            Span::styled(
+                if self.expanded { "" } else { " (collapsed)" },
+                secondary_style(),
+            ),
+        ])];
+        if self.expanded {
+            let content_width = usize::from(width).saturating_sub(2).max(1);
+            lines.extend(
+                wrap_text(&sanitize_terminal_text(&self.source), content_width)
+                    .into_iter()
+                    .map(|line| prefixed_line(Line::from(line), "  ", primary_style())),
+            );
+        }
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.source.lines().map(|line| Line::from(line.to_owned())))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -317,7 +382,7 @@ fn render_stream_part(
                     for part in wrap_line(line, wrap_width) {
                         cached
                             .lines
-                            .push(prefixed_line(part, "  ", Style::default().dim()));
+                            .push(prefixed_line(part, "  ", secondary_style()));
                     }
                 }
                 open_code.body_len = body.len();
@@ -403,7 +468,7 @@ fn render_agent_lines(source: &str, width: u16, first: bool) -> Vec<Line<'static
                 } else {
                     "  "
                 },
-                Style::default().dim(),
+                secondary_style(),
             ));
         }
     }
@@ -534,6 +599,64 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line_text(line).contains("println!"))
+        );
+    }
+
+    #[test]
+    fn snapshots_user_message_and_agent_response_hierarchy() {
+        let user = UserHistoryCell::new("Review the auth flow\nand keep the error path visible.");
+        insta::assert_snapshot!(
+            "user_message",
+            user.display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        let agent = AgentMarkdownCell::with_message_id(
+            Some("agent-1".to_owned()),
+            "## Ready\n\nThe error path is covered by the patch.",
+        );
+        insta::assert_snapshot!(
+            "agent_response",
+            agent
+                .display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn snapshots_collapsed_and_expanded_thought() {
+        let mut thought = ThoughtCell::new("Check the existing error handling before editing.");
+        assert!(!thought.is_expanded());
+        assert_eq!(
+            thought.display_lines(60)[0].spans[1].style.fg,
+            Some(crate::ui_consts::COLOR_WARNING)
+        );
+        insta::assert_snapshot!(
+            "thought_closed",
+            thought
+                .display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        thought.toggle();
+        assert!(thought.is_expanded());
+        insta::assert_snapshot!(
+            "thought_open",
+            thought
+                .display_lines(60)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 }

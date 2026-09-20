@@ -1,5 +1,4 @@
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -14,6 +13,12 @@ use crate::history_cell::HistoryCell;
 use crate::markdown::render_ansi_line;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::ui_consts::TRANSCRIPT_HINT;
+use crate::ui_consts::action_style;
+use crate::ui_consts::error_style;
+use crate::ui_consts::primary_style;
+use crate::ui_consts::running_style;
+use crate::ui_consts::secondary_style;
+use crate::ui_consts::success_style;
 use crate::wrapping::wrap_line;
 
 pub(crate) const TOOL_CALL_MAX_LINES: usize = 5;
@@ -68,7 +73,7 @@ impl ExecCell {
                 "$ ",
                 "    ",
                 width,
-                Style::default().magenta(),
+                action_style(),
             ));
         }
 
@@ -77,17 +82,22 @@ impl ExecCell {
 
             if let Some(duration_ms) = self.duration_ms() {
                 let mut result = if self.succeeded() {
-                    Line::from("✓".green().bold())
+                    Line::from(Span::styled("✓", success_style()))
                 } else {
                     Line::from(vec![
-                        "✗".red().bold(),
-                        self.exit_code()
-                            .map(|code| format!(" ({code})"))
-                            .unwrap_or_default()
-                            .into(),
+                        Span::styled("✗", error_style()),
+                        Span::styled(
+                            self.exit_code()
+                                .map(|code| format!(" ({code})"))
+                                .unwrap_or_default(),
+                            primary_style(),
+                        ),
                     ])
                 };
-                result.push_span(format!(" • {}", format_duration(duration_ms)).dim());
+                result.push_span(Span::styled(
+                    format!(" • {}", format_duration(duration_ms)),
+                    secondary_style(),
+                ));
                 lines.push(result);
             }
         }
@@ -97,18 +107,23 @@ impl ExecCell {
 
     fn display_lines_inner(&self, width: u16) -> Vec<Line<'static>> {
         let width = width.max(1);
-        let (marker, title) = match (self.state(), self.exit_code()) {
-            (ExecState::Running, _) => ("•".cyan().bold(), "Running"),
-            (ExecState::Ran, Some(0)) => ("•".green().bold(), "Ran"),
-            (ExecState::Ran, Some(_)) => ("•".red().bold(), "Ran"),
-            (ExecState::Ran, None) => ("•".cyan().bold(), "Ran"),
+        let (marker_style, title) = match (self.state(), self.exit_code()) {
+            (ExecState::Running, _) => (running_style(), "Running"),
+            (ExecState::Ran, Some(0)) => (success_style(), "Ran"),
+            (ExecState::Ran, Some(_)) => (error_style(), "Ran"),
+            (ExecState::Ran, None) => (running_style(), "Ran"),
         };
-        let mut header = Line::from(vec![marker, " ".into(), title.bold(), " ".into()]);
+        let mut header = Line::from(vec![
+            Span::styled("•", marker_style),
+            Span::raw(" "),
+            Span::styled(title, marker_style),
+            Span::raw(" "),
+        ]);
         let command = self.command();
         let available = usize::from(width).saturating_sub(header.width()).max(1);
         let command_lines = crate::wrapping::wrap_plain_no_hyphenation(&command, available);
         if let Some(first) = command_lines.first() {
-            header.push_span(first.clone().cyan());
+            header.push_span(Span::styled(first.clone(), action_style()));
         }
 
         let mut lines = vec![header];
@@ -120,7 +135,7 @@ impl ExecCell {
             lines.push(prefixed_line(
                 Line::from(line.clone()),
                 "  │ ",
-                Style::default().dim(),
+                secondary_style(),
             ));
         }
         let omitted = command_lines
@@ -130,7 +145,7 @@ impl ExecCell {
             lines.push(prefixed_line(
                 Line::from(format!("… +{omitted} lines")),
                 "  │ ",
-                Style::default().dim(),
+                secondary_style(),
             ));
         }
 
@@ -139,9 +154,9 @@ impl ExecCell {
             lines.extend(output);
             if let Some(duration_ms) = self.duration_ms() {
                 let result = if self.succeeded() {
-                    "✓".green().bold()
+                    Span::styled("✓", success_style())
                 } else {
-                    "✗".red().bold()
+                    Span::styled("✗", error_style())
                 };
                 let code = self
                     .exit_code()
@@ -150,7 +165,10 @@ impl ExecCell {
                     .unwrap_or_default();
                 lines.push(Line::from(vec![
                     result,
-                    format!("{code} • {}", format_duration(duration_ms)).dim(),
+                    Span::styled(
+                        format!("{code} • {}", format_duration(duration_ms)),
+                        secondary_style(),
+                    ),
                 ]));
             }
         }
@@ -167,7 +185,7 @@ fn output_lines(
         return vec![prefixed_line(
             Line::from("(no output)"),
             "  └ ",
-            Style::default().dim(),
+            secondary_style(),
         )];
     };
     let _exit_code = output.exit_code;
@@ -184,7 +202,7 @@ fn output_lines(
     let mut rendered = Vec::new();
     for (index, raw) in raw_lines.iter().enumerate() {
         let prefix = if index == 0 { "  └ " } else { "    " };
-        let style = Style::default().dim();
+        let style = secondary_style();
         rendered.extend(prefixed_wrapped_lines(
             render_ansi_line(raw, style),
             prefix,
@@ -207,7 +225,7 @@ fn transcript_output_lines(output: &CommandOutput, width: u16) -> Vec<Line<'stat
         .transcript_lines()
         .flat_map(|raw| {
             wrap_line(
-                crate::markdown::render_ansi_line(raw.as_ref(), Style::default()),
+                crate::markdown::render_ansi_line(raw.as_ref(), primary_style()),
                 usize::from(width.max(1)),
             )
         })
@@ -222,7 +240,7 @@ fn transcript_output_lines(output: &CommandOutput, width: u16) -> Vec<Line<'stat
 }
 
 fn prefixed_wrapped_lines(line: Line<'static>, prefix: &str, width: u16) -> Vec<Line<'static>> {
-    prefixed_wrapped_lines_with_styles(line, prefix, "    ", width, Style::default().dim())
+    prefixed_wrapped_lines_with_styles(line, prefix, "    ", width, secondary_style())
 }
 
 fn prefixed_wrapped_lines_with_styles(
@@ -264,7 +282,10 @@ impl ExecCell {
         prefix: Option<&Line<'static>>,
     ) -> Line<'static> {
         let mut line = prefix.cloned().unwrap_or_default();
-        line.push_span(Self::output_ellipsis_text(omitted).dim());
+        line.push_span(Span::styled(
+            Self::output_ellipsis_text(omitted),
+            secondary_style(),
+        ));
         line
     }
 
@@ -410,6 +431,21 @@ mod tests {
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
         assert_eq!(rendered, ["$ echo hello", "hello", "world", "✓ • 12ms"]);
         insta::assert_snapshot!(rendered.join("\n"));
+    }
+
+    #[test]
+    fn snapshots_running_shell_execution() {
+        let cell = ExecCell::new(
+            "execution".to_owned(),
+            "bash".to_owned(),
+            vec!["-lc".to_owned(), "npm test".to_owned()],
+        );
+        let rendered = cell
+            .display_lines(60)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        insta::assert_snapshot!("shell_running", rendered.join("\n"));
     }
 
     #[test]
