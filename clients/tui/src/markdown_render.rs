@@ -573,7 +573,12 @@ mod writer {
 
         fn end(&mut self, tag: TagEnd) {
             match tag {
-                TagEnd::Paragraph => self.needs_blank = true,
+                TagEnd::Paragraph => {
+                    // Sem o flush a linha do paragrafo fica pendente e o proximo bloco
+                    // concatena o proprio texto nela, grudando os dois paragrafos.
+                    self.flush_line();
+                    self.needs_blank = true;
+                }
                 TagEnd::Heading(_) => {
                     self.flush_line();
                     self.styles.pop();
@@ -955,6 +960,71 @@ mod tests {
                 &["-lc".to_owned(), "printf 'hello'".to_owned()]
             ),
             "printf 'hello'"
+        );
+    }
+
+    fn rendered_lines(markdown: &str) -> Vec<String> {
+        super::render_markdown_text(markdown)
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn consecutive_paragraphs_keep_their_blank_line() {
+        assert_eq!(
+            rendered_lines("primeiro paragrafo\n\nsegundo paragrafo"),
+            vec![
+                "primeiro paragrafo".to_owned(),
+                String::new(),
+                "segundo paragrafo".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn bold_title_line_and_the_next_paragraph_do_not_glue() {
+        let lines = rendered_lines(
+            "**Bridge de capabilities**\n\nO bridge de capabilities funciona como uma camada.",
+        );
+
+        assert_eq!(lines[0], "Bridge de capabilities");
+        assert_eq!(lines[1], "");
+        assert_eq!(
+            lines[2],
+            "O bridge de capabilities funciona como uma camada."
+        );
+        assert!(!lines.iter().any(|line| line.contains("capabilitiesO")));
+    }
+
+    #[test]
+    fn multiple_blocks_keep_their_order_and_separation() {
+        let lines = rendered_lines(
+            "## Titulo\n\nPrimeiro paragrafo.\n\n- item\n- outro\n\n```rust\nlet x = 1;\n```\n\nFim.",
+        );
+
+        for expected in [
+            "## Titulo",
+            "Primeiro paragrafo.",
+            "- item",
+            "- outro",
+            "let x = 1;",
+            "Fim.",
+        ] {
+            assert!(
+                lines.iter().any(|line| line.contains(expected)),
+                "bloco ausente {expected:?}: {lines:?}"
+            );
+        }
+        assert!(
+            lines.iter().filter(|line| line.trim().is_empty()).count() >= 4,
+            "blocos consecutivos devem manter linha em branco: {lines:?}"
         );
     }
 
