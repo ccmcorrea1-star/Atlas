@@ -2,8 +2,6 @@
 source: src/chatwidget/rendering.rs
 expression: "screen_rows(&mut app, 80, 24).join(\"\\n\")"
 ---
-  Atlas                                                          …/clients/tui  
-                                                                                
                                                                                 
   › question                                                                    
                                                                                 
@@ -23,6 +21,8 @@ expression: "screen_rows(&mut app, 80, 24).join(\"\\n\")"
                                                                                 
   answer                                                                        
                                                                                 
-  › Ask Atlas to do anything                                                    
                                                                                 
-  ? shortcuts
+                                                                                
+  │                                                                             
+  │ › Ask Atlas to do anything                                         Atlas    
+  │ ~/projetos/Atlas · ? shortcuts

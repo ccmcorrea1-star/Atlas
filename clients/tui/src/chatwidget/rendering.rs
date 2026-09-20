@@ -11,7 +11,6 @@ use crate::app::App;
 use crate::bottom_pane::BottomPaneView;
 use crate::history_cell::HistoryCell;
 use crate::render::renderable::Renderable;
-use crate::session_header;
 use crate::ui_consts::CONVERSATION_HORIZONTAL_INSET;
 use crate::ui_consts::surface_style;
 
@@ -25,27 +24,18 @@ pub(crate) fn render(
         return None;
     }
     buffer.set_style(area, surface_style());
-    let header_height =
-        session_header::desired_height(area.width).min(area.height.saturating_sub(2));
     let conversation_x = area.x.saturating_add(CONVERSATION_HORIZONTAL_INSET);
     let conversation_width = area
         .width
         .saturating_sub(CONVERSATION_HORIZONTAL_INSET.saturating_mul(2));
-    let conversation_area = Rect::new(
-        conversation_x,
-        area.y.saturating_add(header_height),
-        conversation_width,
-        area.height.saturating_sub(header_height),
-    );
+    let conversation_area = Rect::new(conversation_x, area.y, conversation_width, area.height);
     let composer_height = bottom_pane
         .desired_height(app, conversation_area.width)
         .min(conversation_area.height.saturating_sub(1));
-    let header_area = Rect::new(conversation_x, area.y, conversation_width, header_height);
     let [history_area, composer_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)])
             .areas(conversation_area);
 
-    session_header::render(header_area, buffer, app);
     app.set_stream_width(history_area.width);
     render_history(buffer, app, history_area);
     if app.transcript_open() {
@@ -58,12 +48,20 @@ pub(crate) fn render(
 
 fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
     if area.is_empty() {
+        app.set_thought_hit_regions(Vec::new());
         return;
     }
     let width = area.width.max(1);
     let mut cells = Vec::new();
+    let mut thought_regions = Vec::new();
     let mut total_height = 0usize;
-    for cell in app.cells().iter().chain(app.active_cells().iter()) {
+    let history_count = app.cells().len();
+    for (cell_index, cell) in app
+        .cells()
+        .iter()
+        .chain(app.active_cells().iter())
+        .enumerate()
+    {
         let rendered = TranscriptAreaRenderable {
             child: cell.as_ref(),
             top: if cells.is_empty() || cell.is_stream_continuation() {
@@ -73,7 +71,14 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
             },
         };
         let height = usize::from(rendered.desired_height(width));
-        cells.push((total_height, height, rendered));
+        cells.push((
+            total_height,
+            height,
+            rendered,
+            cell.as_any().is::<crate::history_cell::ThoughtCell>(),
+            cell_index >= history_count,
+            cell_index,
+        ));
         total_height = total_height.saturating_add(height);
     }
     Clear.render(area, buffer);
@@ -82,7 +87,7 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
     let scroll = max_scroll
         .saturating_sub(app.history_scroll())
         .min(max_scroll);
-    for (start, height, rendered) in cells {
+    for (start, height, rendered, thought, active, cell_index) in cells {
         let start = start as isize - scroll as isize;
         let end = start.saturating_add(height as isize);
         let viewport_height = isize::try_from(area.height).unwrap_or(isize::MAX);
@@ -105,10 +110,19 @@ fn render_history(buffer: &mut Buffer, app: &mut App, area: Rect) {
             area.width,
             u16::try_from(visible_height).unwrap_or(u16::MAX),
         );
+        if thought {
+            thought_regions.push((
+                cell_area.y,
+                cell_area.y.saturating_add(cell_area.height),
+                active,
+                cell_index,
+            ));
+        }
         if skip == 0 || !rendered.render_scrolled(cell_area, buffer, skip as u16) {
             rendered.render(cell_area, buffer);
         }
     }
+    app.set_thought_hit_regions(thought_regions);
     app.record_history_viewport_height(area.height);
     app.record_history_content_height(total_height);
 }
@@ -182,6 +196,13 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use ratatui::text::Span;
+
+    /// Fundo determinista: o caminho exibido nao depende do ambiente do runner.
+    fn snapshot_app(conversation_id: &str) -> App {
+        let mut app = App::new(conversation_id.to_owned());
+        app.set_display_paths("/home/kyle/projetos/Atlas", "/home/kyle");
+        app
+    }
 
     #[derive(Debug)]
     struct TestCell;
@@ -381,7 +402,7 @@ mod tests {
 
     #[test]
     fn snapshots_narrow_terminal_priority() {
-        let mut app = App::new("render-narrow".to_owned());
+        let mut app = snapshot_app("render-narrow");
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
         app.insert_text("fix the error path");
 
@@ -390,14 +411,14 @@ mod tests {
 
     #[test]
     fn snapshots_initial_layout() {
-        let mut app = App::new("render-initial".to_owned());
+        let mut app = snapshot_app("render-initial");
 
         insta::assert_snapshot!("initial_layout", screen_rows(&mut app, 80, 12).join("\n"));
     }
 
     #[test]
     fn snapshots_connected_layout() {
-        let mut app = App::new("render-connected".to_owned());
+        let mut app = snapshot_app("render-connected");
         app.handle_runtime_event(RuntimeEvent::SessionUpdated {
             model: "gpt-5.6-luna".to_owned(),
             provider: "opencode-go".to_owned(),
@@ -414,7 +435,7 @@ mod tests {
 
     #[test]
     fn snapshots_user_message_layout() {
-        let mut app = App::new("render-user-message".to_owned());
+        let mut app = snapshot_app("render-user-message");
         app.handle_runtime_event(RuntimeEvent::SessionUpdated {
             model: "gpt-5.6-luna".to_owned(),
             provider: "opencode-go".to_owned(),
@@ -430,7 +451,7 @@ mod tests {
 
     #[test]
     fn snapshots_turn_lifecycle_with_one_conversation_inset() {
-        let mut app = App::new("render-lifecycle".to_owned());
+        let mut app = snapshot_app("render-lifecycle");
         app.insert_text("question");
         assert_eq!(app.submit_input().as_deref(), Some("question"));
         app.handle_runtime_event(RuntimeEvent::TurnStarted);
@@ -489,7 +510,7 @@ mod tests {
 
     #[test]
     fn snapshots_cancelled_turn_without_error_cell_or_footer_thinking() {
-        let mut app = App::new("render-cancelled".to_owned());
+        let mut app = snapshot_app("render-cancelled");
         app.insert_text("long task");
         assert_eq!(app.submit_input().as_deref(), Some("long task"));
         app.handle_runtime_event(RuntimeEvent::TurnStarted);

@@ -1,5 +1,6 @@
 //! Tokens visuais e constantes de layout compartilhados pela TUI.
 
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -67,4 +68,20 @@ pub(crate) fn user_surface_style() -> Style {
 
 /// Inset compartilhado pela coluna principal da conversa.
 pub(crate) const CONVERSATION_HORIZONTAL_INSET: u16 = 2;
+/// Inset horizontal compartilhado pelo composer e pelo footer do painel inferior.
+pub(crate) const BOTTOM_PANE_HORIZONTAL_INSET: u16 = CONVERSATION_HORIZONTAL_INSET;
 pub(crate) const TRANSCRIPT_HINT: &str = "ctrl + t to view transcript";
+
+/// Area interna do painel inferior, com o mesmo padding nos dois lados.
+///
+/// O composer e o footer desenham dentro dela para que nenhum texto encoste nas
+/// bordas do painel nem no terminal.
+pub(crate) fn bottom_pane_inner_area(area: Rect) -> Rect {
+    let inset = BOTTOM_PANE_HORIZONTAL_INSET.min(area.width / 2);
+    Rect::new(
+        area.x.saturating_add(inset),
+        area.y,
+        area.width.saturating_sub(inset.saturating_mul(2)),
+        area.height,
+    )
+}

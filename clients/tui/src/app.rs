@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
+use std::env;
 use std::path::Path;
-#[cfg(test)]
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 
@@ -60,6 +61,23 @@ pub struct App {
     runtime_connected: bool,
     session_model: Option<String>,
     session_provider: Option<String>,
+    /// Raiz do workspace exibida no footer; resolvida uma vez na construcao.
+    workspace: Option<PathBuf>,
+    /// Home do usuario, usada para compactar o caminho do workspace em `~/`.
+    home: Option<PathBuf>,
+    thought_hit_regions: Vec<(u16, u16, bool, usize)>,
+}
+
+/// Raiz do workspace do Runtime, com o diretorio atual como reserva.
+fn workspace_root() -> Option<PathBuf> {
+    env::var_os("ATLAS_RUNTIME_CWD")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| env::current_dir().ok())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
 }
 
 fn sanitize_paste_text(text: &str) -> String {
@@ -127,6 +145,9 @@ impl App {
             runtime_connected: true,
             session_model: None,
             session_provider: None,
+            workspace: workspace_root(),
+            home: home_dir(),
+            thought_hit_regions: Vec::new(),
         }
     }
 
@@ -195,8 +216,33 @@ impl App {
         self.session_provider.as_deref()
     }
 
+    /// Caminho do workspace exibido no footer.
+    pub(crate) fn workspace(&self) -> Option<&Path> {
+        self.workspace.as_deref()
+    }
+
+    /// Home do usuario, usada para compactar o caminho do workspace.
+    pub(crate) fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
+
+    /// Fixa os caminhos exibidos para snapshots deterministas.
+    #[cfg(test)]
+    pub(crate) fn set_display_paths(
+        &mut self,
+        workspace: impl Into<PathBuf>,
+        home: impl Into<PathBuf>,
+    ) {
+        self.workspace = Some(workspace.into());
+        self.home = Some(home.into());
+    }
+
     pub(crate) fn runtime_connected(&self) -> bool {
         self.runtime_connected
+    }
+
+    pub(crate) fn set_thought_hit_regions(&mut self, regions: Vec<(u16, u16, bool, usize)>) {
+        self.thought_hit_regions = regions;
     }
 
     pub fn shortcuts_open(&self) -> bool {
@@ -863,6 +909,15 @@ impl App {
                 MouseEventKind::ScrollDown => self.move_completion_selection(true),
                 _ => {}
             }
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(&(_top, _bottom, active, index)) = self
+                .thought_hit_regions
+                .iter()
+                .find(|(top, bottom, _, _)| mouse.row >= *top && mouse.row < *bottom)
+        {
+            let _ = self.chatwidget.toggle_thought(active, index);
             return;
         }
         match mouse.kind {
