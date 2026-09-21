@@ -41,6 +41,9 @@ import type { SkillDiscovery } from '../skills/types.js';
 
 let instructionsCache: string | undefined;
 
+// O SDK limita o Runner a 10 turnos por padrão; tarefas com várias Tools precisam de margem.
+export const DEFAULT_AGENT_MAX_TURNS = 50;
+
 // Os .txt ficam em src/prompts; no build, o modulo esta em dist e o fonte continua ao lado.
 function promptsDirectory(): string {
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -1166,11 +1169,15 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
       const runInput = resumeState ?? agentInput;
       if (!onEvent) {
-        return runtime.runner.run(agent, runInput, { session });
+        return runtime.runner.run(agent, runInput, {
+          session,
+          maxTurns: DEFAULT_AGENT_MAX_TURNS,
+        });
       }
 
       const streamedResult = await runtime.runner.run(agent, runInput, {
         session,
+        maxTurns: DEFAULT_AGENT_MAX_TURNS,
         stream: true,
       });
       const fallbackMessageId = randomUUID();
