@@ -846,6 +846,30 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
   }
 });
 
+test('reconciles a repeated turn.request without executing the model twice', async () => {
+  const model = await startStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-idempotent-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-runtime-idempotent-key',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const first = await sendTurn(socketPath, 'runtime-idempotent-conversation');
+    const second = await sendTurn(socketPath, 'runtime-idempotent-conversation');
+    assert.deepEqual(second, first);
+    assert.equal(model.requests.length, 1);
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
 test('waits for a real streamed run before returning its final output', async () => {
   const model = await startStreamingModelServer();
 

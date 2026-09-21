@@ -74,8 +74,22 @@ export type RuntimeApprovalResponse = {
   comment?: string;
 };
 
+export type RuntimeInputResponse = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'input.respond';
+  request_id: string;
+  conversation_id: string;
+  input_id: string;
+  value: string;
+};
+
 export type RuntimeRequest =
-  RuntimeTurnRequest | RuntimeTurnCancel | RuntimeCommandRequest | RuntimeApprovalResponse;
+  | RuntimeTurnRequest
+  | RuntimeTurnCancel
+  | RuntimeCommandRequest
+  | RuntimeApprovalResponse
+  | RuntimeInputResponse;
 
 export type RuntimeEventType =
   | 'session.updated'
@@ -96,6 +110,8 @@ export type RuntimeEventType =
   | 'command.completed'
   | 'approval.requested'
   | 'approval.resolved'
+  | 'input.requested'
+  | 'input.resolved'
   | 'runtime.restarting'
   | 'runtime.ready'
   | 'operation.resuming'
@@ -129,6 +145,13 @@ export type RuntimeApprovalResolvedData = {
   approval_id: string;
   approved: boolean;
   comment?: string;
+};
+
+export type RuntimeInputRequestedData = {
+  input_id: string;
+  prompt: string;
+  choices?: string[];
+  placeholder?: string;
 };
 
 export type RuntimeRestartingData = {
@@ -349,6 +372,17 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       approval_id: requiredString(request.approval_id, 'approval_id'),
       approved: request.approved === true,
       ...(comment === undefined ? {} : { comment }),
+    };
+  }
+  if (request.type === 'input.respond') {
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'input.respond',
+      request_id,
+      conversation_id,
+      input_id: requiredString(request.input_id, 'input_id'),
+      value: requiredString(request.value, 'value'),
     };
   }
   throw new RuntimeProtocolError(`Unsupported runtime message type "${String(request.type)}".`);

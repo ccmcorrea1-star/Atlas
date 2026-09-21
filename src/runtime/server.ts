@@ -38,6 +38,7 @@ import {
 } from './protocol.js';
 import { OperationStore, type HostOperation } from '../host/operations.js';
 import { UnixSocketServer } from './transport/unix/server.js';
+import { RuntimeRequestLedger, requestFingerprint } from './request-ledger.js';
 
 export const DEFAULT_RUNTIME_SOCKET_PATH = '/tmp/atlas-runtime.sock';
 
@@ -162,6 +163,7 @@ export type RuntimeServerOptions = {
   atlasConfig?: AtlasConfig;
   operationStore?: OperationStore;
   operationStorePath?: string;
+  requestLedgerPath?: string;
 };
 
 export class AtlasRuntimeServer {
@@ -178,6 +180,8 @@ export class AtlasRuntimeServer {
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
   private readonly recoveryPromises = new Map<string, Promise<HostOperation>>();
   private readonly pendingApprovals = new Map<string, PendingApprovalGroup>();
+  private readonly requestLedger: RuntimeRequestLedger;
+  private readonly requestSubscribers = new Map<string, Set<(payload: string) => void>>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
@@ -189,6 +193,9 @@ export class AtlasRuntimeServer {
       (options.operationStorePath === undefined
         ? undefined
         : new OperationStore(options.operationStorePath));
+    this.requestLedger = new RuntimeRequestLedger(
+      options.requestLedgerPath ?? `${this.socketPath}.requests.json`,
+    );
     this.sessionData = atlasRuntimeSessionData(this.atlasConfig);
     this.atlasModel = `${OPENCODE_GO_PROVIDER}/${this.sessionData.model}`;
     // Modelos fora do registro inicial usam o endpoint de responses por padrão.
@@ -210,6 +217,7 @@ export class AtlasRuntimeServer {
   }
 
   public async listen(): Promise<void> {
+    await this.requestLedger.load();
     await this.transport.listen();
     await this.schedulePendingRecovery();
   }
@@ -240,8 +248,50 @@ export class AtlasRuntimeServer {
     if (message.type === 'approval.respond') {
       return this.handleApprovalResponse(message, send);
     }
+    if (message.type === 'input.respond') {
+      return this.handleInputResponse(message, send);
+    }
 
     const request = message;
+    const existing = this.requestLedger.get(request.request_id);
+    if (existing !== undefined) {
+      if (
+        existing.request.conversation_id !== request.conversation_id ||
+        requestFingerprint(existing.request) !== requestFingerprint(request)
+      ) {
+        send(
+          serializeRuntimeMessage(
+            runtimeErrorEvent('request_id is already bound to a different turn.', request),
+          ),
+        );
+        return Promise.resolve();
+      }
+      for (const event of existing.events) {
+        send(serializeRuntimeMessage(event));
+      }
+      if (existing.state === 'completed') {
+        return Promise.resolve();
+      }
+      const subscribers = this.requestSubscribers.get(request.request_id) ?? new Set();
+      subscribers.add(send);
+      this.requestSubscribers.set(request.request_id, subscribers);
+      return Promise.resolve();
+    }
+    const record = this.requestLedger.accept(request);
+    const subscribers = new Set<(payload: string) => void>([send]);
+    this.requestSubscribers.set(request.request_id, subscribers);
+    const publish = (payload: string): void => {
+      let event: RuntimeEvent | undefined;
+      try {
+        event = JSON.parse(payload) as RuntimeEvent;
+      } catch {
+        return;
+      }
+      record.events.push(event);
+      for (const subscriber of subscribers) {
+        subscriber(payload);
+      }
+    };
     const controller = new AbortController();
     const conversationTurns = this.activeTurns.get(request.conversation_id) ?? new Map();
     conversationTurns.set(request.request_id, controller);
@@ -249,15 +299,26 @@ export class AtlasRuntimeServer {
     const previous = this.conversationQueues.get(request.conversation_id) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.handleTurn(request, send, controller.signal))
+      .then(() => this.handleTurn(request, publish, controller.signal))
       .catch((error) => {
         // A fila nao pode deixar uma falha inesperada sem um evento terminal.
-        send(
+        publish(
           serializeRuntimeMessage(
             runtimeErrorEvent(error instanceof Error ? error.message : String(error), request),
           ),
         );
       });
+    current.then(
+      async () => {
+        this.requestLedger.complete(record);
+        await this.requestLedger.persist();
+        this.requestSubscribers.delete(request.request_id);
+      },
+      async () => {
+        await this.requestLedger.persist();
+        this.requestSubscribers.delete(request.request_id);
+      },
+    );
     this.conversationQueues.set(request.conversation_id, current);
     const clearQueue = () => {
       if (this.conversationQueues.get(request.conversation_id) === current) {
@@ -272,7 +333,7 @@ export class AtlasRuntimeServer {
       }
     };
     void current.then(clearQueue, clearQueue);
-    return current;
+    return this.requestLedger.persist().then(() => current);
   }
 
   private async handleCommand(
@@ -355,6 +416,18 @@ export class AtlasRuntimeServer {
       this.finishPendingApproval(group);
       group.resolve?.([...group.decisions.values()]);
     }
+    return Promise.resolve();
+  }
+
+  private handleInputResponse(
+    request: Extract<RuntimeRequest, { type: 'input.respond' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    send(
+      serializeRuntimeMessage(
+        runtimeErrorEvent(`No input is currently waiting for "${request.input_id}".`, request),
+      ),
+    );
     return Promise.resolve();
   }
 

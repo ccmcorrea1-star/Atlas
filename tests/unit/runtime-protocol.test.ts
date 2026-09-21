@@ -223,3 +223,27 @@ test('keeps approval responses typed and rejects non-boolean decisions', () => {
     /approved.*boolean/,
   );
 });
+
+test('parses generic input responses independently of Telegram', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'input.respond',
+      request_id: 'input-response-1',
+      conversation_id: 'conversation-1',
+      input_id: 'choice-1',
+      value: 'Use the safe option',
+    }),
+  );
+
+  assert.deepEqual(parsed, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'input.respond',
+    request_id: 'input-response-1',
+    conversation_id: 'conversation-1',
+    input_id: 'choice-1',
+    value: 'Use the safe option',
+  });
+});
