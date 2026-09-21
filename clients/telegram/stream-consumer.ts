@@ -5,6 +5,7 @@ import type { TelegramApi, TelegramSendOptions, TelegramSentMessage } from './ty
 
 const INITIAL_EDIT_INTERVAL_MS = 1_000;
 const MAX_EDIT_INTERVAL_MS = 30_000;
+const DELIVERY_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 type StreamState = {
   content: string;
@@ -21,11 +22,23 @@ type StreamState = {
   status?: string;
 };
 
+export type TelegramDeliveryPhase = 'not_started' | 'sending' | 'delivered' | 'abandoned';
+
 export type TelegramDeliveryLedger = {
   content?: string;
   chunks?: string[];
   confirmedChunks: number;
   previewMessageId?: number;
+  phase?: TelegramDeliveryPhase;
+  attemptCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  expiresAt?: string;
+  destination?: {
+    chatId: string;
+    threadId?: number;
+  };
+  redelivery?: boolean;
 };
 
 export type TelegramStreamConsumerOptions = {
@@ -271,44 +284,71 @@ export class TelegramStreamConsumer {
     const renderedContent = renderTelegramMarkdown(state.content);
     const chunks = splitTelegramText(renderedContent || ' ');
     const delivery = this.states.size === 1 ? this.options.delivery : undefined;
+    const now = new Date().toISOString();
     if (delivery !== undefined && delivery.content !== state.content) {
       delivery.content = state.content;
       delivery.chunks = chunks;
       delivery.confirmedChunks = 0;
+      delivery.phase = 'sending';
+      delivery.attemptCount = (delivery.attemptCount ?? 0) + 1;
+      delivery.createdAt ??= now;
+      delivery.expiresAt ??= new Date(
+        Date.parse(delivery.createdAt) + DELIVERY_RETENTION_MS,
+      ).toISOString();
+      delivery.updatedAt = now;
+      await this.options.onDelivery?.(delivery);
+    } else if (delivery !== undefined && delivery.phase === undefined) {
+      delivery.phase = delivery.confirmedChunks >= chunks.length ? 'delivered' : 'sending';
+      delivery.attemptCount ??= 1;
+      delivery.createdAt ??= now;
+      delivery.expiresAt ??= new Date(
+        Date.parse(delivery.createdAt) + DELIVERY_RETENTION_MS,
+      ).toISOString();
+      delivery.updatedAt = now;
+      await this.options.onDelivery?.(delivery);
     }
     const confirmedChunks = delivery?.confirmedChunks ?? 0;
     if (delivery?.previewMessageId !== undefined) {
       state.previewMessageId = delivery.previewMessageId;
     }
     const first = chunks[0] ?? ' ';
-    if (state.previewMessageId !== undefined) {
-      if (confirmedChunks < 1) {
-        if (state.lastSentText !== first) {
-          await this.finalOperation(
-            () => this.editMessage(state.previewMessageId as number, first),
-            state,
-          );
+    try {
+      if (state.previewMessageId !== undefined) {
+        if (confirmedChunks < 1) {
+          if (state.lastSentText !== first) {
+            await this.finalOperation(
+              () => this.editMessage(state.previewMessageId as number, first),
+              state,
+            );
+          }
+          state.lastSentText = first;
+          await this.confirmDelivery(delivery, chunks, 1, state.previewMessageId);
         }
-        state.lastSentText = first;
-        await this.confirmDelivery(delivery, chunks, 1, state.previewMessageId);
+        for (let index = Math.max(1, confirmedChunks); index < chunks.length; index += 1) {
+          const chunk = chunks[index] as string;
+          await this.finalOperation(async () => {
+            await this.sendMessage(chunk, this.options.sendOptions);
+          }, state);
+          await this.confirmDelivery(delivery, chunks, index + 1, state.previewMessageId);
+        }
+        return;
       }
-      for (let index = Math.max(1, confirmedChunks); index < chunks.length; index += 1) {
+      for (let index = confirmedChunks; index < chunks.length; index += 1) {
         const chunk = chunks[index] as string;
         await this.finalOperation(async () => {
-          await this.sendMessage(chunk, this.options.sendOptions);
+          const sent = await this.sendMessage(chunk, this.options.sendOptions);
+          state.previewMessageId = sent.message_id;
         }, state);
+        state.lastSentText = chunk;
         await this.confirmDelivery(delivery, chunks, index + 1, state.previewMessageId);
       }
-      return;
-    }
-    for (let index = confirmedChunks; index < chunks.length; index += 1) {
-      const chunk = chunks[index] as string;
-      await this.finalOperation(async () => {
-        const sent = await this.sendMessage(chunk, this.options.sendOptions);
-        state.previewMessageId = sent.message_id;
-      }, state);
-      state.lastSentText = chunk;
-      await this.confirmDelivery(delivery, chunks, index + 1, state.previewMessageId);
+    } catch (error) {
+      if (delivery !== undefined) {
+        delivery.phase = 'abandoned';
+        delivery.updatedAt = new Date().toISOString();
+        await this.options.onDelivery?.(delivery);
+      }
+      throw error;
     }
   }
 
@@ -323,6 +363,8 @@ export class TelegramStreamConsumer {
     }
     delivery.chunks = chunks;
     delivery.confirmedChunks = confirmedChunks;
+    delivery.phase = confirmedChunks >= chunks.length ? 'delivered' : 'sending';
+    delivery.updatedAt = new Date().toISOString();
     if (previewMessageId !== undefined) {
       delivery.previewMessageId = previewMessageId;
     }

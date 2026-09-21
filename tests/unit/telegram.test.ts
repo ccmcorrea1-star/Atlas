@@ -1081,6 +1081,103 @@ test('resumes long delivery from the first unconfirmed chunk', async () => {
   assert.equal(sentChunks.join(''), content.slice(4_096));
 });
 
+test('redelivera resposta persistida após restart sem executar o Runtime', async () => {
+  const statePath = join('/tmp', `atlas-telegram-redelivery-${Date.now()}-${Math.random()}.json`);
+  const content = 'resposta persistida';
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      pending: [],
+      turns: [
+        {
+          messageKey: '123:56',
+          requestId: 'persisted-request',
+          conversationId: 'telegram:123:thread:root',
+          chatId: 123,
+          input: 'trabalho original',
+          replyMessageId: 100,
+          status: 'pending',
+          delivery: {
+            content,
+            confirmedChunks: 0,
+            previewMessageId: 100,
+            phase: 'sending',
+            attemptCount: 1,
+            destination: { chatId: '123' },
+          },
+        },
+      ],
+    }),
+  );
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({
+    api,
+    runtime,
+    allowedUsers: [7],
+    statePath,
+  });
+  const polling = adapter.start();
+  await waitFor(25);
+  await adapter.stop();
+  await polling;
+
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(api.edits[0]?.messageId, 100);
+  assert.match(api.edits[0]?.text ?? '', /Reentrega após reinício/);
+  const persisted = JSON.parse(await readFile(statePath, 'utf8')) as {
+    turns: Array<{ status: string; delivery?: { phase?: string; redelivery?: boolean } }>;
+  };
+  assert.equal(persisted.turns[0]?.status, 'terminal');
+  assert.equal(persisted.turns[0]?.delivery?.phase, 'delivered');
+  assert.equal(persisted.turns[0]?.delivery?.redelivery, true);
+  await rm(statePath, { force: true });
+});
+
+test('abandona redelivery expirado ou excedido sem tocar no Runtime', async () => {
+  const statePath = join('/tmp', `atlas-telegram-abandoned-${Date.now()}-${Math.random()}.json`);
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      pending: [],
+      turns: [
+        {
+          messageKey: '123:57',
+          requestId: 'abandoned-request',
+          conversationId: 'telegram:123:thread:root',
+          chatId: 123,
+          input: 'trabalho original',
+          replyMessageId: 101,
+          status: 'pending',
+          delivery: {
+            content: 'resposta antiga',
+            confirmedChunks: 0,
+            phase: 'sending',
+            attemptCount: 3,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          },
+        },
+      ],
+    }),
+  );
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, statePath });
+  const polling = adapter.start();
+  await waitFor(15);
+  await adapter.stop();
+  await polling;
+
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(api.edits.length, 0);
+  const persisted = JSON.parse(await readFile(statePath, 'utf8')) as {
+    turns: Array<{ status: string; delivery?: { phase?: string } }>;
+  };
+  assert.equal(persisted.turns[0]?.status, 'pending');
+  assert.equal(persisted.turns[0]?.delivery?.phase, 'abandoned');
+  await rm(statePath, { force: true });
+});
+
 test('keeps outbound responses in the original topic', async () => {
   const api = new FakeApi();
   const runtime = new ScriptedRuntime(async (_request, onEvent) => {

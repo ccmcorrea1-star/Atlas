@@ -56,6 +56,8 @@ const INPUT_PAGE_CALLBACK_PREFIX = 'atlas:input-page:';
 const RECOVERY_CALLBACK_PREFIX = 'atlas:recovery:';
 const INPUT_OTHER_VALUE = '__other__';
 const INPUT_PAGE_SIZE = 6;
+const MAX_DELIVERY_ATTEMPTS = 3;
+const DELIVERY_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 export type TelegramAdapterOptions = {
   token?: string;
@@ -234,6 +236,7 @@ export class TelegramAdapter {
 
   private async runPolling(): Promise<void> {
     await this.stateLoaded;
+    await this.redeliverPendingDeliveries();
     let retryDelayMs = 1_000;
     let conflictCount = 0;
     this.pollController = new AbortController();
@@ -300,6 +303,107 @@ export class TelegramAdapter {
         console.error(`Atlas Telegram state flush failed: ${safeErrorMessage(error)}`);
       });
       this.pollingPromise = undefined;
+    }
+  }
+
+  private async redeliverPendingDeliveries(): Promise<void> {
+    for (const turn of this.turns.values()) {
+      if (turn.status === 'pending' && turn.delivery?.content !== undefined) {
+        await this.redeliverDelivery(turn, true);
+      }
+    }
+  }
+
+  private async redeliverDelivery(
+    turn: TelegramTurnState,
+    showRedeliveryPrefix: boolean,
+  ): Promise<void> {
+    const delivery = turn.delivery;
+    if (delivery?.content === undefined || turn.replyMessageId === undefined) {
+      return;
+    }
+    const chunkCount = delivery.chunks?.length ?? 0;
+    const phase =
+      delivery.phase ??
+      (chunkCount > 0 && delivery.confirmedChunks >= chunkCount ? 'delivered' : 'sending');
+    if (phase === 'delivered') {
+      turn.status = 'terminal';
+      await this.persistState();
+      return;
+    }
+    if (phase !== 'sending' && phase !== 'abandoned') {
+      return;
+    }
+    const now = Date.now();
+    if (
+      (delivery.expiresAt !== undefined && Date.parse(delivery.expiresAt) <= now) ||
+      (delivery.attemptCount ?? 1) >= MAX_DELIVERY_ATTEMPTS
+    ) {
+      delivery.phase = 'abandoned';
+      delivery.updatedAt = new Date(now).toISOString();
+      await this.persistState();
+      return;
+    }
+
+    const destination = delivery.destination;
+    const chatId = destination?.chatId ?? turn.chatId;
+    const threadId = destination?.threadId ?? turn.threadId;
+    const content =
+      showRedeliveryPrefix && !delivery.redelivery
+        ? `⚠️ Reentrega após reinício.\n\n${delivery.content}`
+        : delivery.content;
+    delivery.content = content;
+    delivery.chunks = undefined;
+    delivery.confirmedChunks = 0;
+    delivery.previewMessageId = turn.replyMessageId;
+    delivery.phase = 'sending';
+    delivery.attemptCount = (delivery.attemptCount ?? 0) + 1;
+    delivery.createdAt ??= new Date().toISOString();
+    delivery.expiresAt ??= new Date(
+      Date.parse(delivery.createdAt) + DELIVERY_RETENTION_MS,
+    ).toISOString();
+    delivery.updatedAt = new Date().toISOString();
+    delivery.redelivery ||= showRedeliveryPrefix;
+    await this.persistState();
+
+    const stream = new TelegramStreamConsumer(
+      this.api,
+      this.chatBudgets,
+      chatId,
+      turn.replyMessageId,
+      {
+        sendOptions: {
+          ...(threadId === undefined ? {} : { message_thread_id: threadId }),
+        },
+        sendMessage: (text, options) => this.sendMessageRaw(chatId, text, options),
+        editMessage: (messageId, text) => this.editMessageRaw(chatId, messageId, text),
+        delivery,
+        onDelivery: async (nextDelivery) => {
+          turn.delivery = nextDelivery;
+          await this.persistState();
+        },
+      },
+    );
+    try {
+      await stream.finish({
+        protocol: 'atlas-runtime',
+        version: 1,
+        type: 'turn.completed',
+        request_id: turn.requestId,
+        conversation_id: turn.conversationId,
+        data: {
+          message_id: 'redelivery',
+          content,
+          attachments: [],
+        },
+      });
+      turn.status = 'terminal';
+      await this.persistState();
+    } catch (error) {
+      delivery.phase = 'abandoned';
+      delivery.updatedAt = new Date().toISOString();
+      await this.persistState();
+      console.error(`Atlas Telegram redelivery failed: ${safeErrorMessage(error)}`);
     }
   }
 
@@ -773,6 +877,10 @@ export class TelegramAdapter {
     messageKey = telegramMessageKey(message),
   ): Promise<void> {
     let turn = this.turns.get(messageKey);
+    if (turn?.status === 'pending' && turn.delivery?.content !== undefined) {
+      await this.redeliverDelivery(turn, false);
+      return;
+    }
     if (turn === undefined) {
       turn = {
         messageKey,
@@ -806,7 +914,19 @@ export class TelegramAdapter {
           })
         : { message_id: turn.replyMessageId, chat: message.chat };
     turn.replyMessageId = reply.message_id;
-    turn.delivery ??= { confirmedChunks: 0 };
+    turn.delivery ??= {
+      confirmedChunks: 0,
+      phase: 'not_started',
+      attemptCount: 0,
+      destination: {
+        chatId: String(message.chat.id),
+        ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
+      },
+    };
+    turn.delivery.destination ??= {
+      chatId: String(message.chat.id),
+      ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
+    };
     await this.persistState();
     const stream = new TelegramStreamConsumer(
       this.api,
@@ -1059,6 +1179,30 @@ export class TelegramAdapter {
               }
               delete turn.attachments;
               stateChanged = true;
+            }
+            if (turn.delivery !== undefined) {
+              const delivery = turn.delivery;
+              if (delivery.phase === undefined) {
+                delivery.phase =
+                  delivery.chunks !== undefined &&
+                  delivery.confirmedChunks >= delivery.chunks.length
+                    ? 'delivered'
+                    : delivery.content === undefined
+                      ? 'not_started'
+                      : 'sending';
+                stateChanged = true;
+              }
+              if (delivery.attemptCount === undefined) {
+                delivery.attemptCount = delivery.content === undefined ? 0 : 1;
+                stateChanged = true;
+              }
+              if (delivery.destination === undefined) {
+                delivery.destination = {
+                  chatId: String(turn.chatId),
+                  ...(turn.threadId === undefined ? {} : { threadId: turn.threadId }),
+                };
+                stateChanged = true;
+              }
             }
             this.turns.set(turn.messageKey, turn);
           }
