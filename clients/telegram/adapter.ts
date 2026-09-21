@@ -176,6 +176,7 @@ export class TelegramAdapter {
   private readonly mediaGroups = new Map<string, PendingTelegramMediaGroup>();
   private readonly turns = new Map<string, TelegramTurnState>();
   private readonly topics = new Map<string, TelegramTopicState>();
+  private readonly lifecycleNotifications = new Set<string>();
   private stateWrite: Promise<void> = Promise.resolve();
   private bot: TelegramBot | undefined;
   private running = false;
@@ -464,7 +465,17 @@ export class TelegramAdapter {
   }
 
   private async handleRuntimeNotification(event: RuntimeEvent): Promise<void> {
+    if (
+      event.type !== 'notification.created' &&
+      event.type !== 'runtime.restarting' &&
+      event.type !== 'runtime.ready' &&
+      event.type !== 'operation.resuming' &&
+      event.type !== 'operation.resumed'
+    ) {
+      return;
+    }
     if (event.type !== 'notification.created') {
+      await this.handleLifecycleNotification(event);
       return;
     }
     const data = event.data as Partial<RuntimeNotificationData>;
@@ -488,6 +499,31 @@ export class TelegramAdapter {
     } catch (error) {
       console.error(`Atlas Telegram notification delivery failed: ${safeErrorMessage(error)}`);
     }
+  }
+
+  private async handleLifecycleNotification(event: RuntimeEvent): Promise<void> {
+    const data = event.data as Record<string, unknown>;
+    const operationId = typeof data.operation_id === 'string' ? data.operation_id : '';
+    const key = `${event.type}:${event.conversation_id ?? '*'}:${operationId}`;
+    if (this.lifecycleNotifications.has(key)) {
+      return;
+    }
+    this.lifecycleNotifications.add(key);
+
+    const destination =
+      event.conversation_id === undefined
+        ? undefined
+        : telegramDestinationFromConversation(event.conversation_id);
+    const chatId = destination?.chatId ?? this.homeChatId;
+    if (chatId === undefined) {
+      return;
+    }
+    const text = lifecycleNotificationText(event.type);
+    await this.sendText(
+      chatId,
+      text,
+      destination?.threadId === undefined ? {} : { message_thread_id: destination.threadId },
+    );
   }
 
   private async handleReactionUpdate(update: TelegramUpdate): Promise<void> {
@@ -1669,6 +1705,45 @@ function telegramChatIdFromConversation(conversationId: string): number | undefi
   }
   const chatId = Number(match[1]);
   return Number.isSafeInteger(chatId) ? chatId : undefined;
+}
+
+function telegramDestinationFromConversation(
+  conversationId: string,
+): { chatId: number; threadId?: number } | undefined {
+  const match = /^telegram:(-?\d+):thread:(.+)$/u.exec(conversationId);
+  if (match === null) {
+    return undefined;
+  }
+  const chatId = Number(match[1]);
+  if (!Number.isSafeInteger(chatId)) {
+    return undefined;
+  }
+  let thread: string;
+  try {
+    thread = decodeURIComponent(match[2] ?? 'root');
+  } catch {
+    return { chatId };
+  }
+  if (thread === 'root') {
+    return { chatId };
+  }
+  const threadId = Number(thread);
+  return Number.isSafeInteger(threadId) ? { chatId, threadId } : { chatId };
+}
+
+function lifecycleNotificationText(type: RuntimeEvent['type']): string {
+  switch (type) {
+    case 'runtime.restarting':
+      return 'O Runtime do Atlas está reiniciando.';
+    case 'runtime.ready':
+      return 'O Runtime do Atlas está pronto novamente.';
+    case 'operation.resuming':
+      return 'Retomando uma operação interrompida.';
+    case 'operation.resumed':
+      return 'A operação interrompida foi retomada.';
+    default:
+      return 'O estado do Runtime do Atlas foi atualizado.';
+  }
 }
 
 function telegramReactionValue(reaction: TelegramReaction): string {
