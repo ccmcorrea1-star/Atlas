@@ -78,6 +78,14 @@ export type RuntimeTurnRecover = {
   confirm: boolean;
 };
 
+export type RuntimeTurnDiscard = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'turn.discard';
+  request_id: string;
+  conversation_id: string;
+};
+
 export type RuntimeCommandRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -177,6 +185,7 @@ export type RuntimeRequest =
   | RuntimeTurnRequest
   | RuntimeTurnCancel
   | RuntimeTurnRecover
+  | RuntimeTurnDiscard
   | RuntimeCommandRequest
   | RuntimeApprovalResponse
   | RuntimeInputResponse
@@ -616,6 +625,15 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       request_id,
       conversation_id,
       confirm: request.confirm,
+    };
+  }
+  if (request.type === 'turn.discard') {
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.discard',
+      request_id,
+      conversation_id,
     };
   }
   if (request.type === 'command.request') {

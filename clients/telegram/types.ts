@@ -299,6 +299,13 @@ export type TelegramRuntime = {
     },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent>;
+  recoverTurn(
+    conversationId: string,
+    requestId: string,
+    confirm: boolean,
+    onEvent?: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent>;
+  discardTurn(conversationId: string, requestId: string): Promise<RuntimeEvent>;
   inline(
     queryId: string,
     userId: string,

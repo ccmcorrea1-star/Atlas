@@ -13,12 +13,19 @@ export type RuntimeRequestSuspension = {
   input?: RuntimeInputRequestedData;
 };
 
+export type RuntimeRequestInterruption = {
+  reason: 'restart';
+  detected_at: string;
+};
+
 export type RuntimeRequestRecord = {
   request: RuntimeTurnRequest;
   fingerprint: string;
   state: RuntimeRequestState;
   events: RuntimeEvent[];
   suspension?: RuntimeRequestSuspension;
+  interruption?: RuntimeRequestInterruption;
+  resolution?: 'discarded';
 };
 
 type RequestLedgerFile = {
@@ -56,6 +63,8 @@ export class RuntimeRequestLedger {
                 (record.state as unknown) === 'completed'))) &&
           Array.isArray(record.events)
         ) {
+          const interruptedByRestart =
+            record.state === 'executing' || (legacy && (record.state as unknown) === 'running');
           this.records.set(record.request.request_id, {
             ...record,
             state: legacy
@@ -65,6 +74,14 @@ export class RuntimeRequestLedger {
               : record.state === 'executing'
                 ? 'ambiguous'
                 : record.state,
+            ...(interruptedByRestart && record.interruption === undefined
+              ? {
+                  interruption: {
+                    reason: 'restart' as const,
+                    detected_at: new Date().toISOString(),
+                  },
+                }
+              : {}),
           });
         }
       }
@@ -116,6 +133,11 @@ export class RuntimeRequestLedger {
 
   public markAmbiguous(record: RuntimeRequestRecord): void {
     record.state = 'ambiguous';
+  }
+
+  public discard(record: RuntimeRequestRecord): void {
+    record.state = 'terminal';
+    record.resolution = 'discarded';
   }
 
   public persist(): Promise<void> {

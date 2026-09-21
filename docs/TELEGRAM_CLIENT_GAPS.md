@@ -70,7 +70,7 @@ Atualizado após `079d752 fix: surface interrupted Telegram turns`.
 
 ### Parcial
 
-- [ ] Recuperação estilo Hermes: Atlas informa a interrupção, mas ainda não persiste `restart_interrupted` por sessão nem retoma a partir do último turno confirmado no próximo input.
+- [ ] Recuperação estilo Hermes: Atlas agora persiste ações de recovery no adapter e oferece `Retomar (confirmar risco)`/`Descartar` após `ambiguous_execution`; ainda não persiste `restart_interrupted` como estado de sessão nem retoma automaticamente no próximo input.
 - [ ] Delivery ledger: Atlas persiste chunks/preview durante a entrega, mas ainda não persiste a resposta final como unidade durável para redelivery após crash sem reexecutar o Agent.
 - [ ] Tópicos/fóruns: parsing, roteamento, persistência e restauração local concluídos; handoff, bindings entre processos e round-trip em supergrupo-fórum ainda não validados.
 - [ ] Polling: backoff, IPv4, reconexão e refresh periódico de identidade concluídos; heartbeat, healthcheck avançado e recuperação de conflitos persistentes ainda pendentes.
@@ -94,7 +94,7 @@ Atualizado após `079d752 fix: surface interrupted Telegram turns`.
 
 1. **Recovery persistente de sessão:** no Runtime, registrar `restart_interrupted` por `conversation_id`, o último turno confirmado e a razão da interrupção; no boot, reidratar essa pendência e, no próximo input, continuar sem repetir Tools ambíguas.
 2. **Delivery ledger final:** persistir resposta final, destino, thread, fase (`not_started`, `sending`, `delivered`, `abandoned`), tentativas e timestamps; redeliver resposta produzida sem executar o Agent novamente.
-3. **Recovery Telegram:** consumir `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`; enviar aviso idempotente de interrupção/retomada e prefixar redelivery potencialmente duplicada.
+3. **Recovery Telegram:** a primeira ação já existe: prompt persistido com `Retomar (confirmar risco)` e `Descartar`, ambos idempotentes e sem replay silencioso. Falta consumir `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`; enviar aviso idempotente de interrupção/retomada e prefixar redelivery potencialmente duplicada.
 4. **Testes de crash boundary:** cobrir queda antes do envio, durante o envio, depois do envio sem confirmação e execução ambígua; provar que não há replay automático de efeito colateral.
 
 #### P1 — disponibilidade e operação longa

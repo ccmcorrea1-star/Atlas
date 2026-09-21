@@ -281,6 +281,35 @@ class FakeRuntime implements TelegramRuntime {
     this.notificationHandler?.(event);
   }
 
+  public async recoverTurn(
+    conversationId: string,
+    requestId: string,
+    _confirm: boolean,
+  ): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'turn.completed',
+      request_id: requestId,
+      conversation_id: conversationId,
+      data: { content: 'Recuperado.' },
+    };
+  }
+
+  public async discardTurn(conversationId: string, requestId: string): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'error',
+      request_id: requestId,
+      conversation_id: conversationId,
+      data: {
+        code: 'recovery_discarded',
+        message: 'A recuperação foi descartada.',
+      },
+    };
+  }
+
   public async command(
     conversationId: string,
     command: 'new' | 'status' | 'stop',
@@ -468,6 +497,32 @@ class ScriptedRuntime implements TelegramRuntime {
   ): Promise<RuntimeEvent> {
     this.requests.push(request);
     return this.script(request, onEvent);
+  }
+
+  public async recoverTurn(
+    conversationId: string,
+    requestId: string,
+    _confirm: boolean,
+  ): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'turn.completed',
+      request_id: requestId,
+      conversation_id: conversationId,
+      data: { content: 'Recuperado.' },
+    };
+  }
+
+  public async discardTurn(conversationId: string, requestId: string): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'error',
+      request_id: requestId,
+      conversation_id: conversationId,
+      data: { code: 'recovery_discarded', message: 'A recuperação foi descartada.' },
+    };
   }
 
   public async command(): Promise<RuntimeEvent> {
@@ -1698,13 +1753,77 @@ test('informa interrupção ambígua e mantém o agente disponível para nova ta
   await adapter.handleUpdate({ update_id: 34, message: message({ text: 'ambiguous' }) });
 
   assert.ok(api.edits.some((edit) => edit.text.includes('execução foi interrompida')));
+  const recoveryOptions = api.sentOptions.find(
+    (options) => options?.reply_markup !== undefined,
+  ) as {
+    reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+  };
+  const recoverCallback = recoveryOptions.reply_markup.inline_keyboard[0]?.[0]?.callback_data;
+  assert.ok(recoverCallback?.includes(':recover'));
   assert.equal(runtime.requests.length, 1);
+
+  await adapter.handleUpdate({
+    update_id: 36,
+    callback_query: {
+      id: 'recovery-callback',
+      from: { id: 7 },
+      data: recoverCallback,
+      message: { message_id: 101, chat: { id: 123, type: 'private' } },
+    },
+  });
+  assert.ok(api.callbackAnswers.some((answer) => answer.id === 'recovery-callback'));
+  assert.ok(api.sent.some((entry) => entry.text.includes('Recuperado')));
 
   await adapter.handleUpdate({
     update_id: 35,
     message: message({ message_id: 103, text: 'nova tarefa' }),
   });
   assert.equal(runtime.requests.length, 2);
+});
+
+test('persiste ações de recovery ambíguo após reiniciar o adapter', async () => {
+  const statePath = join('/tmp', `atlas-telegram-recovery-${Date.now()}-${Math.random()}.json`);
+  const firstApi = new FakeApi();
+  const firstRuntime = new FakeRuntime();
+  try {
+    const firstAdapter = new TelegramAdapter({
+      api: firstApi,
+      runtime: firstRuntime,
+      allowedUsers: [7],
+      statePath,
+    });
+    await firstAdapter.handleUpdate({ update_id: 40, message: message({ text: 'ambiguous' }) });
+    const recoveryOptions = firstApi.sentOptions.find(
+      (options) => options?.reply_markup !== undefined,
+    ) as { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } };
+    const discardCallback = recoveryOptions.reply_markup.inline_keyboard[0]?.[1]?.callback_data;
+    assert.ok(discardCallback?.includes(':discard'));
+
+    const secondApi = new FakeApi();
+    const secondRuntime = new FakeRuntime();
+    const secondAdapter = new TelegramAdapter({
+      api: secondApi,
+      runtime: secondRuntime,
+      allowedUsers: [7],
+      statePath,
+    });
+    await secondAdapter.handleUpdate({
+      update_id: 41,
+      callback_query: {
+        id: 'discard-after-restart',
+        from: { id: 7 },
+        data: discardCallback,
+        message: { message_id: 101, chat: { id: 123, type: 'private' } },
+      },
+    });
+    assert.ok(secondApi.callbackAnswers.some((answer) => answer.id === 'discard-after-restart'));
+    assert.equal(
+      secondApi.sent.some((entry) => entry.text.includes('Recuperado')),
+      false,
+    );
+  } finally {
+    await rm(statePath, { force: true });
+  }
 });
 
 test('accepts typed text as a fallback for a generic Runtime input', async () => {

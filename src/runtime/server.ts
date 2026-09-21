@@ -237,6 +237,7 @@ export class AtlasRuntimeServer {
 
   public async listen(): Promise<void> {
     await this.requestLedger.load();
+    await this.requestLedger.persist();
     await this.transport.listen();
     await this.schedulePendingRecovery();
     for (const record of this.requestLedger.recoverable()) {
@@ -266,6 +267,9 @@ export class AtlasRuntimeServer {
     }
     if (message.type === 'turn.recover') {
       return this.handleRecovery(message, send);
+    }
+    if (message.type === 'turn.discard') {
+      return this.handleDiscard(message, send);
     }
     if (message.type === 'command.request') {
       return this.handleCommand(message, send);
@@ -817,8 +821,38 @@ export class AtlasRuntimeServer {
     }
     record.state = 'accepted';
     record.suspension = undefined;
+    record.interruption = undefined;
+    record.resolution = undefined;
     record.events = [];
     return this.launchTurnRequest(record.request, record, send);
+  }
+
+  private handleDiscard(
+    request: Extract<RuntimeRequest, { type: 'turn.discard' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const record = this.requestLedger.get(request.request_id);
+    if (record === undefined || record.request.conversation_id !== request.conversation_id) {
+      send(serializeRuntimeMessage(runtimeErrorEvent('No recoverable request exists.', request)));
+      return Promise.resolve();
+    }
+    if (record.state !== 'ambiguous') {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`Request "${request.request_id}" is not ambiguous.`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+    const event = runtimeErrorEvent(
+      'A recuperação foi descartada. A operação ambígua não será executada novamente.',
+      request,
+      'recovery_discarded',
+    );
+    this.requestLedger.discard(record);
+    record.events = [event];
+    send(serializeRuntimeMessage(event));
+    return this.requestLedger.persist();
   }
 
   private async handleTurn(

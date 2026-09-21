@@ -53,6 +53,7 @@ const MAX_TELEGRAM_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const APPROVAL_CALLBACK_PREFIX = 'atlas:approval:';
 const INPUT_CALLBACK_PREFIX = 'atlas:input:';
 const INPUT_PAGE_CALLBACK_PREFIX = 'atlas:input-page:';
+const RECOVERY_CALLBACK_PREFIX = 'atlas:recovery:';
 const INPUT_OTHER_VALUE = '__other__';
 const INPUT_PAGE_SIZE = 6;
 
@@ -72,10 +73,13 @@ export type TelegramAdapterOptions = {
 
 type ActiveTurn = {
   chatId: number | string;
+  chat: TelegramChat;
   threadId?: number;
   requestId: string;
+  conversationId: string;
   messageKey: string;
   stream: TelegramStreamConsumer;
+  userId?: number;
   closed: boolean;
 };
 
@@ -98,6 +102,16 @@ type PendingTelegramInput = {
   page: number;
   chat: TelegramChat;
   userId?: number;
+};
+
+type PendingTelegramRecovery = {
+  token: string;
+  requestId: string;
+  conversationId: string;
+  chat: TelegramChat;
+  threadId?: number;
+  userId?: number;
+  promptMessageId?: number;
 };
 
 type MaterializedAttachments = {
@@ -128,6 +142,7 @@ type TelegramState = {
   turns?: TelegramTurnState[];
   pending_approvals?: PendingTelegramApproval[];
   pending_inputs?: PendingTelegramInput[];
+  pending_recoveries?: PendingTelegramRecovery[];
   topics?: TelegramTopicState[];
 };
 
@@ -167,6 +182,7 @@ export class TelegramAdapter {
   private readonly conversationQueues = new Map<string, Promise<void>>();
   private readonly pendingApprovals = new Map<string, PendingTelegramApproval>();
   private readonly pendingInputs = new Map<string, PendingTelegramInput>();
+  private readonly pendingRecoveries = new Map<string, PendingTelegramRecovery>();
   private readonly chatBudgets = new TelegramChatBudget();
   private readonly pendingUpdates = new Map<number, TelegramUpdate>();
   private readonly processingUpdates = new Set<number>();
@@ -775,10 +791,13 @@ export class TelegramAdapter {
     );
     const active: ActiveTurn = {
       chatId: message.chat.id,
+      chat: message.chat,
       ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
       requestId: turn.requestId,
+      conversationId,
       messageKey,
       stream,
+      ...(message.from?.id === undefined ? {} : { userId: message.from.id }),
       closed: false,
     };
     this.activeTurns.set(conversationId, active);
@@ -841,6 +860,44 @@ export class TelegramAdapter {
     if (terminal.type === 'turn.completed' || terminal.type === 'turn.cancelled') {
       const data = terminal.data as unknown as RuntimeTurnCompletedData;
       await this.deliverAttachments(active.chatId, data.attachments, active.threadId);
+    }
+    if (terminal.type === 'error' && terminal.data.code === 'ambiguous_execution') {
+      await this.sendRecoveryPrompt(active);
+    }
+  }
+
+  private async sendRecoveryPrompt(active: ActiveTurn): Promise<void> {
+    const existing = [...this.pendingRecoveries.values()].find(
+      (recovery) => recovery.requestId === active.requestId,
+    );
+    if (existing !== undefined) {
+      return;
+    }
+    const token = randomUUID();
+    const recovery: PendingTelegramRecovery = {
+      token,
+      requestId: active.requestId,
+      conversationId: active.conversationId,
+      chat: active.chat,
+      ...(active.threadId === undefined ? {} : { threadId: active.threadId }),
+      ...(active.userId === undefined ? {} : { userId: active.userId }),
+    };
+    this.pendingRecoveries.set(token, recovery);
+    try {
+      const sent = await this.sendMessage(
+        active.chatId,
+        '⚠️ A operação está bloqueada. Escolha uma ação:',
+        {
+          ...(active.threadId === undefined ? {} : { message_thread_id: active.threadId }),
+          reply_markup: recoveryKeyboard(token),
+        },
+      );
+      recovery.promptMessageId = sent.message_id;
+      await this.persistState();
+    } catch (error) {
+      this.pendingRecoveries.delete(token);
+      await this.persistState();
+      console.error(`Atlas Telegram recovery prompt failed: ${safeErrorMessage(error)}`);
     }
   }
 
@@ -992,6 +1049,20 @@ export class TelegramAdapter {
           }
         }
       }
+      if (Array.isArray(parsed.pending_recoveries)) {
+        for (const recovery of parsed.pending_recoveries) {
+          if (
+            recovery !== null &&
+            typeof recovery === 'object' &&
+            typeof recovery.token === 'string' &&
+            typeof recovery.requestId === 'string' &&
+            typeof recovery.conversationId === 'string' &&
+            recovery.chat !== undefined
+          ) {
+            this.pendingRecoveries.set(recovery.token, recovery);
+          }
+        }
+      }
       if (Array.isArray(parsed.topics)) {
         for (const topic of parsed.topics) {
           if (
@@ -1065,6 +1136,7 @@ export class TelegramAdapter {
           turns: [...this.turns.values()],
           pending_approvals: [...this.pendingApprovals.values()],
           pending_inputs: [...this.pendingInputs.values()],
+          pending_recoveries: [...this.pendingRecoveries.values()],
           topics: [...this.topics.values()],
         };
         await writeFile(temporaryPath, JSON.stringify(state), { mode: 0o600 });
@@ -1075,6 +1147,11 @@ export class TelegramAdapter {
   }
 
   private async handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> {
+    const recovery = parseRecoveryCallback(query.data);
+    if (recovery !== undefined) {
+      await this.handleRecoveryCallback(query, recovery);
+      return;
+    }
     const page = parseInputPageCallback(query.data);
     if (page !== undefined) {
       await this.handleInputPageCallback(query, page);
@@ -1162,6 +1239,59 @@ export class TelegramAdapter {
       }
     }
     return true;
+  }
+
+  private async handleRecoveryCallback(
+    query: TelegramCallbackQuery,
+    recovery: { token: string; action: 'recover' | 'discard' },
+  ): Promise<void> {
+    const pending = this.pendingRecoveries.get(recovery.token);
+    const authorized =
+      pending === undefined
+        ? false
+        : this.authorization.allows({
+            message_id: pending.promptMessageId ?? query.message?.message_id ?? 0,
+            chat: pending.chat,
+            from: query.from,
+          });
+    if (
+      pending === undefined ||
+      !authorized ||
+      (pending.userId !== undefined && pending.userId !== query.from.id) ||
+      String(query.message?.chat.id ?? pending.chat.id) !== String(pending.chat.id)
+    ) {
+      await this.answerCallback(query.id, 'Esta recuperação já expirou.');
+      return;
+    }
+    const event =
+      recovery.action === 'recover'
+        ? await this.options.runtime.recoverTurn(pending.conversationId, pending.requestId, true)
+        : await this.options.runtime.discardTurn(pending.conversationId, pending.requestId);
+    if (
+      event.type === 'turn.completed' ||
+      event.type === 'turn.cancelled' ||
+      (event.type === 'error' && event.data.code === 'recovery_discarded')
+    ) {
+      this.pendingRecoveries.delete(recovery.token);
+      await this.persistState();
+      if (query.message !== undefined && this.api.editMessageReplyMarkup !== undefined) {
+        const editMarkup = this.api.editMessageReplyMarkup.bind(this.api);
+        await this.chatBudgets.enqueue(query.message.chat.id, () =>
+          editMarkup(query.message!.chat.id, query.message!.message_id, { inline_keyboard: [] }),
+        );
+      }
+      await this.answerCallback(
+        query.id,
+        recovery.action === 'recover' ? 'Recuperação iniciada.' : 'Recuperação descartada.',
+      );
+      if (event.type === 'turn.completed' && event.data.content) {
+        await this.sendText(pending.chat.id, String(event.data.content), {
+          ...(pending.threadId === undefined ? {} : { message_thread_id: pending.threadId }),
+        });
+      }
+      return;
+    }
+    await this.answerCallback(query.id, eventMessage(event));
   }
 
   private async handleInputPageCallback(
@@ -1976,6 +2106,41 @@ function parseApprovalCallback(
     return undefined;
   }
   return { token, approved: action === 'yes' };
+}
+
+function recoveryKeyboard(token: string): {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+} {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: 'Retomar (confirmar risco)',
+          callback_data: `${RECOVERY_CALLBACK_PREFIX}${token}:recover`,
+        },
+        { text: 'Descartar', callback_data: `${RECOVERY_CALLBACK_PREFIX}${token}:discard` },
+      ],
+    ],
+  };
+}
+
+function parseRecoveryCallback(
+  data: string | undefined,
+): { token: string; action: 'recover' | 'discard' } | undefined {
+  if (data === undefined || !data.startsWith(RECOVERY_CALLBACK_PREFIX)) {
+    return undefined;
+  }
+  const value = data.slice(RECOVERY_CALLBACK_PREFIX.length);
+  const separator = value.lastIndexOf(':');
+  if (separator <= 0) {
+    return undefined;
+  }
+  const token = value.slice(0, separator);
+  const action = value.slice(separator + 1);
+  if (action !== 'recover' && action !== 'discard') {
+    return undefined;
+  }
+  return { token, action };
 }
 
 function inputKeyboard(

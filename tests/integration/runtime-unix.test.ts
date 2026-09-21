@@ -1067,6 +1067,55 @@ function sendTurn(
   });
 }
 
+function sendRecovery(
+  socketPath: string,
+  type: 'turn.recover' | 'turn.discard',
+  conversationId: string,
+  requestId: string,
+): Promise<WireMessage[]> {
+  return new Promise((resolveTurn, rejectTurn) => {
+    const socket = createConnection(socketPath, () => {
+      socket.write(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type,
+          request_id: requestId,
+          conversation_id: conversationId,
+          ...(type === 'turn.recover' ? { confirm: true } : {}),
+        })}\n`,
+      );
+    });
+    const events: WireMessage[] = [];
+    let buffer = '';
+
+    socket.once('error', rejectTurn);
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          const event = JSON.parse(line) as WireMessage;
+          events.push(event);
+          if (
+            event.type === 'turn.completed' ||
+            event.type === 'turn.cancelled' ||
+            event.type === 'error'
+          ) {
+            socket.destroy();
+            resolveTurn(events);
+            return;
+          }
+        }
+        newlineIndex = buffer.indexOf('\n');
+      }
+    });
+  });
+}
+
 test('connects the public Unix protocol to runAtlas and returns the real response', async () => {
   const model = await startStreamingModelServer();
   const socketPath = `/tmp/atlas-runtime-integration-${randomUUID()}.sock`;
@@ -1402,6 +1451,23 @@ test('does not replay an ambiguous request after a crash boundary with a side ef
     );
     assert.equal(events.at(-1)?.type, 'error');
     assert.match(String((events.at(-1)?.data as WireMessage).message), /ambiguous/);
+    assert.equal(sideEffects, 1);
+    const discarded = await sendRecovery(
+      socketPath,
+      'turn.discard',
+      request.conversation_id,
+      request.request_id,
+    );
+    assert.equal(discarded.at(-1)?.type, 'error');
+    assert.equal((discarded.at(-1)?.data as WireMessage).code, 'recovery_discarded');
+    const afterDiscard = await sendTurn(
+      socketPath,
+      request.conversation_id,
+      request.input,
+      request.request_id,
+    );
+    assert.equal(afterDiscard.at(-1)?.type, 'error');
+    assert.equal((afterDiscard.at(-1)?.data as WireMessage).code, 'recovery_discarded');
     assert.equal(sideEffects, 1);
   } finally {
     turnSocket?.destroy();

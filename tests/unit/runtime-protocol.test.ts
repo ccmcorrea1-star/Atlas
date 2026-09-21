@@ -42,6 +42,27 @@ test('parses a turn cancellation with the original request identity', () => {
   });
 });
 
+test('parses a turn discard with the original request identity', () => {
+  assert.deepEqual(
+    parseRuntimeMessage(
+      JSON.stringify({
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'turn.discard',
+        request_id: 'request-1',
+        conversation_id: 'conversation-1',
+      }),
+    ),
+    {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.discard',
+      request_id: 'request-1',
+      conversation_id: 'conversation-1',
+    },
+  );
+});
+
 test('serializes recoverable ambiguous execution errors with a typed code', () => {
   assert.deepEqual(runtimeErrorEvent('interrupted', request, 'ambiguous_execution'), {
     protocol: RUNTIME_PROTOCOL,

@@ -192,6 +192,42 @@ export class UnixTelegramRuntime implements TelegramRuntime {
     );
   }
 
+  public recoverTurn(
+    conversationId: string,
+    requestId: string,
+    confirm: boolean,
+    onEvent: (event: RuntimeEvent) => void = () => undefined,
+  ): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'turn.recover',
+        request_id: requestId,
+        conversation_id: conversationId,
+        confirm,
+      },
+      isTerminalTurn,
+      onEvent,
+      true,
+    );
+  }
+
+  public discardTurn(conversationId: string, requestId: string): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'turn.discard',
+        request_id: requestId,
+        conversation_id: conversationId,
+      },
+      isTerminalTurn,
+      () => undefined,
+      true,
+    );
+  }
+
   public command(conversationId: string, command: RuntimeCommandName): Promise<RuntimeEvent> {
     return this.exchange(
       {
