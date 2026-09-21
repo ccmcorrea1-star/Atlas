@@ -1047,7 +1047,12 @@ function inputWithAttachments(
   }
   content.push({ type: 'input_text', text: input });
   for (const attachment of attachments ?? []) {
-    if (attachment.type === 'image') {
+    if (attachment.type === 'location' || attachment.type === 'venue') {
+      content.push({
+        type: 'input_text',
+        text: `${attachment.type === 'venue' ? 'Local' : 'Localização'}: ${attachment.description ?? attachment.uri}`,
+      });
+    } else if (attachment.type === 'image') {
       content.push({ type: 'input_image', image: attachment.uri });
     } else if (attachment.type === 'voice' || attachment.type === 'audio') {
       content.push({

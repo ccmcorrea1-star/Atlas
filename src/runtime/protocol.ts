@@ -2,12 +2,13 @@ export const RUNTIME_PROTOCOL = 'atlas-runtime';
 export const RUNTIME_PROTOCOL_VERSION = 1;
 
 export type RuntimeAttachmentType =
-  'voice' | 'audio' | 'image' | 'video' | 'animation' | 'document';
+  'voice' | 'audio' | 'image' | 'video' | 'animation' | 'document' | 'location' | 'venue';
 
 export type RuntimeAttachment = {
   type: RuntimeAttachmentType;
   uri: string;
   media_type: string;
+  description?: string;
   file_name?: string;
   size_bytes?: number;
   source?: Record<string, string>;
@@ -286,7 +287,11 @@ function parseAttachments(value: unknown): RuntimeAttachment[] | undefined {
   return value.map((item, index) => {
     const attachment = objectValue(item, `Runtime attachment ${index}`);
     const type = requiredString(attachment.type, `attachments[${index}].type`);
-    if (!['voice', 'audio', 'image', 'video', 'animation', 'document'].includes(type)) {
+    if (
+      !['voice', 'audio', 'image', 'video', 'animation', 'document', 'location', 'venue'].includes(
+        type,
+      )
+    ) {
       throw new RuntimeProtocolError(`Unsupported attachment type "${type}".`);
     }
 
@@ -314,10 +319,15 @@ function parseAttachments(value: unknown): RuntimeAttachment[] | undefined {
       attachment.file_name === undefined
         ? undefined
         : requiredString(attachment.file_name, `attachments[${index}].file_name`);
+    const description =
+      attachment.description === undefined
+        ? undefined
+        : requiredString(attachment.description, `attachments[${index}].description`);
     return {
       type: type as RuntimeAttachmentType,
       uri: requiredString(attachment.uri, `attachments[${index}].uri`),
       media_type: requiredString(attachment.media_type, `attachments[${index}].media_type`),
+      ...(description === undefined ? {} : { description }),
       ...(fileName === undefined ? {} : { file_name: fileName }),
       ...(size === undefined ? {} : { size_bytes: size as number }),
       ...(source === undefined ? {} : { source: source as Record<string, string> }),

@@ -641,6 +641,39 @@ test('agrupa mensagens de um álbum recebido em um único turno', async () => {
   assert.equal((runtime.requests[0]?.attachments as unknown[]).length, 2);
 });
 
+test('materializa locations e venues como anexos estruturados', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (request) =>
+    runtimeEvent('turn.completed', {
+      content: String(request.attachments?.length ?? 0),
+    }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({
+    update_id: 22,
+    message: message({
+      message_id: 22,
+      text: 'analise estes locais',
+      location: { latitude: -23.55, longitude: -46.63, horizontal_accuracy: 12 },
+      venue: {
+        location: { latitude: -23.56, longitude: -46.64 },
+        title: 'Praça Central',
+        address: 'Rua A, 10',
+      },
+    }),
+  });
+
+  const attachments = runtime.requests[0]?.attachments as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    attachments.map((attachment) => attachment.type),
+    ['location', 'venue'],
+  );
+  assert.equal(attachments[0]?.uri, 'geo:-23.55,-46.63');
+  assert.match(String(attachments[1]?.description), /Praça Central/iu);
+  assert.deepEqual(api.downloaded, []);
+});
+
 test('aceita posts de canal e transforma stickers em imagens tipadas', async () => {
   const api = new FakeApi();
   const runtime = new ScriptedRuntime(async (request) =>

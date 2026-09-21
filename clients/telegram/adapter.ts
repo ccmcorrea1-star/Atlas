@@ -127,6 +127,7 @@ type TelegramTurnState = {
   threadId?: number;
   input: string;
   context?: RuntimeTurnContext;
+  structured_attachments?: RuntimeAttachment[];
   attachment_refs?: TelegramAttachmentReference[];
   attachments?: RuntimeAttachment[];
   replyMessageId?: number;
@@ -427,10 +428,12 @@ export class TelegramAdapter {
           : existing.attachment_refs !== undefined
             ? await this.materializeAttachmentReferences(existing.attachment_refs)
             : { attachments: existing.attachments ?? [] };
-      const attachments =
-        materialized.attachments.length > 0
-          ? materialized.attachments
-          : (existing?.attachments ?? []);
+      const attachments = [
+        ...(existing?.replyMessageId === undefined ? [] : (existing?.structured_attachments ?? [])),
+        ...(materialized.attachments.length === 0
+          ? (existing?.attachments ?? [])
+          : materialized.attachments),
+      ];
       const input =
         existing?.input ??
         (stripBotMention(text, botUsername) ||
@@ -491,6 +494,15 @@ export class TelegramAdapter {
         ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
         input,
         ...(context === undefined ? {} : { context }),
+        ...(attachments.some(
+          (attachment) => attachment.type === 'location' || attachment.type === 'venue',
+        )
+          ? {
+              structured_attachments: attachments.filter(
+                (attachment) => attachment.type === 'location' || attachment.type === 'venue',
+              ),
+            }
+          : {}),
         ...(attachments.length === 0 ? {} : { attachment_refs: attachmentReferences(attachments) }),
         status: 'pending',
       };
@@ -1246,6 +1258,9 @@ export class TelegramAdapter {
       ref: TelegramFileRef;
       mediaType: string;
     }> = [];
+    const structuredAttachments = (message.media_group_messages ?? [message]).flatMap(
+      telegramStructuredAttachments,
+    );
     for (const item of message.media_group_messages ?? [message]) {
       if (item.voice !== undefined) {
         refs.push({
@@ -1296,11 +1311,11 @@ export class TelegramAdapter {
     }
 
     if (refs.length === 0) {
-      return { attachments: [] };
+      return { attachments: structuredAttachments };
     }
 
     const directory = await mkdtemp(join(this.downloadDirectory, 'turn-'));
-    const attachments: RuntimeAttachment[] = [];
+    const attachments: RuntimeAttachment[] = [...structuredAttachments];
     try {
       for (const [index, item] of refs.entries()) {
         const file = await this.api.getFile(item.ref.file_id);
@@ -1400,6 +1415,43 @@ function telegramReplyContext(message: TelegramMessage): RuntimeTurnContext | un
       ...(media.length === 0 ? {} : { media }),
     },
   };
+}
+
+function telegramStructuredAttachments(message: TelegramMessage): RuntimeAttachment[] {
+  const attachments: RuntimeAttachment[] = [];
+  if (message.location !== undefined) {
+    const { latitude, longitude, horizontal_accuracy: accuracy } = message.location;
+    attachments.push({
+      type: 'location',
+      uri: `geo:${latitude},${longitude}`,
+      media_type: 'application/vnd.atlas.location',
+      description: `latitude ${latitude}, longitude ${longitude}${accuracy === undefined ? '' : `, precisão ${accuracy} m`}`,
+      source: {
+        platform: 'telegram',
+        kind: 'location',
+        latitude: String(latitude),
+        longitude: String(longitude),
+      },
+    });
+  }
+  if (message.venue !== undefined) {
+    const { location, title, address } = message.venue;
+    attachments.push({
+      type: 'venue',
+      uri: `geo:${location.latitude},${location.longitude}`,
+      media_type: 'application/vnd.atlas.venue',
+      description: `${title} — ${address} (latitude ${location.latitude}, longitude ${location.longitude})`,
+      source: {
+        platform: 'telegram',
+        kind: 'venue',
+        title,
+        address,
+        latitude: String(location.latitude),
+        longitude: String(location.longitude),
+      },
+    });
+  }
+  return attachments;
 }
 
 function telegramMessageFromUpdate(update: TelegramUpdate): TelegramMessage | undefined {

@@ -224,6 +224,43 @@ test('parses typed reply context without altering the user input', () => {
   assert.equal(parsed.input, 'responda a isso');
 });
 
+test('parses locations and venues as structured attachments', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.request',
+      request_id: 'request-location',
+      conversation_id: 'conversation-1',
+      input: 'onde fica?',
+      attachments: [
+        {
+          type: 'location',
+          uri: 'geo:-23.55,-46.63',
+          media_type: 'application/vnd.atlas.location',
+          description: 'latitude -23.55, longitude -46.63',
+        },
+        {
+          type: 'venue',
+          uri: 'geo:-23.56,-46.64',
+          media_type: 'application/vnd.atlas.venue',
+          description: 'Praça — Rua A',
+        },
+      ],
+    }),
+  );
+
+  assert.equal(parsed.type, 'turn.request');
+  if (parsed.type !== 'turn.request') {
+    return;
+  }
+  assert.deepEqual(
+    parsed.attachments?.map((attachment) => attachment.type),
+    ['location', 'venue'],
+  );
+  assert.equal(parsed.attachments?.[1]?.description, 'Praça — Rua A');
+});
+
 test('accepts only commands exposed by the Runtime catalog', () => {
   assert.deepEqual(
     RUNTIME_COMMANDS.map((command) => command.name),

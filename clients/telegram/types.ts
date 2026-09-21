@@ -36,6 +36,25 @@ export type TelegramFileRef = {
 
 export type TelegramPhotoSize = TelegramFileRef & { width: number; height: number };
 
+export type TelegramLocation = {
+  latitude: number;
+  longitude: number;
+  horizontal_accuracy?: number;
+  live_period?: number;
+  heading?: number;
+  proximity_alert_radius?: number;
+};
+
+export type TelegramVenue = {
+  location: TelegramLocation;
+  title: string;
+  address: string;
+  foursquare_id?: string;
+  foursquare_type?: string;
+  google_place_id?: string;
+  google_place_type?: string;
+};
+
 export type TelegramMessage = {
   message_id: number;
   chat: TelegramChat;
@@ -53,6 +72,8 @@ export type TelegramMessage = {
   photo?: TelegramPhotoSize[];
   document?: TelegramFileRef;
   sticker?: TelegramFileRef;
+  location?: TelegramLocation;
+  venue?: TelegramVenue;
   media_group_id?: string;
   media_group_messages?: TelegramMessage[];
 };
