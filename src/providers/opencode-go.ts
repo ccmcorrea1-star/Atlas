@@ -121,8 +121,51 @@ function createAtlasFetch(userAgent: string, defaultSessionId: string): typeof g
           ? activeSignal
           : AbortSignal.any([init.signal ?? activeSignal, activeSignal]);
 
-    return globalThis.fetch(input, { ...init, headers, signal });
+    return globalThis.fetch(input, {
+      ...init,
+      headers,
+      signal,
+      body: deduplicateOpenCodeRequestBody(init?.body),
+    });
   };
+}
+
+export function deduplicateOpenCodeRequestBody(body: RequestInit['body']): RequestInit['body'] {
+  if (typeof body !== 'string') {
+    return body;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    !Array.isArray((payload as { input?: unknown }).input)
+  ) {
+    return body;
+  }
+  const seen = new Set<string>();
+  let changed = false;
+  const input = (payload as { input: unknown[] }).input.filter((item) => {
+    if (
+      item === null ||
+      typeof item !== 'object' ||
+      typeof (item as { id?: unknown }).id !== 'string'
+    ) {
+      return true;
+    }
+    const id = (item as { id: string }).id;
+    if (seen.has(id)) {
+      changed = true;
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+  return changed ? JSON.stringify({ ...(payload as Record<string, unknown>), input }) : body;
 }
 
 function getModelId(modelName: string): string {
