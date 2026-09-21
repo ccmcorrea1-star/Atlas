@@ -7,6 +7,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   parseRuntimeMessage,
   runtimeEvent,
+  runtimeErrorEvent,
   runtimeLifecycleEvent,
   serializeRuntimeMessage,
   type RuntimeTurnRequest,
@@ -41,6 +42,16 @@ test('parses a turn cancellation with the original request identity', () => {
   });
 });
 
+test('serializes recoverable ambiguous execution errors with a typed code', () => {
+  assert.deepEqual(runtimeErrorEvent('interrupted', request, 'ambiguous_execution'), {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'error',
+    request_id: 'request-1',
+    conversation_id: 'conversation-1',
+    data: { code: 'ambiguous_execution', message: 'interrupted' },
+  });
+});
 test('serializes the shell execution lifecycle without provider tool names', () => {
   const started = runtimeEvent(request, 'execution.started', {
     execution_id: 'call-1',

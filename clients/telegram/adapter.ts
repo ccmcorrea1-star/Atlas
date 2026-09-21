@@ -837,7 +837,7 @@ export class TelegramAdapter {
 
   private async finishTurn(active: ActiveTurn, terminal: RuntimeEvent): Promise<void> {
     active.closed = true;
-    await active.stream.finish(terminal);
+    await active.stream.finish(telegramTerminalEvent(terminal));
     if (terminal.type === 'turn.completed' || terminal.type === 'turn.cancelled') {
       const data = terminal.data as unknown as RuntimeTurnCompletedData;
       await this.deliverAttachments(active.chatId, data.attachments, active.threadId);
@@ -2053,6 +2053,20 @@ function parseInputCallback(
   } catch {
     return undefined;
   }
+}
+
+function telegramTerminalEvent(event: RuntimeEvent): RuntimeEvent {
+  if (event.type !== 'error' || event.data.code !== 'ambiguous_execution') {
+    return event;
+  }
+  return {
+    ...event,
+    data: {
+      ...event.data,
+      message:
+        '⚠️ A execução foi interrompida antes da confirmação do resultado. O Atlas continua disponível para novas tarefas, mas esta operação não será repetida automaticamente para evitar efeitos duplicados. Ela exige recuperação explícita.',
+    },
+  };
 }
 
 function eventMessage(event: RuntimeEvent): string {

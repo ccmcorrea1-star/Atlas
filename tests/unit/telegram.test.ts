@@ -215,6 +215,17 @@ class FakeRuntime implements TelegramRuntime {
         data: { message_id: 'm1', content: 'Olá' },
       };
       onEvent(completed);
+      if (request.input === 'ambiguous') {
+        resolve({
+          ...completed,
+          type: 'error',
+          data: {
+            code: 'ambiguous_execution',
+            message: 'This request has ambiguous execution state and requires explicit recovery.',
+          },
+        });
+        return;
+      }
       if (request.input === 'approval') {
         onEvent({
           protocol: 'atlas-runtime',
@@ -1677,6 +1688,23 @@ test('renders generic Runtime input choices and accepts a Telegram callback', as
   });
   await active;
   assert.ok(api.callbackAnswers.some((answer) => answer.id === 'input-callback'));
+});
+
+test('informa interrupção ambígua e mantém o agente disponível para nova tarefa', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 34, message: message({ text: 'ambiguous' }) });
+
+  assert.ok(api.edits.some((edit) => edit.text.includes('execução foi interrompida')));
+  assert.equal(runtime.requests.length, 1);
+
+  await adapter.handleUpdate({
+    update_id: 35,
+    message: message({ message_id: 103, text: 'nova tarefa' }),
+  });
+  assert.equal(runtime.requests.length, 2);
 });
 
 test('accepts typed text as a fallback for a generic Runtime input', async () => {

@@ -318,6 +318,7 @@ export class AtlasRuntimeServer {
             runtimeErrorEvent(
               'This request has ambiguous execution state and requires explicit recovery.',
               request,
+              'ambiguous_execution',
             ),
           ),
         );

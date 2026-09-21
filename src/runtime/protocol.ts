@@ -707,6 +707,7 @@ export function runtimeLifecycleEvent(
 export function runtimeErrorEvent(
   message: string,
   request?: Pick<RuntimeTurnRequest, 'request_id' | 'conversation_id'>,
+  code = 'runtime_error',
 ): RuntimeEvent {
   return {
     protocol: RUNTIME_PROTOCOL,
@@ -719,7 +720,7 @@ export function runtimeErrorEvent(
           conversation_id: request.conversation_id,
         }),
     data: {
-      code: 'runtime_error',
+      code,
       message,
     },
   };
