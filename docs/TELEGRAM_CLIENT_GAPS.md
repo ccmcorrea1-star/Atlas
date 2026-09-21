@@ -81,6 +81,8 @@ Isso cobre o caminho básico de conversa, mas ainda não cobre a superfície com
 
 ## Lacunas
 
+> **Fonte de verdade:** consulte primeiro a seção [Checklist de progresso](#checklist-de-progresso). As listas desta seção são o catálogo histórico de capacidades e podem conter itens já concluídos. Não trate um item como pendente sem confirmar seu status na checklist.
+
 ### 1. Menu e catálogo de comandos
 
 O Hermes deriva seus comandos de um registro central e publica o menu em escopos diferentes do Telegram. O Atlas possui somente três comandos no catálogo do Runtime e atualmente não possui uma superfície de ajuda equivalente.
@@ -353,7 +355,9 @@ O adapter deve continuar resiliente a falhas transitórias sem mascarar erro de 
 
 O cliente não deve duplicar Agent, memória, sessão, autorização de tools, Tasks, Workers ou execução.
 
-## Ordem recomendada
+## Ordem inicial (histórica)
+
+A ordem abaixo foi o plano original. Ela não representa o estado atual; use a checklist acima para decidir o próximo bloco.
 
 ### P0 — base utilizável
 
