@@ -268,6 +268,7 @@ export type TelegramRuntime = {
     source: string,
     actorId?: string,
   ): Promise<RuntimeEvent>;
+  subscribeNotifications?(onEvent: (event: RuntimeEvent) => void): () => void;
   command(conversationId: string, command: 'new' | 'status' | 'stop'): Promise<RuntimeEvent>;
   respondApproval(
     conversationId: string,

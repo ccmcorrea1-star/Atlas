@@ -8,6 +8,7 @@ import type {
   RuntimeAttachment,
   RuntimeCommandCompletedData,
   RuntimeEvent,
+  RuntimeNotificationData,
   RuntimeTurnCompletedData,
   RuntimeTurnContext,
 } from '../../src/runtime/protocol.js';
@@ -151,6 +152,7 @@ export class TelegramAdapter {
   private readonly chatBudgets = new TelegramChatBudget();
   private readonly pendingUpdates = new Map<number, TelegramUpdate>();
   private readonly processingUpdates = new Set<number>();
+  private readonly notificationStop: (() => void) | undefined;
   private readonly processedMessageIds = new Set<string>();
   private readonly processingMessageIds = new Map<string, Promise<void>>();
   private readonly mediaGroups = new Map<string, PendingTelegramMediaGroup>();
@@ -178,6 +180,9 @@ export class TelegramAdapter {
     this.homeChatId = options.homeChatId;
     this.downloadDirectory = options.downloadDirectory ?? join(tmpdir(), 'atlas-telegram');
     this.statePath = options.statePath;
+    this.notificationStop = options.runtime.subscribeNotifications?.((event) => {
+      void this.handleRuntimeNotification(event);
+    });
     this.stateLoaded = this.loadState();
   }
 
@@ -288,6 +293,7 @@ export class TelegramAdapter {
   public async stop(): Promise<void> {
     this.running = false;
     this.pollController?.abort();
+    this.notificationStop?.();
     await this.pollingPromise;
     await this.persistState().catch((error: unknown) => {
       console.error(`Atlas Telegram state flush failed: ${safeErrorMessage(error)}`);
@@ -356,6 +362,30 @@ export class TelegramAdapter {
     };
     void processMessage().catch(() => undefined);
     await processingPromise;
+  }
+
+  private async handleRuntimeNotification(event: RuntimeEvent): Promise<void> {
+    if (event.type !== 'notification.created') {
+      return;
+    }
+    const data = event.data as Partial<RuntimeNotificationData>;
+    if (
+      typeof data.conversation_id !== 'string' ||
+      typeof data.content !== 'string' ||
+      typeof data.source !== 'string'
+    ) {
+      return;
+    }
+    const chatId = telegramChatIdFromConversation(data.conversation_id);
+    if (chatId === undefined) {
+      return;
+    }
+    const text = data.title === undefined ? data.content : `${data.title}\n\n${data.content}`;
+    try {
+      await this.api.sendMessage(chatId, text);
+    } catch (error) {
+      console.error(`Atlas Telegram notification delivery failed: ${safeErrorMessage(error)}`);
+    }
   }
 
   private async handleReactionUpdate(update: TelegramUpdate): Promise<void> {
@@ -1447,6 +1477,15 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+}
+
+function telegramChatIdFromConversation(conversationId: string): number | undefined {
+  const match = /^telegram:(-?\d+):thread:/.exec(conversationId);
+  if (match === null) {
+    return undefined;
+  }
+  const chatId = Number(match[1]);
+  return Number.isSafeInteger(chatId) ? chatId : undefined;
 }
 
 function telegramReactionValue(reaction: TelegramReaction): string {

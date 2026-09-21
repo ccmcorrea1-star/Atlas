@@ -108,6 +108,30 @@ export type RuntimeInputResponse = {
   value: string;
 };
 
+export type RuntimeNotificationData = {
+  notification_id: string;
+  conversation_id: string;
+  content: string;
+  source: string;
+  title?: string;
+  level?: 'info' | 'success' | 'warning' | 'error';
+};
+
+export type RuntimeNotificationSubscribe = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'notification.subscribe';
+  request_id: string;
+  conversation_id: string;
+};
+
+export type RuntimeNotificationPublish = RuntimeNotificationData & {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'notification.publish';
+  request_id: string;
+};
+
 export type RuntimeReactionRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -128,6 +152,8 @@ export type RuntimeRequest =
   | RuntimeCommandRequest
   | RuntimeApprovalResponse
   | RuntimeInputResponse
+  | RuntimeNotificationSubscribe
+  | RuntimeNotificationPublish
   | RuntimeReactionRequest;
 
 export type RuntimeEventType =
@@ -151,6 +177,8 @@ export type RuntimeEventType =
   | 'approval.resolved'
   | 'input.requested'
   | 'input.resolved'
+  | 'notification.subscribed'
+  | 'notification.created'
   | 'reaction.completed'
   | 'runtime.restarting'
   | 'runtime.ready'
@@ -407,6 +435,37 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
 
   const request_id = requiredString(request.request_id, 'request_id');
   const conversation_id = requiredString(request.conversation_id, 'conversation_id');
+  if (request.type === 'notification.subscribe') {
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'notification.subscribe',
+      request_id,
+      conversation_id,
+    };
+  }
+  if (request.type === 'notification.publish') {
+    const content = requiredString(request.content, 'content');
+    const source = requiredString(request.source, 'source');
+    const notificationId = requiredString(request.notification_id, 'notification_id');
+    const title = optionalString(request.title, 'title');
+    const level = optionalString(request.level, 'level');
+    if (level !== undefined && !['info', 'success', 'warning', 'error'].includes(level)) {
+      throw new RuntimeProtocolError(`Unsupported notification level "${level}".`);
+    }
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'notification.publish',
+      request_id,
+      notification_id: notificationId,
+      conversation_id,
+      content,
+      source,
+      ...(title === undefined ? {} : { title }),
+      ...(level === undefined ? {} : { level: level as RuntimeNotificationData['level'] }),
+    };
+  }
   if (request.type === 'reaction.request') {
     const action = requiredString(request.action, 'action');
     if (!['added', 'removed', 'changed'].includes(action)) {

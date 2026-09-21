@@ -683,6 +683,71 @@ async function startPartialHangingModelServer(): Promise<{
   };
 }
 
+function sendNotificationRoundTrip(socketPath: string): Promise<WireMessage> {
+  return new Promise((resolve, reject) => {
+    const subscriber = createConnection(socketPath);
+    const publisher = createConnection(socketPath);
+    let subscriberBuffer = '';
+    let publisherStarted = false;
+    const fail = (error: Error) => {
+      subscriber.destroy();
+      publisher.destroy();
+      reject(error);
+    };
+    subscriber.once('error', fail);
+    publisher.once('error', fail);
+    subscriber.setEncoding('utf8');
+    publisher.setEncoding('utf8');
+    subscriber.on('data', (chunk: string) => {
+      subscriberBuffer += chunk;
+      let newlineIndex = subscriberBuffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = subscriberBuffer.slice(0, newlineIndex).trim();
+        subscriberBuffer = subscriberBuffer.slice(newlineIndex + 1);
+        newlineIndex = subscriberBuffer.indexOf('\n');
+        if (!line) {
+          continue;
+        }
+        const event = JSON.parse(line) as WireMessage;
+        if (event.type === 'notification.subscribed' && !publisherStarted) {
+          publisherStarted = true;
+          publisher.write(
+            `${JSON.stringify({
+              protocol: RUNTIME_PROTOCOL,
+              version: RUNTIME_PROTOCOL_VERSION,
+              type: 'notification.publish',
+              request_id: 'notification-integration-publish',
+              notification_id: 'notification-integration-1',
+              conversation_id: 'telegram:123:thread:root',
+              content: 'Download concluído.',
+              source: 'torrent',
+              title: 'Atlas',
+              level: 'success',
+            })}\n`,
+          );
+        }
+        if (event.type === 'notification.created') {
+          subscriber.destroy();
+          publisher.destroy();
+          resolve(event);
+          return;
+        }
+      }
+    });
+    subscriber.once('connect', () => {
+      subscriber.write(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'notification.subscribe',
+          request_id: 'notification-integration-subscribe',
+          conversation_id: '*',
+        })}\n`,
+      );
+    });
+  });
+}
+
 function sendReaction(socketPath: string): Promise<WireMessage> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath, () => {
@@ -1018,6 +1083,34 @@ test('publishes a typed reaction completion over the public Unix protocol', asyn
       reactions: ['👍'],
       source: 'telegram',
       actor_id: '7',
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('delivers published notifications to persistent subscribers', async () => {
+  const socketPath = `/tmp/atlas-runtime-notification-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const event = await sendNotificationRoundTrip(socketPath);
+    assert.equal(event.type, 'notification.created');
+    assert.equal(event.request_id, 'notification-integration-publish');
+    assert.deepEqual(event.data, {
+      notification_id: 'notification-integration-1',
+      conversation_id: 'telegram:123:thread:root',
+      content: 'Download concluído.',
+      source: 'torrent',
+      title: 'Atlas',
+      level: 'success',
     });
   } finally {
     await runtime.close();

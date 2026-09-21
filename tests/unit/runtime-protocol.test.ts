@@ -291,6 +291,47 @@ test('parses reaction requests as a separate Runtime family', () => {
   });
 });
 
+test('parses notification subscriptions and publications', () => {
+  const subscription = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'notification.subscribe',
+      request_id: 'notification-subscribe',
+      conversation_id: '*',
+    }),
+  );
+  const publication = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'notification.publish',
+      request_id: 'notification-publish',
+      notification_id: 'notification-1',
+      conversation_id: 'telegram:123:thread:root',
+      content: 'Download concluído.',
+      source: 'torrent',
+      title: 'Atlas',
+      level: 'success',
+    }),
+  );
+
+  assert.equal(subscription.type, 'notification.subscribe');
+  assert.equal(subscription.conversation_id, '*');
+  assert.deepEqual(publication, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'notification.publish',
+    request_id: 'notification-publish',
+    notification_id: 'notification-1',
+    conversation_id: 'telegram:123:thread:root',
+    content: 'Download concluído.',
+    source: 'torrent',
+    title: 'Atlas',
+    level: 'success',
+  });
+});
+
 test('accepts only commands exposed by the Runtime catalog', () => {
   assert.deepEqual(
     RUNTIME_COMMANDS.map((command) => command.name),

@@ -153,6 +153,7 @@ class PartialDeliveryApi extends FakeApi {
 class FakeRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
   public readonly reactions: Array<Record<string, unknown>> = [];
+  private notificationHandler: ((event: RuntimeEvent) => void) | undefined;
   private activeResolve: ((event: RuntimeEvent) => void) | undefined;
   private activeCallback: ((event: RuntimeEvent) => void) | undefined;
   private approvalResolve: ((event: RuntimeEvent) => void) | undefined;
@@ -232,6 +233,17 @@ class FakeRuntime implements TelegramRuntime {
         });
       }
     });
+  }
+
+  public subscribeNotifications(onEvent: (event: RuntimeEvent) => void): () => void {
+    this.notificationHandler = onEvent;
+    return () => {
+      this.notificationHandler = undefined;
+    };
+  }
+
+  public emitNotification(event: RuntimeEvent): void {
+    this.notificationHandler?.(event);
   }
 
   public async command(
@@ -1135,6 +1147,33 @@ test('normaliza reações de usuário e contagens sem criar turno de texto', asy
     source: 'telegram',
     actorId: undefined,
   });
+});
+
+test('entrega notificações assíncronas no chat da conversa sem criar turno', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7], allowedChats: [123] });
+
+  runtime.emitNotification({
+    protocol: 'atlas-runtime',
+    version: 1,
+    type: 'notification.created',
+    request_id: 'notification-test',
+    conversation_id: 'telegram:123:thread:root',
+    data: {
+      notification_id: 'notification-1',
+      conversation_id: 'telegram:123:thread:root',
+      content: 'Download concluído.',
+      source: 'torrent',
+      title: 'Atlas',
+      level: 'success',
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(runtime.requests.length, 0);
+  assert.deepEqual(api.sent, [{ chatId: 123, text: 'Atlas\n\nDownload concluído.' }]);
+  await adapter.stop();
 });
 
 test('routes status and stop while a turn is active', async () => {

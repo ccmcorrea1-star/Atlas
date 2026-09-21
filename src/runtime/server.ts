@@ -32,6 +32,7 @@ import {
   type RuntimeCommandRequest,
   type RuntimeEvent,
   type RuntimeInputRequestedData,
+  type RuntimeNotificationData,
   type RuntimeRequest,
   type RuntimeSession,
   type RuntimeSessionUpdatedData,
@@ -199,6 +200,7 @@ export class AtlasRuntimeServer {
   private readonly pendingInputs = new Map<string, PendingInput>();
   private readonly requestLedger: RuntimeRequestLedger;
   private readonly requestSubscribers = new Map<string, Set<(payload: string) => void>>();
+  private readonly notificationSubscribers = new Map<string, Set<(payload: string) => void>>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
@@ -273,6 +275,12 @@ export class AtlasRuntimeServer {
     }
     if (message.type === 'input.respond') {
       return this.handleInputResponse(message, send);
+    }
+    if (message.type === 'notification.subscribe') {
+      return this.handleNotificationSubscribe(message, send);
+    }
+    if (message.type === 'notification.publish') {
+      return this.handleNotificationPublish(message, send);
     }
     if (message.type === 'reaction.request') {
       return this.handleReaction(message, send);
@@ -611,6 +619,47 @@ export class AtlasRuntimeServer {
       status: statusOverride ?? (activeRequestId === undefined ? 'idle' : 'running'),
       ...(activeRequestId === undefined ? {} : { active_request_id: activeRequestId }),
     };
+  }
+
+  private handleNotificationSubscribe(
+    request: Extract<RuntimeRequest, { type: 'notification.subscribe' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const subscribers = this.notificationSubscribers.get(request.conversation_id) ?? new Set();
+    subscribers.add(send);
+    this.notificationSubscribers.set(request.conversation_id, subscribers);
+    send(
+      serializeRuntimeMessage(
+        runtimeEvent(request, 'notification.subscribed', {
+          conversation_id: request.conversation_id,
+        }),
+      ),
+    );
+    return Promise.resolve();
+  }
+
+  private handleNotificationPublish(
+    request: Extract<RuntimeRequest, { type: 'notification.publish' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const data: RuntimeNotificationData = {
+      notification_id: request.notification_id,
+      conversation_id: request.conversation_id,
+      content: request.content,
+      source: request.source,
+      ...(request.title === undefined ? {} : { title: request.title }),
+      ...(request.level === undefined ? {} : { level: request.level }),
+    };
+    const payload = serializeRuntimeMessage(runtimeEvent(request, 'notification.created', data));
+    send(payload);
+    const subscribers = new Set([
+      ...(this.notificationSubscribers.get('*') ?? []),
+      ...(this.notificationSubscribers.get(request.conversation_id) ?? []),
+    ]);
+    for (const subscriber of subscribers) {
+      subscriber(payload);
+    }
+    return Promise.resolve();
   }
 
   private handleReaction(
