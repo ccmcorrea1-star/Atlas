@@ -43,54 +43,82 @@ export class UnixTelegramRuntime implements TelegramRuntime {
   public constructor(private readonly socketPath: string) {}
 
   public subscribeNotifications(onEvent: (event: RuntimeEvent) => void): () => void {
-    const socket = createConnection(this.socketPath);
-    let buffer = '';
+    let socket: Socket | undefined;
+    let retryTimer: NodeJS.Timeout | undefined;
     let stopped = false;
-    socket.setEncoding('utf8');
-    socket.on('error', (error) => {
-      if (!stopped) {
-        console.error(`Atlas Runtime notification stream failed: ${error.message}`);
+    let attempt = 0;
+
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer !== undefined) {
+        return;
       }
-    });
-    socket.on('close', () => {
-      if (!stopped) {
-        console.error('Atlas Runtime notification stream closed.');
+      const delay = Math.min(1_000 * 2 ** Math.min(attempt, 5), 30_000);
+      attempt += 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (stopped) {
+        return;
       }
-    });
-    socket.on('data', (chunk: string) => {
-      buffer += chunk;
-      let newlineIndex = buffer.indexOf('\n');
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf('\n');
-        if (!line) {
-          continue;
+      const nextSocket = createConnection(this.socketPath);
+      socket = nextSocket;
+      let buffer = '';
+      nextSocket.setEncoding('utf8');
+      nextSocket.on('error', (error) => {
+        if (!stopped) {
+          console.error(`Atlas Runtime notification stream failed: ${error.message}`);
         }
-        try {
-          const parsed: unknown = JSON.parse(line);
-          if (isRuntimeEvent(parsed)) {
-            onEvent(parsed);
+      });
+      nextSocket.on('close', () => {
+        if (!stopped) {
+          scheduleReconnect();
+        }
+      });
+      nextSocket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf('\n');
+          if (!line) {
+            continue;
           }
-        } catch {
-          // Uma linha inválida não encerra o stream de notificações.
+          try {
+            const parsed: unknown = JSON.parse(line);
+            if (isRuntimeEvent(parsed)) {
+              onEvent(parsed);
+            }
+          } catch {
+            // Uma linha inválida não encerra o stream de notificações.
+          }
         }
-      }
-    });
-    socket.once('connect', () => {
-      socket.write(
-        `${JSON.stringify({
-          protocol: RUNTIME_PROTOCOL,
-          version: RUNTIME_PROTOCOL_VERSION,
-          type: 'notification.subscribe',
-          request_id: randomUUID(),
-          conversation_id: '*',
-        })}\n`,
-      );
-    });
+      });
+      nextSocket.once('connect', () => {
+        attempt = 0;
+        nextSocket.write(
+          `${JSON.stringify({
+            protocol: RUNTIME_PROTOCOL,
+            version: RUNTIME_PROTOCOL_VERSION,
+            type: 'notification.subscribe',
+            request_id: randomUUID(),
+            conversation_id: '*',
+          })}\n`,
+        );
+      });
+    };
+
+    connect();
     return () => {
       stopped = true;
-      socket.destroy();
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
+      socket?.destroy();
     };
   }
 
