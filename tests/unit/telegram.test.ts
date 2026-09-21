@@ -1021,6 +1021,24 @@ test('renders the newest snapshot after a delayed edit', async () => {
   );
 });
 
+test('processa uma edição como nova revisão e deduplica a mesma revisão', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (request) =>
+    runtimeEvent('turn.completed', { content: `resposta: ${request.input}` }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const original = message({ message_id: 44, text: 'texto original' });
+  const edited = message({ message_id: 44, text: 'texto corrigido' });
+
+  await adapter.handleUpdate({ update_id: 44, message: original });
+  await adapter.handleUpdate({ update_id: 45, edited_message: edited });
+  await adapter.handleUpdate({ update_id: 46, edited_message: edited });
+
+  assert.equal(runtime.requests.length, 2);
+  assert.equal(runtime.requests[0]?.input, 'texto original');
+  assert.equal(runtime.requests[1]?.input, 'texto corrigido');
+});
+
 test('routes status and stop while a turn is active', async () => {
   const api = new FakeApi();
   const runtime = new FakeRuntime();

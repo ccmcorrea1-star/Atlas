@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -301,11 +301,15 @@ export class TelegramAdapter {
       await this.handleCallbackQuery(update.callback_query);
       return;
     }
-    const message = telegramMessageFromUpdate(update);
-    if (message === undefined || message.from?.is_bot === true) {
+    const messageUpdate = telegramMessageUpdate(update);
+    if (messageUpdate === undefined) {
       return;
     }
-    const messageKey = telegramMessageKey(message);
+    const message = messageUpdate.message;
+    if (message.from?.is_bot === true) {
+      return;
+    }
+    const messageKey = telegramMessageKey(message, messageUpdate.edited);
     const storedTurn = this.turns.get(messageKey);
     if (storedTurn?.status === 'terminal') {
       this.rememberProcessedMessage(messageKey);
@@ -330,7 +334,7 @@ export class TelegramAdapter {
     const processMessage = async (): Promise<void> => {
       try {
         await (message.media_group_id === undefined
-          ? this.handleMessage(message)
+          ? this.handleMessage(message, messageKey)
           : this.handleMediaGroup(message));
         this.rememberProcessedMessage(messageKey);
         resolveProcessing?.();
@@ -394,7 +398,10 @@ export class TelegramAdapter {
     }
   }
 
-  private async handleMessage(message: TelegramMessage): Promise<void> {
+  private async handleMessage(
+    message: TelegramMessage,
+    messageKey = telegramMessageKey(message),
+  ): Promise<void> {
     if (!this.authorization.allows(message)) {
       return;
     }
@@ -421,7 +428,7 @@ export class TelegramAdapter {
     }
 
     await this.enqueueConversation(conversationId, async () => {
-      const existing = this.turns.get(telegramMessageKey(message));
+      const existing = this.turns.get(messageKey);
       const materialized: MaterializedAttachments =
         existing?.replyMessageId === undefined
           ? await this.materializeAttachments(message)
@@ -444,7 +451,7 @@ export class TelegramAdapter {
         return;
       }
       try {
-        await this.handleTurn(message, conversationId, input, attachments, context);
+        await this.handleTurn(message, conversationId, input, attachments, context, messageKey);
       } finally {
         await this.removeMaterializedDirectory(materialized.directory);
       }
@@ -482,8 +489,8 @@ export class TelegramAdapter {
     input: string,
     attachments: RuntimeAttachment[],
     context?: RuntimeTurnContext,
+    messageKey = telegramMessageKey(message),
   ): Promise<void> {
-    const messageKey = telegramMessageKey(message);
     let turn = this.turns.get(messageKey);
     if (turn === undefined) {
       turn = {
@@ -1385,6 +1392,31 @@ export class TelegramAdapter {
   }
 }
 
+type TelegramMessageUpdate = {
+  message: TelegramMessage;
+  edited: boolean;
+};
+
+function telegramMessageUpdate(update: TelegramUpdate): TelegramMessageUpdate | undefined {
+  if (update.message !== undefined) {
+    return { message: update.message, edited: false };
+  }
+  if (update.edited_message !== undefined) {
+    return { message: update.edited_message, edited: true };
+  }
+  if (update.channel_post !== undefined) {
+    return { message: update.channel_post, edited: false };
+  }
+  if (update.edited_channel_post !== undefined) {
+    return { message: update.edited_channel_post, edited: true };
+  }
+  return undefined;
+}
+
+function telegramMessageFromUpdate(update: TelegramUpdate): TelegramMessage | undefined {
+  return telegramMessageUpdate(update)?.message;
+}
+
 function telegramReplyContext(message: TelegramMessage): RuntimeTurnContext | undefined {
   const reply = message.reply_to_message;
   if (reply === undefined) {
@@ -1454,12 +1486,6 @@ function telegramStructuredAttachments(message: TelegramMessage): RuntimeAttachm
   return attachments;
 }
 
-function telegramMessageFromUpdate(update: TelegramUpdate): TelegramMessage | undefined {
-  return (
-    update.message ?? update.edited_message ?? update.channel_post ?? update.edited_channel_post
-  );
-}
-
 function mergeTelegramMediaGroup(messages: TelegramMessage[]): TelegramMessage {
   const ordered = [...messages].sort((left, right) => left.message_id - right.message_id);
   const first = ordered[0] as TelegramMessage;
@@ -1499,8 +1525,33 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function telegramMessageKey(message: TelegramMessage): string {
-  return `${String(message.chat.id)}:${message.message_id}`;
+function telegramMessageKey(message: TelegramMessage, edited = false): string {
+  const base = `${String(message.chat.id)}:${message.message_id}`;
+  if (!edited) {
+    return base;
+  }
+  const revision = createHash('sha256')
+    .update(
+      JSON.stringify({
+        text: message.text,
+        caption: message.caption,
+        entities: message.entities,
+        caption_entities: message.caption_entities,
+        reply_to_message_id: message.reply_to_message?.message_id,
+        voice: message.voice?.file_id,
+        audio: message.audio?.file_id,
+        photo: message.photo?.at(-1)?.file_id,
+        video: message.video?.file_id,
+        animation: message.animation?.file_id,
+        document: message.document?.file_id,
+        sticker: message.sticker?.file_id,
+        location: message.location,
+        venue: message.venue,
+      }),
+    )
+    .digest('hex')
+    .slice(0, 16);
+  return `${base}:edit:${revision}`;
 }
 
 function parseApprovalCallback(
