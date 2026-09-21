@@ -163,11 +163,16 @@ export class FetchTelegramApi implements TelegramApi {
     destination: string,
     maxBytes = 20 * 1024 * 1024,
   ): Promise<void> {
-    const response = await fetch(`${this.fileBase}/${filePath}`, {
+    const response = await fetchTelegram(`${this.fileBase}/${filePath}`, {
       signal: AbortSignal.timeout(TELEGRAM_REQUEST_DEADLINE_MS),
     });
     if (!response.ok) {
-      throw new Error(`Telegram file download failed with HTTP ${response.status}.`);
+      throw new TelegramApiError(
+        `Telegram file download failed with HTTP ${response.status}.`,
+        undefined,
+        response.status,
+        response.status >= 500 ? 'ambiguous' : 'permanent',
+      );
     }
     const contentLength = response.headers.get('content-length');
     if (contentLength !== null && Number(contentLength) > maxBytes) {
@@ -267,7 +272,7 @@ export class FetchTelegramApi implements TelegramApi {
         new Blob([await readFile(filePath)]),
         filePath.split('/').at(-1) ?? 'attachment',
       );
-      const response = await fetch(`${this.apiBase}/${method}`, {
+      const response = await fetchTelegram(`${this.apiBase}/${method}`, {
         method: 'POST',
         body: form,
         signal: AbortSignal.timeout(TELEGRAM_REQUEST_DEADLINE_MS),
@@ -291,7 +296,7 @@ export class FetchTelegramApi implements TelegramApi {
     timeoutMs = 40_000,
   ): Promise<T> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const response = await fetch(`${this.apiBase}/${method}?${params.toString()}`, {
+      const response = await fetchTelegram(`${this.apiBase}/${method}?${params.toString()}`, {
         signal:
           signal === undefined
             ? AbortSignal.timeout(timeoutMs)
@@ -312,7 +317,7 @@ export class FetchTelegramApi implements TelegramApi {
 
   private async call<T>(method: string, body: Record<string, unknown> = {}): Promise<T> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const response = await fetch(`${this.apiBase}/${method}`, {
+      const response = await fetchTelegram(`${this.apiBase}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -368,6 +373,24 @@ function retryAfterMilliseconds(error: TelegramApiError): number {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fetchTelegram(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+    throw new TelegramApiError(
+      `Telegram network request failed: ${sanitizeTelegramDescription(
+        error instanceof Error ? error.message : String(error),
+      )}`,
+      undefined,
+      undefined,
+      'ambiguous',
+    );
+  }
 }
 
 export async function readTelegramMedia(path: string): Promise<Uint8Array> {
