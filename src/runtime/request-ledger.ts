@@ -52,6 +52,10 @@ export class RuntimeRequestLedger {
     return this.records.get(requestId);
   }
 
+  public running(): RuntimeRequestRecord[] {
+    return [...this.records.values()].filter((record) => record.state === 'running');
+  }
+
   public accept(request: RuntimeTurnRequest): RuntimeRequestRecord {
     const record: RuntimeRequestRecord = {
       request,

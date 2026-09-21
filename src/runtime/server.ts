@@ -220,6 +220,9 @@ export class AtlasRuntimeServer {
     await this.requestLedger.load();
     await this.transport.listen();
     await this.schedulePendingRecovery();
+    for (const record of this.requestLedger.running()) {
+      void this.launchTurnRequest(record.request, record, () => undefined).catch(() => undefined);
+    }
   }
 
   public close(): Promise<void> {
@@ -278,7 +281,16 @@ export class AtlasRuntimeServer {
       return Promise.resolve();
     }
     const record = this.requestLedger.accept(request);
-    const subscribers = new Set<(payload: string) => void>([send]);
+    return this.launchTurnRequest(request, record, send);
+  }
+
+  private launchTurnRequest(
+    request: RuntimeTurnRequest,
+    record: ReturnType<RuntimeRequestLedger['accept']>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const subscribers = this.requestSubscribers.get(request.request_id) ?? new Set();
+    subscribers.add(send);
     this.requestSubscribers.set(request.request_id, subscribers);
     const publish = (payload: string): void => {
       let event: RuntimeEvent | undefined;
