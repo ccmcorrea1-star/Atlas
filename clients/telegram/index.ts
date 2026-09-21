@@ -8,4 +8,12 @@ export {
   runtimeCommandFromText,
 } from './routing.js';
 export type { TelegramAdapterOptions } from './adapter.js';
-export type { TelegramApi, TelegramMessage, TelegramRuntime, TelegramUpdate } from './types.js';
+export type {
+  TelegramApi,
+  TelegramCallbackQuery,
+  TelegramInlineKeyboardButton,
+  TelegramInlineKeyboardMarkup,
+  TelegramMessage,
+  TelegramRuntime,
+  TelegramUpdate,
+} from './types.js';

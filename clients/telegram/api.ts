@@ -1,6 +1,15 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { readFile, rm } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
+import { Readable, Transform } from 'node:stream';
 
-import type { TelegramApi, TelegramBot, TelegramSentMessage, TelegramUpdate } from './types.js';
+import type {
+  TelegramApi,
+  TelegramBot,
+  TelegramInlineKeyboardMarkup,
+  TelegramSentMessage,
+  TelegramUpdate,
+} from './types.js';
 
 type TelegramResponse<T> = {
   ok: boolean;
@@ -28,7 +37,7 @@ export class FetchTelegramApi implements TelegramApi {
   public getUpdates(offset: number | undefined, timeoutSeconds: number): Promise<TelegramUpdate[]> {
     const params = new URLSearchParams({
       timeout: String(timeoutSeconds),
-      allowed_updates: JSON.stringify(['message', 'edited_message']),
+      allowed_updates: JSON.stringify(['message', 'callback_query']),
     });
     if (offset !== undefined) {
       params.set('offset', String(offset));
@@ -36,8 +45,16 @@ export class FetchTelegramApi implements TelegramApi {
     return this.callGet<TelegramUpdate[]>('getUpdates', params);
   }
 
-  public sendMessage(chatId: number | string, text: string): Promise<TelegramSentMessage> {
-    return this.call<TelegramSentMessage>('sendMessage', { chat_id: chatId, text });
+  public sendMessage(
+    chatId: number | string,
+    text: string,
+    options: { reply_markup?: TelegramInlineKeyboardMarkup } = {},
+  ): Promise<TelegramSentMessage> {
+    return this.call<TelegramSentMessage>('sendMessage', {
+      chat_id: chatId,
+      text,
+      ...(options.reply_markup === undefined ? {} : { reply_markup: options.reply_markup }),
+    });
   }
 
   public async editMessageText(
@@ -59,16 +76,69 @@ export class FetchTelegramApi implements TelegramApi {
     }
   }
 
+  public editMessageReplyMarkup(
+    chatId: number | string,
+    messageId: number,
+    replyMarkup: TelegramInlineKeyboardMarkup,
+  ): Promise<void> {
+    return this.call<boolean>('editMessageReplyMarkup', {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: replyMarkup,
+    }).then(() => undefined);
+  }
+
+  public answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+    return this.call<boolean>('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      ...(text === undefined ? {} : { text }),
+    }).then(() => undefined);
+  }
+
   public getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
     return this.call<{ file_path: string; file_size?: number }>('getFile', { file_id: fileId });
   }
 
-  public async downloadFile(filePath: string, destination: string): Promise<void> {
-    const response = await fetch(`${this.fileBase}/${filePath}`);
+  public async downloadFile(
+    filePath: string,
+    destination: string,
+    maxBytes = 20 * 1024 * 1024,
+  ): Promise<void> {
+    const response = await fetch(`${this.fileBase}/${filePath}`, {
+      signal: AbortSignal.timeout(60_000),
+    });
     if (!response.ok) {
       throw new Error(`Telegram file download failed with HTTP ${response.status}.`);
     }
-    await writeFile(destination, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
+    const contentLength = response.headers.get('content-length');
+    if (contentLength !== null && Number(contentLength) > maxBytes) {
+      throw new Error(`Telegram attachment exceeds the ${maxBytes}-byte limit.`);
+    }
+    if (response.body === null) {
+      throw new Error('Telegram file download returned an empty body.');
+    }
+
+    let totalBytes = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        totalBytes += chunk.byteLength;
+        if (totalBytes > maxBytes) {
+          callback(new Error(`Telegram attachment exceeds the ${maxBytes}-byte limit.`));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    try {
+      await pipeline(
+        Readable.fromWeb(response.body as globalThis.ReadableStream<Uint8Array>),
+        limiter,
+        createWriteStream(destination, { mode: 0o600 }),
+      );
+    } catch (error) {
+      await rm(destination, { force: true });
+      throw error;
+    }
   }
 
   public sendPhoto(chatId: number | string, filePath: string, caption?: string): Promise<void> {
@@ -112,7 +182,9 @@ export class FetchTelegramApi implements TelegramApi {
   }
 
   private async callGet<T>(method: string, params: URLSearchParams): Promise<T> {
-    const response = await fetch(`${this.apiBase}/${method}?${params.toString()}`);
+    const response = await fetch(`${this.apiBase}/${method}?${params.toString()}`, {
+      signal: AbortSignal.timeout(40_000),
+    });
     const payload = (await response.json()) as TelegramResponse<T>;
     if (!response.ok || !payload.ok || payload.result === undefined) {
       throw new Error(payload.description ?? `Telegram API ${method} failed.`);

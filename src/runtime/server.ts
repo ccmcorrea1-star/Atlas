@@ -12,6 +12,7 @@ import {
 import {
   runAtlas,
   resetAtlasConversation,
+  type AtlasApprovalDecision,
   type AtlasRunEvent,
   type AtlasRunOptions,
 } from '../index.js';
@@ -51,6 +52,15 @@ type TurnUsage = {
   inputTokens: number;
   outputTokens: number;
   requests: number;
+};
+
+type PendingApprovalGroup = {
+  request: RuntimeTurnRequest;
+  approvalIds: Set<string>;
+  decisions: Map<string, AtlasApprovalDecision>;
+  resolve: ((decisions: AtlasApprovalDecision[]) => void) | undefined;
+  reject: ((error: Error) => void) | undefined;
+  abortCleanup: (() => void) | undefined;
 };
 
 function isTokenCount(value: unknown): value is number {
@@ -167,6 +177,7 @@ export class AtlasRuntimeServer {
   private readonly conversationQueues = new Map<string, Promise<void>>();
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
   private readonly recoveryPromises = new Map<string, Promise<HostOperation>>();
+  private readonly pendingApprovals = new Map<string, PendingApprovalGroup>();
 
   public constructor(options: RuntimeServerOptions = {}) {
     this.socketPath = options.socketPath ?? configuredRuntimeSocketPath();
@@ -227,12 +238,7 @@ export class AtlasRuntimeServer {
       return this.handleCommand(message, send);
     }
     if (message.type === 'approval.respond') {
-      send(
-        serializeRuntimeMessage(
-          runtimeErrorEvent('No approval is currently waiting in this Runtime.', message),
-        ),
-      );
-      return Promise.resolve();
+      return this.handleApprovalResponse(message, send);
     }
 
     const request = message;
@@ -303,6 +309,99 @@ export class AtlasRuntimeServer {
       session,
     };
     send(serializeRuntimeMessage(runtimeEvent(request, 'command.completed', data)));
+  }
+
+  private handleApprovalResponse(
+    request: Extract<RuntimeRequest, { type: 'approval.respond' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const group = this.pendingApprovals.get(request.approval_id);
+    if (group === undefined || group.request.conversation_id !== request.conversation_id) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(
+            `No approval is currently waiting for "${request.approval_id}".`,
+            request,
+          ),
+        ),
+      );
+      return Promise.resolve();
+    }
+    if (group.decisions.has(request.approval_id)) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`Approval "${request.approval_id}" was already resolved.`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+
+    group.decisions.set(request.approval_id, {
+      approvalId: request.approval_id,
+      approved: request.approved,
+      ...(request.comment === undefined ? {} : { comment: request.comment }),
+    });
+    send(
+      serializeRuntimeMessage(
+        runtimeEvent(request, 'approval.resolved', {
+          approval_id: request.approval_id,
+          approved: request.approved,
+          ...(request.comment === undefined ? {} : { comment: request.comment }),
+        }),
+      ),
+    );
+
+    if (group.decisions.size === group.approvalIds.size) {
+      this.finishPendingApproval(group);
+      group.resolve?.([...group.decisions.values()]);
+    }
+    return Promise.resolve();
+  }
+
+  private waitForApprovals(
+    request: RuntimeTurnRequest,
+    approvalIds: Iterable<string>,
+    abortSignal: AbortSignal,
+  ): Promise<AtlasApprovalDecision[]> {
+    const ids = new Set(approvalIds);
+    if (ids.size === 0) {
+      return Promise.resolve([]);
+    }
+    const group: PendingApprovalGroup = {
+      request,
+      approvalIds: ids,
+      decisions: new Map(),
+      resolve: undefined,
+      reject: undefined,
+      abortCleanup: undefined,
+    };
+    for (const approvalId of ids) {
+      this.pendingApprovals.set(approvalId, group);
+    }
+
+    return new Promise<AtlasApprovalDecision[]>((resolve, reject) => {
+      group.resolve = resolve;
+      group.reject = reject;
+      const onAbort = () => {
+        this.finishPendingApproval(group);
+        reject(new Error('Approval was cancelled with the active turn.'));
+      };
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      group.abortCleanup = () => abortSignal.removeEventListener('abort', onAbort);
+      if (abortSignal.aborted) {
+        onAbort();
+      }
+    });
+  }
+
+  private finishPendingApproval(group: PendingApprovalGroup): void {
+    for (const approvalId of group.approvalIds) {
+      if (this.pendingApprovals.get(approvalId) === group) {
+        this.pendingApprovals.delete(approvalId);
+      }
+    }
+    group.abortCleanup?.();
+    group.abortCleanup = undefined;
   }
 
   private sessionSnapshot(
@@ -391,27 +490,47 @@ export class AtlasRuntimeServer {
       if (abortSignal.aborted) {
         throw new Error('turn cancelled by client');
       }
-      const result = await runAtlas(input, {
-        ...this.runOptions,
-        abortSignal,
-        // O provider é fixo nesta fase; o modelo vem da configuração global.
-        model: this.atlasModel,
-        atlasConfig: this.atlasConfig,
-        conversationId: request.conversation_id,
-        ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
-        onEvent: (event) => {
-          messageId = eventMessageId(event) ?? messageId;
-          if (event.type === 'message.delta') {
-            messageContents.set(
-              event.messageId,
-              `${messageContents.get(event.messageId) ?? ''}${event.delta}`,
-            );
-          } else if (event.type === 'message.completed') {
-            messageContents.set(event.messageId, event.content);
-          }
-          publish(atlasEvent(request, event));
-        },
-      });
+      let resumeState: string | undefined;
+      let approvalDecisions: readonly AtlasApprovalDecision[] | undefined;
+      let result: Awaited<ReturnType<typeof runAtlas>>;
+      for (;;) {
+        const requestedApprovals = new Set<string>();
+        result = await runAtlas(input, {
+          ...this.runOptions,
+          abortSignal,
+          // O provider é fixo nesta fase; o modelo vem da configuração global.
+          model: this.atlasModel,
+          atlasConfig: this.atlasConfig,
+          conversationId: request.conversation_id,
+          ...(resumeState === undefined && request.attachments !== undefined
+            ? { attachments: request.attachments }
+            : {}),
+          ...(resumeState === undefined ? {} : { resumeState }),
+          ...(approvalDecisions === undefined ? {} : { approvalDecisions }),
+          onEvent: (event) => {
+            messageId = eventMessageId(event) ?? messageId;
+            if (event.type === 'message.delta') {
+              messageContents.set(
+                event.messageId,
+                `${messageContents.get(event.messageId) ?? ''}${event.delta}`,
+              );
+            } else if (event.type === 'message.completed') {
+              messageContents.set(event.messageId, event.content);
+            } else if (event.type === 'approval.requested') {
+              requestedApprovals.add(event.approvalId);
+            }
+            publish(atlasEvent(request, event));
+          },
+        });
+        if (result.interruptions.length === 0) {
+          break;
+        }
+        if (requestedApprovals.size !== result.interruptions.length) {
+          throw new Error('Runtime received an approval without a stable identifier.');
+        }
+        approvalDecisions = await this.waitForApprovals(request, requestedApprovals, abortSignal);
+        resumeState = result.state.toString();
+      }
       if (abortSignal.aborted) {
         publishCancelled();
         return;
@@ -646,6 +765,12 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
         exit_code: event.exitCode,
         duration_ms: event.durationMs,
         status: event.status,
+      });
+    case 'approval.requested':
+      return runtimeEvent(request, 'approval.requested', {
+        approval_id: event.approvalId,
+        tool_name: event.toolName,
+        reason: event.reason,
       });
   }
 }

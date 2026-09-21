@@ -48,10 +48,26 @@ export type TelegramMessage = {
   document?: TelegramFileRef;
 };
 
+export type TelegramInlineKeyboardButton = {
+  text: string;
+  callback_data?: string;
+};
+
+export type TelegramInlineKeyboardMarkup = {
+  inline_keyboard: TelegramInlineKeyboardButton[][];
+};
+
+export type TelegramCallbackQuery = {
+  id: string;
+  from: TelegramUser;
+  data?: string;
+  message?: TelegramMessage;
+};
+
 export type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
-  edited_message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 };
 
 export type TelegramBot = {
@@ -67,10 +83,20 @@ export type TelegramSentMessage = {
 export type TelegramApi = {
   getMe(): Promise<TelegramBot>;
   getUpdates(offset: number | undefined, timeoutSeconds: number): Promise<TelegramUpdate[]>;
-  sendMessage(chatId: number | string, text: string): Promise<TelegramSentMessage>;
+  sendMessage(
+    chatId: number | string,
+    text: string,
+    options?: { reply_markup?: TelegramInlineKeyboardMarkup },
+  ): Promise<TelegramSentMessage>;
   editMessageText(chatId: number | string, messageId: number, text: string): Promise<void>;
+  editMessageReplyMarkup?(
+    chatId: number | string,
+    messageId: number,
+    replyMarkup: TelegramInlineKeyboardMarkup,
+  ): Promise<void>;
+  answerCallbackQuery?(callbackQueryId: string, text?: string): Promise<void>;
   getFile(fileId: string): Promise<{ file_path: string; file_size?: number }>;
-  downloadFile(filePath: string, destination: string): Promise<void>;
+  downloadFile(filePath: string, destination: string, maxBytes?: number): Promise<void>;
   sendPhoto?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
   sendAudio?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
   sendVoice?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
@@ -88,4 +114,10 @@ export type TelegramRuntime = {
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent>;
   command(conversationId: string, command: 'new' | 'status' | 'stop'): Promise<RuntimeEvent>;
+  respondApproval(
+    conversationId: string,
+    approvalId: string,
+    approved: boolean,
+    comment?: string,
+  ): Promise<RuntimeEvent>;
 };

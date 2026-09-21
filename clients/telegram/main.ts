@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { TelegramAdapter } from './adapter.js';
@@ -21,6 +22,14 @@ function runtimeSocketPath(): string {
     : join(runtimeDirectory, 'atlas-runtime.sock');
 }
 
+function telegramStatePath(): string {
+  if (process.env.TELEGRAM_STATE_PATH?.trim()) {
+    return process.env.TELEGRAM_STATE_PATH;
+  }
+  const stateHome = process.env.XDG_STATE_HOME?.trim();
+  return join(stateHome || join(homedir(), '.local', 'state'), 'atlas', 'telegram-updates.json');
+}
+
 function isMainModule(): boolean {
   const entrypoint = process.argv[1];
   return entrypoint !== undefined && import.meta.url === pathToFileURL(resolve(entrypoint)).href;
@@ -39,6 +48,7 @@ async function main(): Promise<void> {
     allowedChats: listEnv('TELEGRAM_ALLOWED_CHATS'),
     allowAll: process.env.TELEGRAM_ALLOW_ALL_USERS === 'true',
     homeChatId: process.env.TELEGRAM_HOME_CHAT,
+    statePath: telegramStatePath(),
   });
   const stop = () => adapter.stop();
   process.once('SIGINT', stop);

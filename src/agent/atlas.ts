@@ -7,6 +7,8 @@ import {
   Agent,
   MemorySession,
   Runner,
+  RunState,
+  type RunToolApprovalItem,
   type AgentInputItem,
   type FunctionTool,
   type Model,
@@ -106,7 +108,16 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   atlasConfig?: AtlasConfig;
   // Desligar mantem apenas o caminho generico (list_tools/discover/describe/execute).
   coreTools?: boolean;
+  // Estado serializado usado para retomar uma execução interrompida por approval.
+  resumeState?: string;
+  approvalDecisions?: readonly AtlasApprovalDecision[];
   onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
+};
+
+export type AtlasApprovalDecision = {
+  approvalId: string;
+  approved: boolean;
+  comment?: string;
 };
 
 // Eventos publicos permitem observar a execucao sem expor tipos do Agent SDK.
@@ -171,6 +182,12 @@ export type AtlasRunEvent =
       exitCode: number;
       durationMs: number;
       status: string;
+    }
+  | {
+      type: 'approval.requested';
+      approvalId: string;
+      toolName: string;
+      reason: string;
     };
 
 // Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
@@ -563,6 +580,18 @@ function createAtlasAgent(
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
+}
+
+function approvalIdentifier(item: RunToolApprovalItem): string | undefined {
+  const rawItem = item.rawItem as unknown as Record<string, unknown>;
+  return stringValue(rawItem.callId) ?? stringValue(rawItem.id);
+}
+
+function approvalReason(item: RunToolApprovalItem, toolName: string): string {
+  const arguments_ = item.arguments;
+  return arguments_ === undefined
+    ? `A ferramenta ${toolName} solicitou aprovação.`
+    : `A ferramenta ${toolName} solicitou aprovação para executar esta chamada.`;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -1010,11 +1039,32 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const agentInput = inputWithAttachments(input, attachments);
   return withOpenCodeGoAbortSignal(abortSignal, () =>
     withOpenCodeGoSession(sessionId, async () => {
-      if (!onEvent) {
-        return runtime.runner.run(agent, agentInput, { session });
+      const resumeState =
+        options.resumeState === undefined
+          ? undefined
+          : await RunState.fromString(agent, options.resumeState);
+      for (const decision of options.approvalDecisions ?? []) {
+        const item = resumeState
+          ?.getInterruptions()
+          .find((interruption) => approvalIdentifier(interruption) === decision.approvalId);
+        if (item === undefined || resumeState === undefined) {
+          throw new Error(`Approval "${decision.approvalId}" was not found in the run state.`);
+        }
+        if (decision.approved) {
+          resumeState.approve(item);
+        } else {
+          resumeState.reject(item, {
+            ...(decision.comment === undefined ? {} : { message: decision.comment }),
+          });
+        }
       }
 
-      const streamedResult = await runtime.runner.run(agent, agentInput, {
+      const runInput = resumeState ?? agentInput;
+      if (!onEvent) {
+        return runtime.runner.run(agent, runInput, { session });
+      }
+
+      const streamedResult = await runtime.runner.run(agent, runInput, {
         session,
         stream: true,
       });
@@ -1034,6 +1084,19 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
       // O iterador pode terminar antes da finalizacao interna do Runner.
       await streamedResult.completed;
+      for (const interruption of streamedResult.interruptions) {
+        const approvalId = approvalIdentifier(interruption);
+        if (approvalId === undefined) {
+          continue;
+        }
+        const toolName = interruption.name ?? 'ferramenta';
+        await onEvent({
+          type: 'approval.requested',
+          approvalId,
+          toolName,
+          reason: approvalReason(interruption, toolName),
+        });
+      }
       return streamedResult;
     }),
   );

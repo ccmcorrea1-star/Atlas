@@ -68,10 +68,14 @@ export function groupIsTriggered(
       if (entity.type === 'text_mention') {
         return entity.user?.id === bot.id;
       }
-      if (entity.type !== 'mention' || message.text === undefined) {
+      if (entity.type !== 'mention') {
         return false;
       }
-      const value = message.text.slice(entity.offset, entity.offset + entity.length);
+      const source = message.text ?? message.caption;
+      if (source === undefined) {
+        return false;
+      }
+      const value = source.slice(entity.offset, entity.offset + entity.length);
       return value.toLowerCase() === `@${username}`;
     })
   );

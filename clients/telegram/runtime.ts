@@ -27,6 +27,10 @@ function isTerminalCommand(event: RuntimeEvent): boolean {
   return event.type === 'command.completed' || event.type === 'error';
 }
 
+function isTerminalApproval(event: RuntimeEvent): boolean {
+  return event.type === 'approval.resolved' || event.type === 'error';
+}
+
 export class UnixTelegramRuntime implements TelegramRuntime {
   public constructor(private readonly socketPath: string) {}
 
@@ -57,6 +61,28 @@ export class UnixTelegramRuntime implements TelegramRuntime {
         command,
       },
       isTerminalCommand,
+      () => undefined,
+    );
+  }
+
+  public respondApproval(
+    conversationId: string,
+    approvalId: string,
+    approved: boolean,
+    comment?: string,
+  ): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'approval.respond',
+        request_id: randomUUID(),
+        conversation_id: conversationId,
+        approval_id: approvalId,
+        approved,
+        ...(comment === undefined ? {} : { comment }),
+      },
+      isTerminalApproval,
       () => undefined,
     );
   }

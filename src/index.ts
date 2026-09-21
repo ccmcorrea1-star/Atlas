@@ -6,7 +6,7 @@ export {
   resetAtlasConversation,
   runAtlas,
 } from './agent/atlas.js';
-export type { AtlasRunEvent, AtlasRunOptions } from './agent/atlas.js';
+export type { AtlasApprovalDecision, AtlasRunEvent, AtlasRunOptions } from './agent/atlas.js';
 
 // O runtime de capabilities permanece independente do Agent SDK e pode ser substituido em testes.
 export { createCapabilityRuntime, NativeCapabilityRuntime } from './capabilities/runtime-client.js';

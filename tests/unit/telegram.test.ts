@@ -22,7 +22,10 @@ import type {
 
 class FakeApi implements TelegramApi {
   public readonly sent: Array<{ chatId: number | string; text: string }> = [];
+  public readonly sentOptions: Array<Record<string, unknown> | undefined> = [];
   public readonly edits: Array<{ chatId: number | string; messageId: number; text: string }> = [];
+  public readonly markupEdits: Array<{ chatId: number | string; messageId: number }> = [];
+  public readonly callbackAnswers: Array<{ id: string; text?: string }> = [];
   public readonly downloaded: string[] = [];
   public readonly sentAttachments: string[] = [];
   private nextMessageId = 100;
@@ -38,8 +41,13 @@ class FakeApi implements TelegramApi {
     return [];
   }
 
-  public async sendMessage(chatId: number | string, text: string): Promise<TelegramSentMessage> {
+  public async sendMessage(
+    chatId: number | string,
+    text: string,
+    options?: { reply_markup?: { inline_keyboard: Array<Array<Record<string, unknown>>> } },
+  ): Promise<TelegramSentMessage> {
     this.sent.push({ chatId, text });
+    this.sentOptions.push(options as Record<string, unknown> | undefined);
     return { message_id: this.nextMessageId++, chat: { id: chatId, type: 'private' } };
   }
 
@@ -59,6 +67,14 @@ class FakeApi implements TelegramApi {
     this.sentAttachments.push(`document:${filePath}`);
   }
 
+  public async editMessageReplyMarkup(chatId: number | string, messageId: number): Promise<void> {
+    this.markupEdits.push({ chatId, messageId });
+  }
+
+  public async answerCallbackQuery(id: string, text?: string): Promise<void> {
+    this.callbackAnswers.push({ id, ...(text === undefined ? {} : { text }) });
+  }
+
   public async getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
     return { file_path: `${fileId}.jpg`, file_size: 3 };
   }
@@ -74,6 +90,7 @@ class FakeRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
   private activeResolve: ((event: RuntimeEvent) => void) | undefined;
   private activeCallback: ((event: RuntimeEvent) => void) | undefined;
+  private approvalResolve: ((event: RuntimeEvent) => void) | undefined;
 
   public runTurn(
     request: {
@@ -106,6 +123,18 @@ class FakeRuntime implements TelegramRuntime {
         data: { message_id: 'm1', content: 'Olá' },
       };
       onEvent(completed);
+      if (request.input === 'approval') {
+        onEvent({
+          protocol: 'atlas-runtime',
+          version: 1,
+          type: 'approval.requested',
+          request_id: request.request_id,
+          conversation_id: request.conversation_id,
+          data: { approval_id: 'approval-1', tool_name: 'shell.exec', reason: 'Executar comando.' },
+        });
+        this.approvalResolve = resolve;
+        return;
+      }
       if (request.input !== 'wait') {
         resolve({
           ...completed,
@@ -164,6 +193,31 @@ class FakeRuntime implements TelegramRuntime {
       },
     };
   }
+
+  public async respondApproval(
+    conversationId: string,
+    approvalId: string,
+    approved: boolean,
+    comment?: string,
+  ): Promise<RuntimeEvent> {
+    this.approvalResolve?.({
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'turn.completed',
+      request_id: 'approval-turn',
+      conversation_id: conversationId,
+      data: { content: approved ? 'Aprovado' : 'Rejeitado' },
+    });
+    this.approvalResolve = undefined;
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'approval.resolved',
+      request_id: 'approval-response',
+      conversation_id: conversationId,
+      data: { approval_id: approvalId, approved, ...(comment === undefined ? {} : { comment }) },
+    };
+  }
 }
 
 function message(overrides: Partial<TelegramMessage> = {}): TelegramMessage {
@@ -198,6 +252,18 @@ test('derives commands from the Runtime registry and gates groups by mention or 
   assert.equal(
     groupIsTriggered(
       { ...group, text: '@atlas_bot oi', entities: [{ type: 'mention', offset: 0, length: 10 }] },
+      { id: 42, username: 'atlas_bot' },
+    ),
+    true,
+  );
+  assert.equal(
+    groupIsTriggered(
+      {
+        ...group,
+        text: undefined,
+        caption: '@atlas_bot foto',
+        caption_entities: [{ type: 'mention', offset: 0, length: 10 }],
+      },
       { id: 42, username: 'atlas_bot' },
     ),
     true,
@@ -256,4 +322,37 @@ test('routes status and stop while a turn is active', async () => {
   assert.ok(api.sent.some((entry) => entry.text.includes('Sessão ativa.')));
   assert.ok(api.sent.some((entry) => entry.text.includes('Turno cancelado.')));
   assert.ok(api.edits.some((edit) => edit.text === 'Olá'));
+});
+
+test('resolves approvals through Telegram callback buttons', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const active = adapter.handleUpdate({ update_id: 1, message: message({ text: 'approval' }) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const approvalMessage = api.sent.find((entry) => entry.text.includes('Aprovação necessária'));
+  assert.ok(approvalMessage);
+  const approvalOptions = api.sentOptions.find(
+    (options) => options?.reply_markup !== undefined,
+  ) as { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } };
+  const callbackData = approvalOptions.reply_markup.inline_keyboard[0]?.[0]?.callback_data;
+  assert.ok(callbackData);
+
+  await adapter.handleUpdate({
+    update_id: 2,
+    callback_query: {
+      id: 'callback-1',
+      from: { id: 7 },
+      data: callbackData,
+      message: {
+        message_id: 101,
+        chat: { id: 123, type: 'private' },
+      },
+    },
+  });
+  await active;
+
+  assert.deepEqual(api.callbackAnswers, [{ id: 'callback-1', text: 'Aprovado.' }]);
+  assert.deepEqual(api.markupEdits, [{ chatId: 123, messageId: 101 }]);
 });
