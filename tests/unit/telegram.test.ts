@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import {
@@ -474,6 +475,57 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
   assert.deepEqual(api.sentAttachments, ['document:/tmp/output.txt']);
 });
 
+test('rematerializes a pending Telegram attachment after Runtime recovery', async () => {
+  const statePath = join('/tmp', `atlas-telegram-attachment-${Date.now()}-${Math.random()}.json`);
+  const api = new FakeApi();
+  const update = {
+    update_id: 2,
+    message: message({
+      message_id: 2,
+      text: 'analise',
+      document: { file_id: 'document-1', file_name: 'arquivo.txt', mime_type: 'text/plain' },
+    }),
+  };
+  const failedRuntime = new ScriptedRuntime(async () => {
+    throw new Error('Runtime caiu antes do terminal');
+  });
+  try {
+    const firstAdapter = new TelegramAdapter({
+      api,
+      runtime: failedRuntime,
+      allowedUsers: [7],
+      statePath,
+      downloadDirectory: '/tmp/atlas-telegram-recovery',
+    });
+    await assert.rejects(firstAdapter.handleUpdate(update), /Runtime caiu/);
+
+    let recoveredPath: string | undefined;
+    const recoveredRuntime = new ScriptedRuntime(async (request, onEvent) => {
+      const attachment = request.attachments?.[0];
+      assert.ok(attachment);
+      recoveredPath = attachment.uri;
+      await stat(fileURLToPath(attachment.uri));
+      onEvent(runtimeEvent('message.completed', { message_id: 'm1', content: 'recuperado' }));
+      return runtimeEvent('turn.completed', { message_id: 'm1', content: 'recuperado' });
+    });
+    const secondAdapter = new TelegramAdapter({
+      api,
+      runtime: recoveredRuntime,
+      allowedUsers: [7],
+      statePath,
+      downloadDirectory: '/tmp/atlas-telegram-recovery',
+    });
+    await secondAdapter.handleUpdate({ ...update, update_id: 3 });
+
+    assert.ok(recoveredPath);
+    assert.ok(api.downloaded.filter((path) => path === 'document-1.jpg').length >= 2);
+    assert.doesNotMatch(await readFile(statePath, 'utf8'), /file:\/\/\/.*turn-/u);
+  } finally {
+    await rm(statePath, { force: true });
+    await rm('/tmp/atlas-telegram-recovery', { recursive: true, force: true });
+  }
+});
+
 test('keeps rapid out-of-order snapshots isolated by message_id', async () => {
   const api = new FakeApi();
   const runtime = new ScriptedRuntime(async (_request, onEvent) => {
@@ -793,6 +845,72 @@ test('resolves approvals through Telegram callback buttons', async () => {
 
   assert.deepEqual(api.callbackAnswers, [{ id: 'callback-1', text: 'Aprovado.' }]);
   assert.deepEqual(api.markupEdits, [{ chatId: 123, messageId: 101 }]);
+});
+
+test('does not restore resolved approval or input callbacks after a bot restart', async () => {
+  const statePath = join('/tmp', `atlas-telegram-pending-${Date.now()}-${Math.random()}.json`);
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  try {
+    const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7], statePath });
+    const approvalTurn = adapter.handleUpdate({
+      update_id: 40,
+      message: message({ message_id: 40, text: 'approval' }),
+    });
+    await waitFor(1_050);
+    const approvalOptions = api.sentOptions.find(
+      (options) => options?.reply_markup !== undefined,
+    ) as { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } };
+    const approvalCallback = approvalOptions.reply_markup.inline_keyboard[0]?.[0]?.callback_data;
+    assert.ok(approvalCallback);
+    await runtime.respondApproval('telegram:123:thread:root', 'approval-1', true);
+    await approvalTurn;
+
+    const restarted = new TelegramAdapter({ api, runtime, allowedUsers: [7], statePath });
+    await restarted.handleUpdate({
+      update_id: 41,
+      callback_query: {
+        id: 'stale-approval',
+        from: { id: 7 },
+        data: approvalCallback,
+        message: { message_id: 101, chat: { id: 123, type: 'private' } },
+      },
+    });
+    assert.deepEqual(api.callbackAnswers.at(-1), {
+      id: 'stale-approval',
+      text: 'Esta aprovação já expirou.',
+    });
+
+    const inputTurn = restarted.handleUpdate({
+      update_id: 42,
+      message: message({ message_id: 42, text: 'question' }),
+    });
+    await waitFor(1_050);
+    const inputOptions = api.sentOptions.find(
+      (options, index) => index > 1 && options?.reply_markup !== undefined,
+    ) as { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } };
+    const inputCallback = inputOptions.reply_markup.inline_keyboard[0]?.[0]?.callback_data;
+    assert.ok(inputCallback);
+    await runtime.respondInput('telegram:123:thread:root', 'question-1', 'sim');
+    await inputTurn;
+
+    const restartedAgain = new TelegramAdapter({ api, runtime, allowedUsers: [7], statePath });
+    await restartedAgain.handleUpdate({
+      update_id: 43,
+      callback_query: {
+        id: 'stale-input',
+        from: { id: 7 },
+        data: inputCallback,
+        message: { message_id: 102, chat: { id: 123, type: 'private' } },
+      },
+    });
+    assert.deepEqual(api.callbackAnswers.at(-1), {
+      id: 'stale-input',
+      text: 'Esta pergunta já expirou.',
+    });
+  } finally {
+    await rm(statePath, { force: true });
+  }
 });
 
 test('renders generic Runtime input choices and accepts a Telegram callback', async () => {

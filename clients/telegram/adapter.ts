@@ -63,6 +63,7 @@ type ActiveTurn = {
 
 type PendingTelegramApproval = {
   token: string;
+  requestId?: string;
   conversationId: string;
   approvalId: string;
   chat: TelegramChat;
@@ -72,6 +73,7 @@ type PendingTelegramApproval = {
 
 type PendingTelegramInput = {
   token: string;
+  requestId?: string;
   conversationId: string;
   inputId: string;
   chat: TelegramChat;
@@ -81,6 +83,14 @@ type PendingTelegramInput = {
 type MaterializedAttachments = {
   attachments: RuntimeAttachment[];
   directory?: string;
+};
+
+type TelegramAttachmentReference = {
+  type: RuntimeAttachment['type'];
+  fileId: string;
+  mediaType: string;
+  fileName?: string;
+  sizeBytes?: number;
 };
 
 type TelegramState = {
@@ -99,6 +109,7 @@ type TelegramTurnState = {
   chatId: number | string;
   threadId?: number;
   input: string;
+  attachment_refs?: TelegramAttachmentReference[];
   attachments?: RuntimeAttachment[];
   replyMessageId?: number;
   status: 'pending' | 'terminal';
@@ -333,7 +344,9 @@ export class TelegramAdapter {
       const materialized: MaterializedAttachments =
         existing?.replyMessageId === undefined
           ? await this.materializeAttachments(message)
-          : { attachments: existing.attachments ?? [] };
+          : existing.attachment_refs !== undefined
+            ? await this.materializeAttachmentReferences(existing.attachment_refs)
+            : { attachments: existing.attachments ?? [] };
       const attachments =
         materialized.attachments.length > 0
           ? materialized.attachments
@@ -391,7 +404,7 @@ export class TelegramAdapter {
         chatId: message.chat.id,
         ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
         input,
-        ...(attachments.length === 0 ? {} : { attachments }),
+        ...(attachments.length === 0 ? {} : { attachment_refs: attachmentReferences(attachments) }),
         status: 'pending',
       };
       this.turns.set(messageKey, turn);
@@ -479,7 +492,7 @@ export class TelegramAdapter {
       turn.status = 'terminal';
       await this.persistState();
     } finally {
-      this.clearPendingApprovals(conversationId);
+      await this.clearPendingApprovals(conversationId);
       if (this.activeTurns.get(conversationId) === active) {
         this.activeTurns.delete(conversationId);
       }
@@ -562,6 +575,7 @@ export class TelegramAdapter {
       return;
     }
     try {
+      let stateChanged = false;
       const parsed = JSON.parse(await readFile(this.statePath, 'utf8')) as Partial<TelegramState>;
       if (
         parsed.offset !== undefined &&
@@ -598,6 +612,15 @@ export class TelegramAdapter {
             typeof turn.conversationId === 'string' &&
             (turn.status === 'pending' || turn.status === 'terminal')
           ) {
+            const legacyAttachments = turn.attachments;
+            if (turn.attachment_refs === undefined && legacyAttachments !== undefined) {
+              const references = attachmentReferences(legacyAttachments);
+              if (references.length === legacyAttachments.length) {
+                turn.attachment_refs = references;
+              }
+              delete turn.attachments;
+              stateChanged = true;
+            }
             this.turns.set(turn.messageKey, turn);
           }
         }
@@ -607,7 +630,10 @@ export class TelegramAdapter {
           if (
             approval !== null &&
             typeof approval === 'object' &&
-            typeof approval.token === 'string'
+            typeof approval.token === 'string' &&
+            typeof approval.conversationId === 'string' &&
+            typeof approval.approvalId === 'string' &&
+            approval.chat !== undefined
           ) {
             this.pendingApprovals.set(approval.token, approval);
           }
@@ -615,10 +641,51 @@ export class TelegramAdapter {
       }
       if (Array.isArray(parsed.pending_inputs)) {
         for (const input of parsed.pending_inputs) {
-          if (input !== null && typeof input === 'object' && typeof input.token === 'string') {
+          if (
+            input !== null &&
+            typeof input === 'object' &&
+            typeof input.token === 'string' &&
+            typeof input.conversationId === 'string' &&
+            typeof input.inputId === 'string' &&
+            input.chat !== undefined
+          ) {
             this.pendingInputs.set(input.token, input);
           }
         }
+      }
+      const terminalRequests = new Set(
+        [...this.turns.values()]
+          .filter((turn) => turn.status === 'terminal')
+          .map((turn) => turn.requestId),
+      );
+      for (const [token, pending] of this.pendingApprovals) {
+        if (
+          (pending.requestId !== undefined && terminalRequests.has(pending.requestId)) ||
+          (pending.requestId === undefined &&
+            [...this.turns.values()].some(
+              (turn) =>
+                turn.status === 'terminal' && turn.conversationId === pending.conversationId,
+            ))
+        ) {
+          this.pendingApprovals.delete(token);
+          stateChanged = true;
+        }
+      }
+      for (const [token, pending] of this.pendingInputs) {
+        if (
+          (pending.requestId !== undefined && terminalRequests.has(pending.requestId)) ||
+          (pending.requestId === undefined &&
+            [...this.turns.values()].some(
+              (turn) =>
+                turn.status === 'terminal' && turn.conversationId === pending.conversationId,
+            ))
+        ) {
+          this.pendingInputs.delete(token);
+          stateChanged = true;
+        }
+      }
+      if (stateChanged) {
+        await this.persistState();
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -790,6 +857,7 @@ export class TelegramAdapter {
     const token = randomUUID();
     const pending: PendingTelegramApproval = {
       token,
+      ...(event.request_id === undefined ? {} : { requestId: event.request_id }),
       conversationId,
       approvalId,
       chat: message.chat,
@@ -812,6 +880,7 @@ export class TelegramAdapter {
       await this.persistState();
     } catch (error) {
       this.pendingApprovals.delete(token);
+      await this.persistState();
       throw error;
     }
   }
@@ -826,33 +895,46 @@ export class TelegramAdapter {
     if (!inputId || !prompt) {
       return;
     }
+    const existing = [...this.pendingInputs.values()].find(
+      (pending) => pending.conversationId === conversationId && pending.inputId === inputId,
+    );
+    if (existing !== undefined) {
+      return;
+    }
     const choices = Array.isArray(event.data.choices)
       ? event.data.choices.filter((choice): choice is string => typeof choice === 'string')
       : [];
     const token = randomUUID();
     this.pendingInputs.set(token, {
       token,
+      ...(event.request_id === undefined ? {} : { requestId: event.request_id }),
       conversationId,
       inputId,
       chat: message.chat,
       userId: message.from?.id,
     });
-    await this.sendMessage(message.chat.id, prompt, {
-      ...replyOptions(message),
-      ...(choices.length === 0
-        ? {}
-        : {
-            reply_markup: {
-              inline_keyboard: choices.map((choice) => [
-                {
-                  text: choice,
-                  callback_data: `${INPUT_CALLBACK_PREFIX}${token}:${encodeURIComponent(choice)}`,
-                },
-              ]),
-            },
-          }),
-    });
-    await this.persistState();
+    try {
+      await this.sendMessage(message.chat.id, prompt, {
+        ...replyOptions(message),
+        ...(choices.length === 0
+          ? {}
+          : {
+              reply_markup: {
+                inline_keyboard: choices.map((choice) => [
+                  {
+                    text: choice,
+                    callback_data: `${INPUT_CALLBACK_PREFIX}${token}:${encodeURIComponent(choice)}`,
+                  },
+                ]),
+              },
+            }),
+      });
+      await this.persistState();
+    } catch (error) {
+      this.pendingInputs.delete(token);
+      await this.persistState();
+      throw error;
+    }
   }
 
   private async answerCallback(callbackQueryId: string, text: string): Promise<void> {
@@ -861,16 +943,22 @@ export class TelegramAdapter {
     }
   }
 
-  private clearPendingApprovals(conversationId: string): void {
+  private async clearPendingApprovals(conversationId: string): Promise<void> {
+    let removed = false;
     for (const [token, pending] of this.pendingApprovals) {
       if (pending.conversationId === conversationId) {
         this.pendingApprovals.delete(token);
+        removed = true;
       }
     }
     for (const [token, pending] of this.pendingInputs) {
       if (pending.conversationId === conversationId) {
         this.pendingInputs.delete(token);
+        removed = true;
       }
+    }
+    if (removed) {
+      await this.persistState();
     }
   }
 
@@ -1076,6 +1164,62 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+
+  private async materializeAttachmentReferences(
+    references: TelegramAttachmentReference[],
+  ): Promise<MaterializedAttachments> {
+    if (references.length === 0) {
+      return { attachments: [] };
+    }
+    const directory = await mkdtemp(join(this.downloadDirectory, 'turn-'));
+    const attachments: RuntimeAttachment[] = [];
+    try {
+      for (const [index, reference] of references.entries()) {
+        const file = await this.api.getFile(reference.fileId);
+        const size = file.file_size ?? reference.sizeBytes;
+        if (size !== undefined && size > MAX_TELEGRAM_ATTACHMENT_BYTES) {
+          throw new Error(
+            `Telegram attachment exceeds the ${MAX_TELEGRAM_ATTACHMENT_BYTES}-byte limit.`,
+          );
+        }
+        const name =
+          reference.fileName?.trim() || basename(file.file_path) || `${reference.fileId}.bin`;
+        const safeName = `${index}-${name.replace(/[^a-zA-Z0-9._-]/gu, '_')}`;
+        const destination = join(directory, safeName);
+        await this.api.downloadFile(file.file_path, destination, MAX_TELEGRAM_ATTACHMENT_BYTES);
+        attachments.push({
+          type: reference.type,
+          uri: pathToFileURL(destination).href,
+          media_type: reference.mediaType,
+          file_name: name,
+          ...(size === undefined ? {} : { size_bytes: size }),
+          source: { platform: 'telegram', file_id: reference.fileId },
+        });
+      }
+    } catch (error) {
+      await this.removeMaterializedDirectory(directory);
+      throw error;
+    }
+    return { attachments, directory };
+  }
+}
+
+function attachmentReferences(attachments: RuntimeAttachment[]): TelegramAttachmentReference[] {
+  return attachments.flatMap((attachment) => {
+    const fileId =
+      attachment.source?.platform === 'telegram' ? attachment.source.file_id : undefined;
+    return fileId === undefined
+      ? []
+      : [
+          {
+            type: attachment.type,
+            fileId,
+            mediaType: attachment.media_type,
+            ...(attachment.file_name === undefined ? {} : { fileName: attachment.file_name }),
+            ...(attachment.size_bytes === undefined ? {} : { sizeBytes: attachment.size_bytes }),
+          },
+        ];
+  });
 }
 
 function stringField(value: unknown): string {
