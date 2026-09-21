@@ -47,6 +47,7 @@ export class UnixTelegramRuntime implements TelegramRuntime {
       },
       isTerminalTurn,
       onEvent,
+      false,
     );
   }
 
@@ -62,6 +63,7 @@ export class UnixTelegramRuntime implements TelegramRuntime {
       },
       isTerminalCommand,
       () => undefined,
+      true,
     );
   }
 
@@ -84,6 +86,7 @@ export class UnixTelegramRuntime implements TelegramRuntime {
       },
       isTerminalApproval,
       () => undefined,
+      true,
     );
   }
 
@@ -91,19 +94,21 @@ export class UnixTelegramRuntime implements TelegramRuntime {
     payload: Record<string, unknown>,
     isTerminal: (event: RuntimeEvent) => boolean,
     onEvent: (event: RuntimeEvent) => void,
+    retryAfterSend: boolean,
   ): Promise<RuntimeEvent> {
-    return this.exchangeWithRetry(payload, isTerminal, onEvent);
+    return this.exchangeWithRetry(payload, isTerminal, onEvent, retryAfterSend);
   }
 
   private async exchangeWithRetry(
     payload: Record<string, unknown>,
     isTerminal: (event: RuntimeEvent) => boolean,
     onEvent: (event: RuntimeEvent) => void,
+    retryAfterSend: boolean,
   ): Promise<RuntimeEvent> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        return await this.exchangeOnce(payload, isTerminal, onEvent);
+        return await this.exchangeOnce(payload, isTerminal, onEvent, retryAfterSend);
       } catch (error) {
         lastError = error;
         if (!isTransientRuntimeError(error) || attempt === 7) {
@@ -119,11 +124,13 @@ export class UnixTelegramRuntime implements TelegramRuntime {
     payload: Record<string, unknown>,
     isTerminal: (event: RuntimeEvent) => boolean,
     onEvent: (event: RuntimeEvent) => void,
+    retryAfterSend: boolean,
   ): Promise<RuntimeEvent> {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       let buffer = '';
       let settled = false;
+      let sent = false;
 
       const finish = (callback: () => void) => {
         if (settled) {
@@ -134,11 +141,17 @@ export class UnixTelegramRuntime implements TelegramRuntime {
         callback();
       };
 
-      const fail = (error: Error) => finish(() => reject(error));
+      const fail = (error: Error) =>
+        finish(() =>
+          reject(sent && !retryAfterSend ? new RuntimeRequestSentError(error.message) : error),
+        );
       socket.once('error', fail);
       socket.once('close', () => {
         if (!settled) {
-          finish(() => reject(new Error('Atlas Runtime socket closed before a terminal event.')));
+          const error = new Error('Atlas Runtime socket closed before a terminal event.');
+          finish(() =>
+            reject(sent && !retryAfterSend ? new RuntimeRequestSentError(error.message) : error),
+          );
         }
       });
       socket.setEncoding('utf8');
@@ -171,14 +184,35 @@ export class UnixTelegramRuntime implements TelegramRuntime {
         }
       });
       socket.once('connect', () => {
-        socket.write(`${JSON.stringify(payload)}\n`);
+        try {
+          socket.write(`${JSON.stringify(payload)}\n`, (error?: Error | null) => {
+            if (error != null) {
+              fail(error);
+              return;
+            }
+            // Retry permanece seguro antes da confirmação da escrita.
+            sent = true;
+          });
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        }
       });
     });
   }
 }
 
+class RuntimeRequestSentError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'RuntimeRequestSentError';
+  }
+}
+
 function isTransientRuntimeError(error: unknown): boolean {
   if (!(error instanceof Error)) {
+    return false;
+  }
+  if (error instanceof RuntimeRequestSentError) {
     return false;
   }
   return (

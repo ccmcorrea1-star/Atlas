@@ -175,3 +175,51 @@ test('cliente Telegram reconecta após a troca do Runtime e reutiliza a requisi�
     await rm(socketPath, { force: true });
   }
 });
+
+test('não duplica um turn.request aceito antes da queda do socket', async () => {
+  const socketPath = join(tmpdir(), `atlas-client-accepted-${randomUUID()}.sock`);
+  const requests: WireMessage[] = [];
+  let connections = 0;
+  const server = createServer((socket) => {
+    connections += 1;
+    let buffer = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) {
+        return;
+      }
+      requests.push(JSON.parse(buffer.slice(0, newline)) as WireMessage);
+      setTimeout(() => socket.destroy(), 10);
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const runtime = new UnixTelegramRuntime(socketPath);
+    await assert.rejects(
+      runtime.runTurn(
+        {
+          request_id: 'accepted-request',
+          conversation_id: 'accepted-conversation',
+          input: 'continue',
+        },
+        () => undefined,
+      ),
+      /socket closed before a terminal event/,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(connections, 1);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.request_id, 'accepted-request');
+  } finally {
+    await new Promise<void>((resolveClose, rejectClose) => {
+      server.close((error) => (error ? rejectClose(error) : resolveClose()));
+    });
+    await rm(socketPath, { force: true });
+  }
+});

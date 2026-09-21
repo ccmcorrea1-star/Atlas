@@ -220,6 +220,99 @@ class FakeRuntime implements TelegramRuntime {
   }
 }
 
+class ScriptedRuntime implements TelegramRuntime {
+  public readonly requests: Array<Record<string, unknown>> = [];
+
+  public constructor(
+    private readonly script: (
+      request: {
+        request_id: string;
+        conversation_id: string;
+        input: string;
+        attachments?: RuntimeAttachment[];
+      },
+      onEvent: (event: RuntimeEvent) => void,
+    ) => Promise<RuntimeEvent>,
+  ) {}
+
+  public runTurn(
+    request: {
+      request_id: string;
+      conversation_id: string;
+      input: string;
+      attachments?: RuntimeAttachment[];
+    },
+    onEvent: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent> {
+    this.requests.push(request);
+    return this.script(request, onEvent);
+  }
+
+  public async command(): Promise<RuntimeEvent> {
+    throw new Error('ScriptedRuntime does not implement commands.');
+  }
+
+  public async respondApproval(): Promise<RuntimeEvent> {
+    throw new Error('ScriptedRuntime does not implement approvals.');
+  }
+}
+
+class DelayedEditApi extends FakeApi {
+  public readonly firstEditStarted: Promise<void>;
+  private readonly releaseFirstEdit: Promise<void>;
+  private resolveFirstEditStarted: (() => void) | undefined;
+  private resolveReleaseFirstEdit: (() => void) | undefined;
+  private editCount = 0;
+
+  public constructor() {
+    super();
+    this.firstEditStarted = new Promise((resolve) => {
+      this.resolveFirstEditStarted = resolve;
+    });
+    this.releaseFirstEdit = new Promise((resolve) => {
+      this.resolveReleaseFirstEdit = resolve;
+    });
+  }
+
+  public release(): void {
+    this.resolveReleaseFirstEdit?.();
+  }
+
+  public override async editMessageText(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+  ): Promise<void> {
+    this.editCount += 1;
+    if (this.editCount === 1) {
+      this.resolveFirstEditStarted?.();
+      await this.releaseFirstEdit;
+    }
+    await super.editMessageText(chatId, messageId, text);
+  }
+}
+
+function runtimeEvent(type: RuntimeEvent['type'], data: Record<string, unknown>): RuntimeEvent {
+  return {
+    protocol: 'atlas-runtime',
+    version: 1,
+    type,
+    data,
+  };
+}
+
+function lastEdits(api: FakeApi): Map<number, string> {
+  const result = new Map<number, string>();
+  for (const edit of api.edits) {
+    result.set(edit.messageId, edit.text);
+  }
+  return result;
+}
+
+async function waitFor(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function message(overrides: Partial<TelegramMessage> = {}): TelegramMessage {
   return {
     message_id: 1,
@@ -304,6 +397,88 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
     'telegram',
   );
   assert.deepEqual(api.sentAttachments, ['document:/tmp/output.txt']);
+});
+
+test('keeps rapid out-of-order snapshots isolated by message_id', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'um' }));
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: ' dois' }));
+    onEvent(runtimeEvent('message.delta', { message_id: 'm2', delta: 'outro' }));
+    onEvent(runtimeEvent('message.completed', { message_id: 'm1', content: 'um dois' }));
+    onEvent(runtimeEvent('message.delta', { message_id: 'm2', delta: ' texto' }));
+    onEvent(runtimeEvent('message.completed', { message_id: 'm2', content: 'outro texto' }));
+    return runtimeEvent('turn.completed', {
+      message_id: 'm2',
+      content: 'outro texto',
+    });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 10, message: message({ text: 'duas mensagens' }) });
+
+  const edits = lastEdits(api);
+  assert.equal(edits.get(100), 'um dois');
+  assert.equal(edits.get(101), 'outro texto');
+  assert.equal(edits.size, 2);
+});
+
+test('does not regress a message when completion arrives after deltas', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'resposta ' }));
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'completa' }));
+    onEvent(runtimeEvent('message.completed', { message_id: 'm1', content: 'resposta' }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'resposta' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 11, message: message({ text: 'completo' }) });
+
+  assert.equal(lastEdits(api).get(100), 'resposta completa');
+});
+
+for (const [name, length, expectedChunks] of [
+  ['4096', 4097, 2],
+  ['8192', 8193, 3],
+] as const) {
+  test(`streams responses larger than ${name} characters without truncation`, async () => {
+    const api = new FakeApi();
+    const content = 'x'.repeat(length);
+    const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+      onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: content }));
+      return runtimeEvent('turn.completed', { message_id: 'm1', content });
+    });
+    const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+    await adapter.handleUpdate({ update_id: length, message: message({ text: `long ${name}` }) });
+
+    const edits = lastEdits(api);
+    assert.equal(edits.size, expectedChunks);
+    assert.equal([...edits.values()].join(''), content);
+    assert.ok([...edits.values()].every((chunk) => Array.from(chunk).length <= 4096));
+  });
+}
+
+test('renders the newest snapshot after a delayed edit', async () => {
+  const api = new DelayedEditApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'antigo' }));
+    await waitFor(1_050);
+    await api.firstEditStarted;
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: ' e novo' }));
+    api.release();
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'antigo e novo' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 12, message: message({ text: 'atualize' }) });
+
+  const messageEdits = api.edits.filter((edit) => edit.messageId === 100);
+  assert.deepEqual(
+    messageEdits.map((edit) => edit.text),
+    ['antigo', 'antigo e novo'],
+  );
 });
 
 test('routes status and stop while a turn is active', async () => {

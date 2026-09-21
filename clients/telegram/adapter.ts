@@ -31,7 +31,7 @@ import type {
 
 const MAX_TELEGRAM_TEXT_LENGTH = 4096;
 const MAX_TELEGRAM_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const STREAM_EDIT_INTERVAL_MS = 250;
+const STREAM_EDIT_INTERVAL_MS = 1_000;
 const APPROVAL_CALLBACK_PREFIX = 'atlas:approval:';
 
 export type TelegramAdapterOptions = {
@@ -53,12 +53,18 @@ type ActiveTurn = {
   conversationId: string;
   chatId: number | string;
   replyMessageId: number;
+  messages: Map<string, TelegramMessageState>;
+  closed: boolean;
+};
+
+type TelegramMessageState = {
   content: string;
+  telegramMessageIds: number[];
   editChain: Promise<void>;
-  pendingEdit?: string;
   editTimer?: ReturnType<typeof setTimeout>;
   lastEditAt: number;
-  closed: boolean;
+  version: number;
+  completed: boolean;
 };
 
 type PendingTelegramApproval = {
@@ -225,20 +231,30 @@ export class TelegramAdapter {
       conversationId,
       chatId: message.chat.id,
       replyMessageId: reply.message_id,
-      content: '',
-      editChain: Promise.resolve(),
-      lastEditAt: Date.now(),
+      messages: new Map(),
       closed: false,
     };
     this.activeTurns.set(conversationId, active);
 
     const onEvent = async (event: RuntimeEvent) => {
+      if (active.closed) {
+        return;
+      }
       if (event.type === 'message.delta') {
-        active.content += stringField(event.data.delta);
-        this.scheduleStreamEdit(active);
+        const state = this.messageState(active, stringField(event.data.message_id));
+        if (state.completed) {
+          return;
+        }
+        state.content += stringField(event.data.delta);
+        this.scheduleStreamEdit(state, active.chatId);
       } else if (event.type === 'message.completed') {
-        active.content = stringField(event.data.content);
-        this.scheduleStreamEdit(active);
+        const state = this.messageState(active, stringField(event.data.message_id));
+        const content = stringField(event.data.content);
+        if (content.length >= state.content.length) {
+          state.content = content;
+        }
+        state.completed = true;
+        this.scheduleStreamEdit(state, active.chatId);
       } else if (event.type === 'approval.requested') {
         void this.sendApprovalRequest(message, conversationId, event).catch((error: unknown) => {
           console.error(
@@ -269,51 +285,85 @@ export class TelegramAdapter {
 
   private async finishTurn(active: ActiveTurn, terminal: RuntimeEvent): Promise<void> {
     active.closed = true;
-    if (active.editTimer !== undefined) {
-      clearTimeout(active.editTimer);
-      active.editTimer = undefined;
-    }
     if (terminal.type === 'turn.completed' || terminal.type === 'turn.cancelled') {
       const data = terminal.data as unknown as RuntimeTurnCompletedData;
-      active.content = data.content || active.content;
-      const chunks = splitTelegramText(active.content || 'Concluído sem conteúdo.');
-      await this.flushStreamEdit(active, chunks[0] ?? 'Concluído sem conteúdo.');
-      for (const chunk of chunks.slice(1)) {
-        await this.sendText(active.chatId, chunk);
+      const content = stringField(data.content);
+      const messageId = stringField(data.message_id);
+      if (messageId || active.messages.size === 0) {
+        const state = this.messageState(active, messageId || `turn:${active.requestId}`);
+        if (content.length >= state.content.length) {
+          state.content = content;
+        }
+      }
+      for (const state of active.messages.values()) {
+        await this.flushStreamEdit(state, active.chatId);
       }
       await this.deliverAttachments(active.chatId, data.attachments);
       return;
     }
-    await this.flushStreamEdit(active, eventMessage(terminal));
+    const state = this.messageState(active, `turn:${active.requestId}`);
+    state.content = eventMessage(terminal);
+    await this.flushStreamEdit(state, active.chatId);
   }
 
-  private scheduleStreamEdit(active: ActiveTurn): void {
-    if (active.closed) {
+  private messageState(active: ActiveTurn, messageId: string): TelegramMessageState {
+    const key = messageId || `turn:${active.requestId}`;
+    let state = active.messages.get(key);
+    if (state === undefined) {
+      state = {
+        content: '',
+        telegramMessageIds: active.messages.size === 0 ? [active.replyMessageId] : [],
+        editChain: Promise.resolve(),
+        lastEditAt: Date.now(),
+        version: 0,
+        completed: false,
+      };
+      active.messages.set(key, state);
+    }
+    return state;
+  }
+
+  private scheduleStreamEdit(state: TelegramMessageState, chatId: number | string): void {
+    state.version += 1;
+    if (state.editTimer !== undefined) {
       return;
     }
-    active.pendingEdit = telegramPreview(active.content || '⏳');
-    if (active.editTimer !== undefined) {
-      return;
-    }
-    const delay = Math.max(0, STREAM_EDIT_INTERVAL_MS - (Date.now() - active.lastEditAt));
-    active.editTimer = setTimeout(() => {
-      active.editTimer = undefined;
-      const content = active.pendingEdit;
-      active.pendingEdit = undefined;
-      if (content !== undefined) {
-        this.queueEdit(active, content);
-      }
-      if (active.pendingEdit !== undefined) {
-        this.scheduleStreamEdit(active);
-      }
+    const delay = Math.max(0, STREAM_EDIT_INTERVAL_MS - (Date.now() - state.lastEditAt));
+    state.editTimer = setTimeout(() => {
+      state.editTimer = undefined;
+      this.queueRender(state, chatId);
     }, delay);
   }
 
-  private queueEdit(active: ActiveTurn, content: string): void {
-    active.editChain = active.editChain
+  private queueRender(state: TelegramMessageState, chatId: number | string): void {
+    const version = state.version;
+    const content = state.content || '⏳';
+    state.editChain = state.editChain
       .then(async () => {
-        await this.api.editMessageText(active.chatId, active.replyMessageId, content);
-        active.lastEditAt = Date.now();
+        if (state.version !== version) {
+          return;
+        }
+        const chunks = splitTelegramText(content);
+        while (state.telegramMessageIds.length < chunks.length) {
+          if (state.version !== version) {
+            return;
+          }
+          const message = await this.api.sendMessage(
+            chatId,
+            chunks[state.telegramMessageIds.length] ?? ' ',
+          );
+          state.telegramMessageIds.push(message.message_id);
+        }
+        for (const [index, messageId] of state.telegramMessageIds.entries()) {
+          if (state.version !== version) {
+            return;
+          }
+          const chunk = chunks[index];
+          if (chunk !== undefined) {
+            await this.api.editMessageText(chatId, messageId, chunk);
+          }
+        }
+        state.lastEditAt = Date.now();
       })
       .catch((error: unknown) => {
         console.error(
@@ -322,10 +372,17 @@ export class TelegramAdapter {
       });
   }
 
-  private async flushStreamEdit(active: ActiveTurn, content: string): Promise<void> {
-    active.pendingEdit = undefined;
-    this.queueEdit(active, telegramPreview(content));
-    await active.editChain;
+  private async flushStreamEdit(
+    state: TelegramMessageState,
+    chatId: number | string,
+  ): Promise<void> {
+    if (state.editTimer !== undefined) {
+      clearTimeout(state.editTimer);
+      state.editTimer = undefined;
+    }
+    state.version += 1;
+    this.queueRender(state, chatId);
+    await state.editChain;
   }
 
   private enqueueConversation(conversationId: string, task: () => Promise<void>): Promise<void> {
@@ -620,10 +677,6 @@ function splitTelegramText(text: string): string[] {
     chunks.push(characters.slice(index, index + MAX_TELEGRAM_TEXT_LENGTH).join(''));
   }
   return chunks;
-}
-
-function telegramPreview(text: string): string {
-  return splitTelegramText(text)[0] ?? '⏳';
 }
 
 function parseApprovalCallback(
