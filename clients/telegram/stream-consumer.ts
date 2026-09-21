@@ -1,8 +1,8 @@
 import type { RuntimeEvent } from '../../src/runtime/protocol.js';
 import { TelegramChatBudget } from './budget.js';
-import type { TelegramApi } from './types.js';
+import { splitTelegramText, truncateTelegramText } from './text.js';
+import type { TelegramApi, TelegramSendOptions, TelegramSentMessage } from './types.js';
 
-const MAX_TELEGRAM_TEXT_LENGTH = 4096;
 const INITIAL_EDIT_INTERVAL_MS = 1_000;
 const MAX_EDIT_INTERVAL_MS = 30_000;
 
@@ -18,6 +18,22 @@ type StreamState = {
   pendingEdit: boolean;
   editTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
+  status?: string;
+};
+
+export type TelegramDeliveryLedger = {
+  content?: string;
+  chunks?: string[];
+  confirmedChunks: number;
+  previewMessageId?: number;
+};
+
+export type TelegramStreamConsumerOptions = {
+  sendOptions?: TelegramSendOptions;
+  sendMessage?: (text: string, options?: TelegramSendOptions) => Promise<TelegramSentMessage>;
+  editMessage?: (messageId: number, text: string) => Promise<void>;
+  delivery?: TelegramDeliveryLedger;
+  onDelivery?: (ledger: TelegramDeliveryLedger) => Promise<void>;
 };
 
 type StreamItem =
@@ -36,8 +52,19 @@ export class TelegramStreamConsumer {
     private readonly budget: TelegramChatBudget,
     private readonly chatId: number | string,
     replyMessageId: number,
+    private readonly options: TelegramStreamConsumerOptions = {},
   ) {
     this.states.set('turn', this.newState(replyMessageId, '⏳'));
+  }
+
+  public pushStatus(status: string): void {
+    const state = this.states.get('turn');
+    if (state === undefined || state.closed || state.completed) {
+      return;
+    }
+    state.status = status;
+    state.pendingEdit = true;
+    this.scheduleEdit(state);
   }
 
   public pushDelta(messageId: string, delta: string): void {
@@ -105,7 +132,7 @@ export class TelegramStreamConsumer {
     if (state.closed) {
       return;
     }
-    state.content = mergeContent(state.content, content);
+    state.content = content;
     state.completed = true;
     state.pendingEdit = true;
     this.scheduleEdit(state);
@@ -166,19 +193,31 @@ export class TelegramStreamConsumer {
       return;
     }
     state.pendingEdit = false;
-    const visible = previewText(state.content);
+    const visible = state.content ? truncateTelegramText(state.content) : state.status || '⏳';
     if (!visible || visible === state.lastSentText) {
       return;
     }
     const operation =
-      state.previewMessageId === undefined
-        ? this.budget.tryEnqueue(this.chatId, async () => {
-            const sent = await this.api.sendMessage(this.chatId, visible);
-            state.previewMessageId = sent.message_id;
-          })
-        : this.budget.tryEnqueue(this.chatId, () =>
-            this.api.editMessageText(this.chatId, state.previewMessageId as number, visible),
-          );
+      this.options.sendMessage !== undefined
+        ? state.previewMessageId === undefined
+          ? this.sendMessage(visible, {
+              ...this.options.sendOptions,
+              disable_notification: true,
+            }).then((sent) => {
+              state.previewMessageId = sent.message_id;
+            })
+          : this.editMessage(state.previewMessageId as number, visible)
+        : state.previewMessageId === undefined
+          ? this.budget.tryEnqueue(this.chatId, async () => {
+              const sent = await this.sendMessage(visible, {
+                ...this.options.sendOptions,
+                disable_notification: true,
+              });
+              state.previewMessageId = sent.message_id;
+            })
+          : this.budget.tryEnqueue(this.chatId, () =>
+              this.editMessage(state.previewMessageId as number, visible),
+            );
     if (operation === undefined) {
       state.pendingEdit = true;
       this.scheduleEdit(state, Math.max(INITIAL_EDIT_INTERVAL_MS, state.editIntervalMs) + 25);
@@ -208,12 +247,8 @@ export class TelegramStreamConsumer {
       : this.states.size === 1
         ? (this.states.values().next().value as StreamState)
         : this.state('turn');
-    const terminalContent = stringField(data.content) || eventMessage(data);
-    if (terminal.type === 'turn.completed' || terminal.type === 'turn.cancelled') {
-      state.content = mergeContent(state.content, terminalContent);
-    } else if (terminalContent) {
-      state.content = terminalContent;
-    }
+    const terminalContent = typeof data.content === 'string' ? data.content : eventMessage(data);
+    state.content = terminalContent;
 
     for (const current of this.states.values()) {
       if (current.editTimer !== undefined) {
@@ -232,35 +267,71 @@ export class TelegramStreamConsumer {
       return;
     }
     const chunks = splitTelegramText(state.content || ' ');
+    const delivery = this.states.size === 1 ? this.options.delivery : undefined;
+    if (delivery !== undefined && delivery.content !== state.content) {
+      delivery.content = state.content;
+      delivery.chunks = chunks;
+      delivery.confirmedChunks = 0;
+    }
+    const confirmedChunks = delivery?.confirmedChunks ?? 0;
+    if (delivery?.previewMessageId !== undefined) {
+      state.previewMessageId = delivery.previewMessageId;
+    }
     const first = chunks[0] ?? ' ';
     if (state.previewMessageId !== undefined) {
-      if (state.lastSentText !== first) {
-        await this.finalOperation(
-          () => this.api.editMessageText(this.chatId, state.previewMessageId as number, first),
-          state,
-        );
+      if (confirmedChunks < 1) {
+        if (state.lastSentText !== first) {
+          await this.finalOperation(
+            () => this.editMessage(state.previewMessageId as number, first),
+            state,
+          );
+        }
         state.lastSentText = first;
+        await this.confirmDelivery(delivery, chunks, 1, state.previewMessageId);
       }
-      for (const chunk of chunks.slice(1)) {
+      for (let index = Math.max(1, confirmedChunks); index < chunks.length; index += 1) {
+        const chunk = chunks[index] as string;
         await this.finalOperation(async () => {
-          await this.api.sendMessage(this.chatId, chunk);
+          await this.sendMessage(chunk, this.options.sendOptions);
         }, state);
+        await this.confirmDelivery(delivery, chunks, index + 1, state.previewMessageId);
       }
       return;
     }
-    for (const chunk of chunks) {
+    for (let index = confirmedChunks; index < chunks.length; index += 1) {
+      const chunk = chunks[index] as string;
       await this.finalOperation(async () => {
-        const sent = await this.api.sendMessage(this.chatId, chunk);
+        const sent = await this.sendMessage(chunk, this.options.sendOptions);
         state.previewMessageId = sent.message_id;
       }, state);
       state.lastSentText = chunk;
+      await this.confirmDelivery(delivery, chunks, index + 1, state.previewMessageId);
     }
+  }
+
+  private async confirmDelivery(
+    delivery: TelegramDeliveryLedger | undefined,
+    chunks: string[],
+    confirmedChunks: number,
+    previewMessageId: number | undefined,
+  ): Promise<void> {
+    if (delivery === undefined) {
+      return;
+    }
+    delivery.chunks = chunks;
+    delivery.confirmedChunks = confirmedChunks;
+    if (previewMessageId !== undefined) {
+      delivery.previewMessageId = previewMessageId;
+    }
+    await this.options.onDelivery?.(delivery);
   }
 
   private async finalOperation<T>(operation: () => Promise<T>, state: StreamState): Promise<T> {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        return await this.budget.enqueue(this.chatId, operation);
+        return await (this.options.sendMessage === undefined
+          ? this.budget.enqueue(this.chatId, operation)
+          : operation());
       } catch (error) {
         const retryAfterMs = retryAfterMilliseconds(error);
         if (!isFloodError(error) && retryAfterMs === 0) {
@@ -272,6 +343,19 @@ export class TelegramStreamConsumer {
       }
     }
     throw new Error('Telegram final delivery exhausted its retries.');
+  }
+
+  private sendMessage(text: string, options?: TelegramSendOptions): Promise<TelegramSentMessage> {
+    return (
+      this.options.sendMessage?.(text, options) ?? this.api.sendMessage(this.chatId, text, options)
+    );
+  }
+
+  private editMessage(messageId: number, text: string): Promise<void> {
+    return (
+      this.options.editMessage?.(messageId, text) ??
+      this.api.editMessageText(this.chatId, messageId, text)
+    );
   }
 
   private recordFailure(state: StreamState, error: unknown): void {
@@ -289,31 +373,8 @@ export class TelegramStreamConsumer {
   }
 }
 
-function previewText(content: string): string {
-  return Array.from(content).slice(0, MAX_TELEGRAM_TEXT_LENGTH).join('');
-}
-
-function splitTelegramText(text: string): string[] {
-  const characters = Array.from(text);
-  if (characters.length === 0) {
-    return [' '];
-  }
-  const chunks: string[] = [];
-  for (let index = 0; index < characters.length; index += MAX_TELEGRAM_TEXT_LENGTH) {
-    chunks.push(characters.slice(index, index + MAX_TELEGRAM_TEXT_LENGTH).join(''));
-  }
-  return chunks;
-}
-
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-function mergeContent(current: string, snapshot: string): string {
-  if (!current || snapshot.startsWith(current)) {
-    return snapshot;
-  }
-  return current;
 }
 
 function eventMessage(data: Record<string, unknown>): string {

@@ -50,7 +50,15 @@ async function main(): Promise<void> {
     homeChatId: process.env.TELEGRAM_HOME_CHAT,
     statePath: telegramStatePath(),
   });
-  const stop = () => adapter.stop();
+  const stop = () => {
+    void adapter.stop().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      },
+    );
+  };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   await adapter.start();

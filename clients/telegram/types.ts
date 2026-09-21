@@ -80,15 +80,39 @@ export type TelegramSentMessage = {
   chat: TelegramChat;
 };
 
+export type TelegramSendOptions = {
+  reply_markup?: TelegramInlineKeyboardMarkup;
+  message_thread_id?: number;
+  reply_to_message_id?: number;
+  disable_notification?: boolean;
+  parse_mode?: 'MarkdownV2';
+};
+
+export type TelegramMediaOptions = {
+  message_thread_id?: number;
+  reply_to_message_id?: number;
+  disable_notification?: boolean;
+  parse_mode?: 'MarkdownV2';
+};
+
 export type TelegramApi = {
   getMe(): Promise<TelegramBot>;
-  getUpdates(offset: number | undefined, timeoutSeconds: number): Promise<TelegramUpdate[]>;
+  getUpdates(
+    offset: number | undefined,
+    timeoutSeconds: number,
+    signal?: AbortSignal,
+  ): Promise<TelegramUpdate[]>;
   sendMessage(
     chatId: number | string,
     text: string,
-    options?: { reply_markup?: TelegramInlineKeyboardMarkup },
+    options?: TelegramSendOptions,
   ): Promise<TelegramSentMessage>;
-  editMessageText(chatId: number | string, messageId: number, text: string): Promise<void>;
+  editMessageText(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+    options?: Pick<TelegramSendOptions, 'parse_mode'>,
+  ): Promise<void>;
   editMessageReplyMarkup?(
     chatId: number | string,
     messageId: number,
@@ -97,10 +121,32 @@ export type TelegramApi = {
   answerCallbackQuery?(callbackQueryId: string, text?: string): Promise<void>;
   getFile(fileId: string): Promise<{ file_path: string; file_size?: number }>;
   downloadFile(filePath: string, destination: string, maxBytes?: number): Promise<void>;
-  sendPhoto?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
-  sendAudio?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
-  sendVoice?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
-  sendDocument?(chatId: number | string, filePath: string, caption?: string): Promise<void>;
+  sendPhoto?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendAudio?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendVoice?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendDocument?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendChatAction?(chatId: number | string, action: 'typing' | 'upload_document'): Promise<void>;
+  setMyCommands?(commands: Array<{ command: string; description: string }>): Promise<void>;
 };
 
 export type TelegramRuntime = {
@@ -120,4 +166,5 @@ export type TelegramRuntime = {
     approved: boolean,
     comment?: string,
   ): Promise<RuntimeEvent>;
+  respondInput?(conversationId: string, inputId: string, value: string): Promise<RuntimeEvent>;
 };

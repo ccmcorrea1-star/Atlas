@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -19,6 +19,7 @@ import type {
   TelegramSentMessage,
   TelegramUpdate,
 } from '../../clients/telegram/types.js';
+import { splitTelegramText, telegramUtf16Length } from '../../clients/telegram/text.js';
 
 class FakeApi implements TelegramApi {
   public readonly sent: Array<{ chatId: number | string; text: string }> = [];
@@ -107,11 +108,28 @@ class RetryAfterApi extends FakeApi {
   }
 }
 
+class PartialDeliveryApi extends FakeApi {
+  private failNextContinuation = true;
+
+  public override async sendMessage(
+    chatId: number | string,
+    text: string,
+    options?: { reply_markup?: { inline_keyboard: Array<Array<Record<string, unknown>>> } },
+  ): Promise<TelegramSentMessage> {
+    if (text.length === 4096 && this.failNextContinuation) {
+      this.failNextContinuation = false;
+      throw new Error('permanent delivery failure');
+    }
+    return super.sendMessage(chatId, text, options);
+  }
+}
+
 class FakeRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
   private activeResolve: ((event: RuntimeEvent) => void) | undefined;
   private activeCallback: ((event: RuntimeEvent) => void) | undefined;
   private approvalResolve: ((event: RuntimeEvent) => void) | undefined;
+  private inputResolve: ((event: RuntimeEvent) => void) | undefined;
 
   public runTurn(
     request: {
@@ -154,6 +172,18 @@ class FakeRuntime implements TelegramRuntime {
           data: { approval_id: 'approval-1', tool_name: 'shell.exec', reason: 'Executar comando.' },
         });
         this.approvalResolve = resolve;
+        return;
+      }
+      if (request.input === 'question') {
+        onEvent({
+          protocol: 'atlas-runtime',
+          version: 1,
+          type: 'input.requested',
+          request_id: request.request_id,
+          conversation_id: request.conversation_id,
+          data: { input_id: 'question-1', prompt: 'Escolha uma opção.', choices: ['sim', 'não'] },
+        });
+        this.inputResolve = resolve;
         return;
       }
       if (request.input !== 'wait') {
@@ -237,6 +267,30 @@ class FakeRuntime implements TelegramRuntime {
       request_id: 'approval-response',
       conversation_id: conversationId,
       data: { approval_id: approvalId, approved, ...(comment === undefined ? {} : { comment }) },
+    };
+  }
+
+  public async respondInput(
+    conversationId: string,
+    inputId: string,
+    value: string,
+  ): Promise<RuntimeEvent> {
+    this.inputResolve?.({
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'turn.completed',
+      request_id: 'input-turn',
+      conversation_id: conversationId,
+      data: { content: value },
+    });
+    this.inputResolve = undefined;
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'input.resolved',
+      request_id: 'input-response',
+      conversation_id: conversationId,
+      data: { input_id: inputId, value },
     };
   }
 }
@@ -456,7 +510,66 @@ test('does not regress a message when completion arrives after deltas', async ()
 
   await adapter.handleUpdate({ update_id: 11, message: message({ text: 'completo' }) });
 
-  assert.equal(lastEdits(api).get(100), 'resposta completa');
+  assert.equal(lastEdits(api).get(100), 'resposta');
+});
+
+test('uses Telegram UTF-16 units without splitting a surrogate pair', () => {
+  const content = `${'x'.repeat(4_095)}😀${'y'.repeat(4_095)}`;
+  const chunks = splitTelegramText(content);
+  assert.equal(chunks[0], 'x'.repeat(4_095));
+  assert.equal(telegramUtf16Length(chunks[0] ?? ''), 4_095);
+  assert.ok(chunks.every((chunk) => telegramUtf16Length(chunk) <= 4_096));
+  assert.equal(chunks.join(''), content);
+});
+
+test('persists the Telegram message identity across an adapter restart', async () => {
+  const statePath = join('/tmp', `atlas-telegram-state-${Date.now()}-${Math.random()}.json`);
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.completed', { message_id: 'm1', content: 'persistido' }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'persistido' });
+  });
+  const update = { update_id: 100, message: message({ message_id: 55, text: 'persistir' }) };
+  try {
+    await new TelegramAdapter({ api, runtime, allowedUsers: [7], statePath }).handleUpdate(update);
+    await new TelegramAdapter({ api, runtime, allowedUsers: [7], statePath }).handleUpdate(update);
+    assert.equal(runtime.requests.length, 1);
+  } finally {
+    await rm(statePath, { force: true });
+  }
+});
+
+test('resumes long delivery from the first unconfirmed chunk', async () => {
+  const api = new PartialDeliveryApi();
+  const content = 'z'.repeat(8_193);
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.completed', { message_id: 'm1', content }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const update = { update_id: 101, message: message({ message_id: 56, text: 'entrega parcial' }) };
+  await assert.rejects(adapter.handleUpdate(update), /permanent delivery failure/);
+  await adapter.handleUpdate({ ...update, update_id: 102 });
+
+  const sentChunks = api.sent.slice(1).map((entry) => entry.text);
+  assert.equal(sentChunks.length, 2);
+  assert.equal(sentChunks.join(''), content.slice(4_096));
+});
+
+test('keeps outbound responses in the original topic', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.completed', { message_id: 'm1', content: 'no tópico' }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'no tópico' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  await adapter.handleUpdate({
+    update_id: 103,
+    message: message({ message_thread_id: 9, text: 'topic' }),
+  });
+
+  assert.equal(api.sentOptions[0]?.message_thread_id, 9);
+  assert.ok(api.sentOptions.some((options) => options?.message_thread_id === 9));
 });
 
 for (const [name, length, expectedChunks] of [
@@ -680,4 +793,45 @@ test('resolves approvals through Telegram callback buttons', async () => {
 
   assert.deepEqual(api.callbackAnswers, [{ id: 'callback-1', text: 'Aprovado.' }]);
   assert.deepEqual(api.markupEdits, [{ chatId: 123, messageId: 101 }]);
+});
+
+test('renders generic Runtime input choices and accepts a Telegram callback', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const active = adapter.handleUpdate({ update_id: 30, message: message({ text: 'question' }) });
+  await waitFor(1_050);
+
+  const inputOptions = api.sentOptions.find((options) => options?.reply_markup !== undefined) as {
+    reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+  };
+  const callbackData = inputOptions.reply_markup.inline_keyboard[0]?.[0]?.callback_data;
+  assert.ok(callbackData);
+
+  await adapter.handleUpdate({
+    update_id: 31,
+    callback_query: {
+      id: 'input-callback',
+      from: { id: 7 },
+      data: callbackData,
+      message: { message_id: 101, chat: { id: 123, type: 'private' } },
+    },
+  });
+  await active;
+  assert.ok(api.callbackAnswers.some((answer) => answer.id === 'input-callback'));
+});
+
+test('accepts typed text as a fallback for a generic Runtime input', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const active = adapter.handleUpdate({ update_id: 32, message: message({ text: 'question' }) });
+  await waitFor(1_050);
+
+  await adapter.handleUpdate({
+    update_id: 33,
+    message: message({ message_id: 102, text: 'manual' }),
+  });
+  await active;
+  assert.equal(runtime.requests.length, 1);
 });
