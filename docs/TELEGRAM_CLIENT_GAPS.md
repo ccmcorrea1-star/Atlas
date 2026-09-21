@@ -21,6 +21,41 @@ A referência do Hermes é comportamental. O Atlas não deve copiar a arquitetur
 - Atlas Runtime: `src/runtime/protocol.ts`
 - Requisitos do produto: `docs/APPS.md`
 
+## Checklist de progresso
+
+Atualizado após o commit `9f21f89`.
+
+### Concluído
+
+- [x] Catálogo de comandos, `/help` e menus por escopo.
+- [x] Mensagens de entrada: texto, voz, áudio, fotos, documentos, vídeos, GIFs, stickers, locations, venues, álbuns, posts de canais e mensagens editadas.
+- [x] Contexto tipado de replies.
+- [x] Reações tipadas de usuário e contagens agregadas.
+- [x] Inline queries, incluindo validação pelo loop real de polling.
+- [x] Notificações assíncronas com assinatura persistente e entrega real na Bot API.
+- [x] Tópicos/fóruns como eventos tipados básicos.
+- [x] Pickers paginados, navegação, `Outro` e respostas tipadas.
+- [x] Renderer MarkdownV2 semântico para listas, tabelas, headings e fences.
+- [x] Streaming, chunking UTF-16, retomada por chunk e retry de flood control.
+- [x] Validação de updates não textuais no polling.
+- [x] Contratos Runtime e provas NDJSON para reações, notificações, tópicos e inline.
+
+### Parcial
+
+- [ ] Tópicos/fóruns: parsing e roteamento básico concluídos; handoff, bindings persistentes e round-trip em supergrupo-fórum ainda não validados.
+- [ ] Polling: backoff, IPv4 e reconexão concluídos; heartbeat, healthcheck avançado e recuperação de conflitos persistentes ainda pendentes.
+- [ ] Mídia: caminhos principais concluídos; voice bubble, captions avançadas, fallback por URL e alguns casos de documentos ainda pendentes.
+
+### Pendente
+
+- [ ] Lifecycle público do Runtime: `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed` consumidos pelo Telegram.
+- [ ] Tasks, Workers, progresso e cancelamento.
+- [ ] Sessões nomeadas, troca e retomada entre clientes.
+- [ ] Handoff avançado de fóruns e recuperação de tópicos apagados.
+- [ ] Round-trip real de fóruns, dependente de um supergrupo com modo Fórum.
+
+Cada item concluído deve continuar obedecendo aos critérios de aceitação no final deste documento. Commits separados e gates completos são a fonte operacional de verificação; esta seção é o índice resumido.
+
 ## Estado atual do Atlas
 
 O Atlas já possui:
