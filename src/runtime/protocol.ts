@@ -221,6 +221,7 @@ export type RuntimeEventType =
   | 'inline.completed'
   | 'topic.updated'
   | 'reaction.completed'
+  | 'session.interrupted'
   | 'runtime.restarting'
   | 'runtime.ready'
   | 'operation.resuming'
@@ -719,6 +720,25 @@ export function runtimeLifecycleEvent(
     ...(requestId === undefined ? {} : { request_id: requestId }),
     ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
     data,
+  };
+}
+
+export function runtimeSessionInterruptedEvent(
+  conversationId: string,
+  requestId: string,
+  detectedAt: string,
+): RuntimeEvent {
+  return {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'session.interrupted',
+    request_id: requestId,
+    conversation_id: conversationId,
+    data: {
+      request_id: requestId,
+      detected_at: detectedAt,
+      reason: 'restart',
+    },
   };
 }
 

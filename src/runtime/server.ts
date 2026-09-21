@@ -27,6 +27,7 @@ import {
   parseRuntimeMessage,
   runtimeErrorEvent,
   runtimeEvent,
+  runtimeSessionInterruptedEvent,
   serializeRuntimeMessage,
   type RuntimeCommandCompletedData,
   type RuntimeCommandRequest,
@@ -646,6 +647,23 @@ export class AtlasRuntimeServer {
         }),
       ),
     );
+    for (const record of this.requestLedger.interrupted(
+      request.conversation_id === '*' ? undefined : request.conversation_id,
+    )) {
+      const interruption = record.interruption;
+      if (interruption === undefined) {
+        continue;
+      }
+      send(
+        serializeRuntimeMessage(
+          runtimeSessionInterruptedEvent(
+            record.request.conversation_id,
+            record.request.request_id,
+            interruption.detected_at,
+          ),
+        ),
+      );
+    }
     return Promise.resolve();
   }
 

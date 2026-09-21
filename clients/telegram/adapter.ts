@@ -144,6 +144,7 @@ type TelegramState = {
   pending_inputs?: PendingTelegramInput[];
   pending_recoveries?: PendingTelegramRecovery[];
   topics?: TelegramTopicState[];
+  lifecycle_notifications?: string[];
 };
 
 type TelegramTopicState = {
@@ -483,11 +484,16 @@ export class TelegramAdapter {
   private async handleRuntimeNotification(event: RuntimeEvent): Promise<void> {
     if (
       event.type !== 'notification.created' &&
+      event.type !== 'session.interrupted' &&
       event.type !== 'runtime.restarting' &&
       event.type !== 'runtime.ready' &&
       event.type !== 'operation.resuming' &&
       event.type !== 'operation.resumed'
     ) {
+      return;
+    }
+    if (event.type === 'session.interrupted') {
+      await this.handleSessionInterruptedNotification(event);
       return;
     }
     if (event.type !== 'notification.created') {
@@ -514,6 +520,40 @@ export class TelegramAdapter {
       );
     } catch (error) {
       console.error(`Atlas Telegram notification delivery failed: ${safeErrorMessage(error)}`);
+    }
+  }
+
+  private async handleSessionInterruptedNotification(event: RuntimeEvent): Promise<void> {
+    await this.stateLoaded;
+    const data = event.data as Record<string, unknown>;
+    const requestId = typeof data.request_id === 'string' ? data.request_id : event.request_id;
+    if (event.conversation_id === undefined || requestId === undefined) {
+      return;
+    }
+    const key = `session.interrupted:${event.conversation_id}:${requestId}`;
+    if (this.lifecycleNotifications.has(key)) {
+      return;
+    }
+    const destination = telegramDestinationFromConversation(event.conversation_id);
+    const chatId = destination?.chatId ?? this.homeChatId;
+    if (chatId === undefined) {
+      return;
+    }
+    const text =
+      '⚠️ O Atlas foi reiniciado enquanto uma execução desta conversa estava em andamento.\n\n' +
+      'Nenhuma repetição automática foi feita porque a operação pode ter produzido efeitos externos. ' +
+      'A sessão continua disponível: envie uma nova mensagem para continuar a conversa. ' +
+      'Use os botões da mensagem de recuperação para retomar ou descartar a execução interrompida.';
+    try {
+      await this.sendText(
+        chatId,
+        text,
+        destination?.threadId === undefined ? {} : { message_thread_id: destination.threadId },
+      );
+      this.lifecycleNotifications.add(key);
+      await this.persistState();
+    } catch (error) {
+      console.error(`Atlas Telegram interruption notification failed: ${safeErrorMessage(error)}`);
     }
   }
 
@@ -994,6 +1034,13 @@ export class TelegramAdapter {
           }
         }
       }
+      if (Array.isArray(parsed.lifecycle_notifications)) {
+        for (const notification of parsed.lifecycle_notifications) {
+          if (typeof notification === 'string' && notification) {
+            this.lifecycleNotifications.add(notification);
+          }
+        }
+      }
       if (Array.isArray(parsed.turns)) {
         for (const turn of parsed.turns) {
           if (
@@ -1138,6 +1185,7 @@ export class TelegramAdapter {
           pending_inputs: [...this.pendingInputs.values()],
           pending_recoveries: [...this.pendingRecoveries.values()],
           topics: [...this.topics.values()],
+          lifecycle_notifications: [...this.lifecycleNotifications],
         };
         await writeFile(temporaryPath, JSON.stringify(state), { mode: 0o600 });
         await rename(temporaryPath, this.statePath as string);

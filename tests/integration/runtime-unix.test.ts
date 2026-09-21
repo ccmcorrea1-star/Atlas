@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createConnection } from 'node:net';
 import { createServer } from 'node:http';
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
@@ -748,6 +748,44 @@ function sendNotificationRoundTrip(socketPath: string): Promise<WireMessage> {
   });
 }
 
+function sendInterruptedSessionNotification(socketPath: string): Promise<WireMessage> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    let buffer = '';
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf('\n');
+        if (!line) {
+          continue;
+        }
+        const event = JSON.parse(line) as WireMessage;
+        if (event.type === 'session.interrupted') {
+          socket.destroy();
+          resolve(event);
+          return;
+        }
+      }
+    });
+    socket.once('connect', () => {
+      socket.write(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'notification.subscribe',
+          request_id: 'interrupted-session-subscribe',
+          conversation_id: '*',
+        })}\n`,
+      );
+    });
+  });
+}
+
 function sendTopic(socketPath: string): Promise<WireMessage> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath, () => {
@@ -1238,6 +1276,54 @@ test('publishes inline results over the public Unix protocol', async () => {
     assert.deepEqual(data.results, []);
   } finally {
     await runtime.close();
+  }
+});
+
+test('replays a persisted restart interruption to notification subscribers', async () => {
+  const socketPath = `/tmp/atlas-runtime-interrupted-${randomUUID()}.sock`;
+  const ledgerPath = `/tmp/atlas-runtime-interrupted-${randomUUID()}.json`;
+  const conversationId = 'telegram:123:thread:root';
+  await writeFile(
+    ledgerPath,
+    JSON.stringify({
+      version: 2,
+      requests: [
+        {
+          request: {
+            request_id: 'interrupted-request',
+            conversation_id: conversationId,
+            input: 'operação em andamento',
+          },
+          fingerprint: 'test-fingerprint',
+          state: 'executing',
+          events: [],
+        },
+      ],
+    }),
+  );
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    requestLedgerPath: ledgerPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const event = await sendInterruptedSessionNotification(socketPath);
+    assert.equal(event.type, 'session.interrupted');
+    assert.equal(event.request_id, 'interrupted-request');
+    assert.equal(event.conversation_id, conversationId);
+    assert.deepEqual(event.data, {
+      request_id: 'interrupted-request',
+      detected_at: (event.data as { detected_at: string }).detected_at,
+      reason: 'restart',
+    });
+  } finally {
+    await runtime.close();
+    await rm(ledgerPath, { force: true });
   }
 });
 

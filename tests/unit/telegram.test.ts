@@ -1541,6 +1541,56 @@ test('entrega notificações assíncronas no chat da conversa sem criar turno', 
   await adapter.stop();
 });
 
+test('avisa uma sessão interrompida após restart sem repetir a execução', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const statePath = `/tmp/atlas-telegram-interrupted-${Date.now()}.json`;
+  const adapter = new TelegramAdapter({
+    runtime,
+    api,
+    allowedUsers: [7],
+    allowedChats: [123],
+    statePath,
+  });
+  const event = {
+    protocol: 'atlas-runtime' as const,
+    version: 1 as const,
+    type: 'session.interrupted' as const,
+    request_id: 'interrupted-request',
+    conversation_id: 'telegram:123:thread:root',
+    data: {
+      request_id: 'interrupted-request',
+      detected_at: '2026-09-21T12:00:00.000Z',
+      reason: 'restart',
+    },
+  };
+
+  runtime.emitNotification(event);
+  runtime.emitNotification(event);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(api.sent.length, 1);
+  assert.match(api.sent[0]?.text ?? '', /foi reiniciado/);
+  assert.match(api.sent[0]?.text ?? '', /Nenhuma repetição automática/);
+  await adapter.stop();
+
+  const restoredApi = new FakeApi();
+  const restoredRuntime = new FakeRuntime();
+  const restoredAdapter = new TelegramAdapter({
+    runtime: restoredRuntime,
+    api: restoredApi,
+    allowedUsers: [7],
+    allowedChats: [123],
+    statePath,
+  });
+  restoredRuntime.emitNotification(event);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(restoredApi.sent.length, 0);
+  await restoredAdapter.stop();
+  await rm(statePath, { force: true });
+});
+
 test('routes status and stop while a turn is active', async () => {
   const api = new FakeApi();
   const runtime = new FakeRuntime();

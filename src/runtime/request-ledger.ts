@@ -106,6 +106,15 @@ export class RuntimeRequestLedger {
     );
   }
 
+  public interrupted(conversationId?: string): RuntimeRequestRecord[] {
+    return [...this.records.values()].filter(
+      (record) =>
+        record.state === 'ambiguous' &&
+        record.interruption?.reason === 'restart' &&
+        (conversationId === undefined || record.request.conversation_id === conversationId),
+    );
+  }
+
   public accept(request: RuntimeTurnRequest): RuntimeRequestRecord {
     const record: RuntimeRequestRecord = {
       request,
