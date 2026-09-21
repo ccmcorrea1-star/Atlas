@@ -2008,7 +2008,9 @@ function isValidTelegramUpdate(value: unknown): value is TelegramUpdate {
   }
   return (
     isValidTelegramCallback(update.callback_query) ||
-    isValidTelegramInlineQuery(update.inline_query)
+    isValidTelegramInlineQuery(update.inline_query) ||
+    isValidTelegramReactionUpdate(update.message_reaction) ||
+    isValidTelegramReactionCountUpdate(update.message_reaction_count)
   );
 }
 
@@ -2023,6 +2025,45 @@ function isValidTelegramInlineQuery(value: unknown): value is TelegramInlineQuer
     Number.isSafeInteger(query.from.id) &&
     typeof query.query === 'string' &&
     typeof query.offset === 'string'
+  );
+}
+
+function isValidTelegramReactionUpdate(value: unknown): value is TelegramMessageReactionUpdated {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const reaction = value as Partial<TelegramMessageReactionUpdated>;
+  return (
+    isValidTelegramChat(reaction.chat) &&
+    Number.isSafeInteger(reaction.message_id) &&
+    Number.isSafeInteger(reaction.date) &&
+    Array.isArray(reaction.old_reaction) &&
+    Array.isArray(reaction.new_reaction)
+  );
+}
+
+function isValidTelegramReactionCountUpdate(
+  value: unknown,
+): value is TelegramMessageReactionCountUpdated {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const reaction = value as Partial<TelegramMessageReactionCountUpdated>;
+  return (
+    isValidTelegramChat(reaction.chat) &&
+    Number.isSafeInteger(reaction.message_id) &&
+    Number.isSafeInteger(reaction.date) &&
+    Array.isArray(reaction.reactions)
+  );
+}
+
+function isValidTelegramChat(value: unknown): value is TelegramMessage['chat'] {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const chat = value as TelegramMessage['chat'];
+  return (
+    (typeof chat.id === 'string' || typeof chat.id === 'number') && typeof chat.type === 'string'
   );
 }
 

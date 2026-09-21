@@ -33,6 +33,7 @@ import {
 } from '../../clients/telegram/text.js';
 
 class FakeApi implements TelegramApi {
+  public readonly updates: TelegramUpdate[] = [];
   public readonly sent: Array<{ chatId: number | string; text: string }> = [];
   public readonly sentOptions: Array<Record<string, unknown> | undefined> = [];
   public readonly edits: Array<{ chatId: number | string; messageId: number; text: string }> = [];
@@ -61,7 +62,7 @@ class FakeApi implements TelegramApi {
     _offset: number | undefined,
     _timeoutSeconds: number,
   ): Promise<TelegramUpdate[]> {
-    return [];
+    return this.updates.splice(0);
   }
 
   public async sendMessage(
@@ -1345,6 +1346,30 @@ test('encaminha inline queries ao Runtime e responde com artigos', async () => {
     },
   ]);
   await adapter.stop();
+});
+
+test('aceita inline query pelo loop real de polling', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7] });
+  api.updates.push({
+    update_id: 71,
+    inline_query: {
+      id: 'inline-polling-71',
+      from: { id: 7, first_name: 'Caio' },
+      query: 'teste pelo polling',
+      offset: '',
+      chat_type: 'sender',
+    },
+  });
+
+  const polling = adapter.start();
+  await waitFor(10);
+  await adapter.stop();
+  await polling;
+
+  assert.equal(api.inlineAnswers[0]?.id, 'inline-polling-71');
+  assert.equal(api.inlineAnswers[0]?.results[0]?.type, 'article');
 });
 
 test('entrega notificações assíncronas no chat da conversa sem criar turno', async () => {
