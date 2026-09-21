@@ -141,8 +141,9 @@
         "id": { "type": "string", "minLength": 1 },
         "model": { "type": "string", "minLength": 1 },
         "provider": { "type": "string", "minLength": 1 },
-        "status": { "enum": ["idle", "running", "cancelled"] },
-        "active_request_id": { "type": "string", "minLength": 1 }
+        "status": { "enum": ["idle", "running", "cancelled", "restart_interrupted"] },
+        "active_request_id": { "type": "string", "minLength": 1 },
+        "interrupted_request_id": { "type": "string", "minLength": 1 }
       },
       "required": ["id", "model", "provider", "status"],
       "additionalProperties": true

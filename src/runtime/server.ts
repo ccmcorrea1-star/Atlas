@@ -335,6 +335,7 @@ export class AtlasRuntimeServer {
       return Promise.resolve();
     }
     const record = this.requestLedger.accept(request);
+    this.requestLedger.associateInterruption(request.conversation_id, request.request_id);
     return this.launchTurnRequest(request, record, send);
   }
 
@@ -624,12 +625,24 @@ export class AtlasRuntimeServer {
   ): RuntimeSession {
     const active = this.activeTurns.get(conversationId);
     const activeRequestId = active?.keys().next().value as string | undefined;
+    const interruptedRequestId =
+      this.requestLedger.interrupted(conversationId)[0]?.request.request_id;
+    const status =
+      statusOverride ??
+      (activeRequestId !== undefined
+        ? 'running'
+        : interruptedRequestId === undefined
+          ? 'idle'
+          : 'restart_interrupted');
     return {
       id: conversationId,
       model: this.sessionData.model,
       provider: this.sessionData.provider,
-      status: statusOverride ?? (activeRequestId === undefined ? 'idle' : 'running'),
+      status,
       ...(activeRequestId === undefined ? {} : { active_request_id: activeRequestId }),
+      ...(interruptedRequestId === undefined
+        ? {}
+        : { interrupted_request_id: interruptedRequestId }),
     };
   }
 

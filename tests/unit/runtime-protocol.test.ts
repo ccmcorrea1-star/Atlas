@@ -73,6 +73,26 @@ test('serializes recoverable ambiguous execution errors with a typed code', () =
     data: { code: 'ambiguous_execution', message: 'interrupted' },
   });
 });
+test('serializes a restart-interrupted session snapshot without replay semantics', () => {
+  const event = runtimeEvent(request, 'command.completed', {
+    command: 'status',
+    message: 'Sessão interrompida durante restart.',
+    session: {
+      id: 'conversation-1',
+      model: 'gpt-5.6-luna',
+      provider: 'opencode-go',
+      status: 'restart_interrupted',
+      interrupted_request_id: 'interrupted-request',
+    },
+  });
+
+  assert.equal((event.data.session as { status: string }).status, 'restart_interrupted');
+  assert.equal(
+    (event.data.session as { interrupted_request_id: string }).interrupted_request_id,
+    'interrupted-request',
+  );
+});
+
 test('serializes the shell execution lifecycle without provider tool names', () => {
   const started = runtimeEvent(request, 'execution.started', {
     execution_id: 'call-1',

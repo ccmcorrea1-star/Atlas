@@ -2460,8 +2460,17 @@ function formatHelp(): string {
 }
 
 function formatCommandResult(data: RuntimeCommandCompletedData): string {
-  const status = data.session.status === 'running' ? 'em execução' : data.session.status;
-  return `${data.message}\nSessão: ${data.session.id}\nEstado: ${status}`;
+  const status =
+    data.session.status === 'running'
+      ? 'em execução'
+      : data.session.status === 'restart_interrupted'
+        ? 'interrompida após restart; próxima mensagem continua a sessão'
+        : data.session.status;
+  const interruptedRequest =
+    data.session.interrupted_request_id === undefined
+      ? ''
+      : `\nRequisição protegida: ${data.session.interrupted_request_id}`;
+  return `${data.message}\nSessão: ${data.session.id}\nEstado: ${status}${interruptedRequest}`;
 }
 
 function formatApproval(event: RuntimeEvent): string {

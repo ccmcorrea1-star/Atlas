@@ -40,7 +40,7 @@ export const RUNTIME_COMMANDS: readonly RuntimeCommandDefinition[] = [
   { name: 'stop', description: 'cancela o turno ativo', available_during_turn: true },
 ];
 
-export type RuntimeSessionStatus = 'idle' | 'running' | 'cancelled';
+export type RuntimeSessionStatus = 'idle' | 'running' | 'cancelled' | 'restart_interrupted';
 
 export type RuntimeSession = {
   id: string;
@@ -48,6 +48,7 @@ export type RuntimeSession = {
   provider: string;
   status: RuntimeSessionStatus;
   active_request_id?: string;
+  interrupted_request_id?: string;
 };
 
 export type RuntimeTurnRequest = {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createConnection } from 'node:net';
 import { createServer } from 'node:http';
-import { rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
@@ -1105,6 +1105,41 @@ function sendTurn(
   });
 }
 
+function sendCommand(
+  socketPath: string,
+  conversationId: string,
+  command: 'status' | 'new' | 'stop',
+  requestId: string,
+): Promise<WireMessage> {
+  return new Promise((resolveCommand, rejectCommand) => {
+    const socket = createConnection(socketPath, () => {
+      socket.write(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'command.request',
+          request_id: requestId,
+          conversation_id: conversationId,
+          command,
+        })}\n`,
+      );
+    });
+    let buffer = '';
+    socket.once('error', rejectCommand);
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newlineIndex = buffer.indexOf('\n');
+      if (newlineIndex === -1) {
+        return;
+      }
+      const event = JSON.parse(buffer.slice(0, newlineIndex)) as WireMessage;
+      socket.destroy();
+      resolveCommand(event);
+    });
+  });
+}
+
 function sendRecovery(
   socketPath: string,
   type: 'turn.recover' | 'turn.discard',
@@ -1323,6 +1358,82 @@ test('replays a persisted restart interruption to notification subscribers', asy
     });
   } finally {
     await runtime.close();
+    await rm(ledgerPath, { force: true });
+  }
+});
+
+test('exposes restart_interrupted and associates the next input without replaying the old request', async () => {
+  const model = await startStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-session-recovery-${randomUUID()}.sock`;
+  const ledgerPath = `/tmp/atlas-runtime-session-recovery-${randomUUID()}.json`;
+  const conversationId = 'telegram:123:thread:root';
+  await writeFile(
+    ledgerPath,
+    JSON.stringify({
+      version: 2,
+      requests: [
+        {
+          request: {
+            request_id: 'interrupted-request',
+            conversation_id: conversationId,
+            input: 'operação em andamento',
+          },
+          fingerprint: 'test-fingerprint',
+          state: 'executing',
+          events: [],
+        },
+      ],
+    }),
+  );
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    requestLedgerPath: ledgerPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const statusEvent = await sendCommand(
+      socketPath,
+      conversationId,
+      'status',
+      'session-status-request',
+    );
+    const statusSession = (
+      statusEvent.data as { session: { status: string; interrupted_request_id: string } }
+    ).session;
+    assert.equal(statusSession.status, 'restart_interrupted');
+    assert.equal(statusSession.interrupted_request_id, 'interrupted-request');
+
+    const events = await sendTurn(
+      socketPath,
+      conversationId,
+      'continue safely',
+      'next-input-request',
+    );
+    assert.equal(events.at(-1)?.type, 'turn.completed');
+    assert.equal(events.at(-1)?.request_id, 'next-input-request');
+
+    const persisted = JSON.parse(await readFile(ledgerPath, 'utf8')) as {
+      requests: Array<{
+        request: { request_id: string };
+        state: string;
+        interruption?: { resumed_by_request_id?: string; resumed_at?: string };
+      }>;
+    };
+    const interrupted = persisted.requests.find(
+      (record) => record.request.request_id === 'interrupted-request',
+    );
+    assert.equal(interrupted?.state, 'ambiguous');
+    assert.equal(interrupted?.interruption?.resumed_by_request_id, 'next-input-request');
+    assert.equal(typeof interrupted?.interruption?.resumed_at, 'string');
+  } finally {
+    await runtime.close();
+    await model.close();
     await rm(ledgerPath, { force: true });
   }
 });

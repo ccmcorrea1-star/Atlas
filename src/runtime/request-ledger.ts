@@ -16,6 +16,8 @@ export type RuntimeRequestSuspension = {
 export type RuntimeRequestInterruption = {
   reason: 'restart';
   detected_at: string;
+  resumed_by_request_id?: string;
+  resumed_at?: string;
 };
 
 export type RuntimeRequestRecord = {
@@ -111,8 +113,26 @@ export class RuntimeRequestLedger {
       (record) =>
         record.state === 'ambiguous' &&
         record.interruption?.reason === 'restart' &&
+        record.interruption.resumed_by_request_id === undefined &&
         (conversationId === undefined || record.request.conversation_id === conversationId),
     );
+  }
+
+  public associateInterruption(
+    conversationId: string,
+    resumedByRequestId: string,
+    resumedAt = new Date().toISOString(),
+  ): RuntimeRequestRecord[] {
+    const associated: RuntimeRequestRecord[] = [];
+    for (const record of this.interrupted(conversationId)) {
+      if (record.interruption === undefined) {
+        continue;
+      }
+      record.interruption.resumed_by_request_id = resumedByRequestId;
+      record.interruption.resumed_at = resumedAt;
+      associated.push(record);
+    }
+    return associated;
   }
 
   public accept(request: RuntimeTurnRequest): RuntimeRequestRecord {

@@ -90,7 +90,7 @@ Dados genéricos de tools não contêm argumentos, requisições de Discovery ou
 
 ### Sessões e comandos
 
-O Runtime mantém a sessão e a expõe tipada em `command.completed`. Clientes enviam `command.request` com um comando do catálogo público `new`, `status` ou `stop`. Esses comandos podem ser enviados enquanto outro turno está ativo. `session.updated` continua carregando apenas o modelo e o provider da sessão. O Runtime é responsável por resetar sessões e cancelar turnos.
+O Runtime mantém a sessão e a expõe tipada em `command.completed`. O status `restart_interrupted` indica que uma execução anterior foi interrompida durante restart; `interrupted_request_id` identifica a requisição protegida. O primeiro `turn.request` novo na mesma conversa associa essa interrupção ao novo request, sem repetir automaticamente a execução anterior. Clientes enviam `command.request` com um comando do catálogo público `new`, `status` ou `stop`. Esses comandos podem ser enviados enquanto outro turno está ativo. `session.updated` continua carregando apenas o modelo e o provider da sessão. O Runtime é responsável por resetar sessões e cancelar turnos.
 
 ### Approvals
 

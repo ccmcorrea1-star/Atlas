@@ -25,20 +25,20 @@ A referência do Hermes é comportamental. O Atlas não deve copiar a arquitetur
 
 A comparação é comportamental; o Atlas continua mantendo um adapter fino e deixa sessão, Agent, memória, Tasks e execução no Runtime.
 
-| Capacidade observada no Hermes          | Estado atual do Atlas                                                                                                       | Trabalho restante                                                                                         |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Sessão persistente por chat/thread      | `conversation_id` determinístico, `MemorySession` no Runtime e aviso persistido de interrupção                              | Persistir último turno confirmado e formalizar retomada da sessão no próximo input                        |
-| Restart com execução em andamento       | Ledger marca requests em `executing` como `ambiguous`, emite `session.interrupted` na assinatura e impede replay silencioso | Associar a pendência ao próximo input e concluir a semântica de retomada segura                           |
-| Próxima mensagem continua a sessão      | Novas mensagens reutilizam a mesma `conversation_id`; o Telegram avisa o restart uma vez e mantém o agente disponível       | Formalizar o marcador `restart_interrupted` e a continuação equivalente ao Hermes                         |
-| Mensagem chega enquanto há execução     | `interrupt`, `queue` e `steer` são políticas explícitas, com confirmação de busy e preservação do trabalho já concluído     | Expor política por conversa, ack de busy e steer/queue no Runtime; hoje o adapter apenas serializa a fila |
-| Delivery ledger final                   | Ledger Telegram persistido com conteúdo, chunks, confirmação, fase, tentativas, timestamps, destino e expiração             | Redelivery live pós-crash em todos os pontos de falha e observabilidade externa do ledger                 |
-| Entrega potencialmente duplicada        | Redelivery sem Agent usa prefixo `⚠️ Reentrega após reinício`; updates repetidos não reexecutam o Runtime                   | Validar at-least-once em falhas reais da Bot API e integrar lifecycle completo                            |
-| Retry de `/retry`                       | Não há comando equivalente no catálogo Telegram                                                                             | Adicionar somente depois de definir retry seguro no Runtime; não repetir Tools ambíguas automaticamente   |
-| Liveness do gateway/polling             | Serviço pode reiniciar, mas não há watchdog de loop/heartbeat persistente equivalente                                       | Heartbeat, detecção de polling parado, motivo de degradação e recuperação observável                      |
-| Heartbeat de tarefa longa               | Typing e status intermediários existem                                                                                      | Bubble de progresso/heartbeat persistente e healthcheck do polling                                        |
-| Warnings/errors automáticos             | Erro ambíguo agora é traduzido para uma mensagem útil                                                                       | Canal persistente de lifecycle/recovery e deduplicação de avisos                                          |
-| Threads/fóruns                          | Parsing, roteamento e persistência básica implementados                                                                     | Handoff, bindings após restart e round-trip live em supergrupo Fórum                                      |
-| Sessões nomeadas e troca entre clientes | Ainda não há catálogo nem handlers                                                                                          | Contrato Runtime, comandos Telegram e retomada entre clientes                                             |
+| Capacidade observada no Hermes          | Estado atual do Atlas                                                                                                   | Trabalho restante                                                                                         |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Sessão persistente por chat/thread      | `conversation_id` determinístico, `MemorySession` no Runtime e aviso persistido de interrupção                          | Persistir último turno confirmado                                                                         |
+| Restart com execução em andamento       | Ledger marca requests em `executing` como `ambiguous`, emite `session.interrupted` e expõe `restart_interrupted`        | Auto-resume equivalente ao Hermes sem repetir Tools ambíguas                                              |
+| Próxima mensagem continua a sessão      | Novo `turn.request` na mesma conversa associa `resumed_by_request_id`; Telegram mantém o agente disponível              | Retomada automática somente quando o Runtime provar segurança                                             |
+| Mensagem chega enquanto há execução     | `interrupt`, `queue` e `steer` são políticas explícitas, com confirmação de busy e preservação do trabalho já concluído | Expor política por conversa, ack de busy e steer/queue no Runtime; hoje o adapter apenas serializa a fila |
+| Delivery ledger final                   | Ledger Telegram persistido com conteúdo, chunks, confirmação, fase, tentativas, timestamps, destino e expiração         | Redelivery live pós-crash em todos os pontos de falha e observabilidade externa do ledger                 |
+| Entrega potencialmente duplicada        | Redelivery sem Agent usa prefixo `⚠️ Reentrega após reinício`; updates repetidos não reexecutam o Runtime               | Validar at-least-once em falhas reais da Bot API e integrar lifecycle completo                            |
+| Retry de `/retry`                       | Não há comando equivalente no catálogo Telegram                                                                         | Adicionar somente depois de definir retry seguro no Runtime; não repetir Tools ambíguas automaticamente   |
+| Liveness do gateway/polling             | Serviço pode reiniciar, mas não há watchdog de loop/heartbeat persistente equivalente                                   | Heartbeat, detecção de polling parado, motivo de degradação e recuperação observável                      |
+| Heartbeat de tarefa longa               | Typing e status intermediários existem                                                                                  | Bubble de progresso/heartbeat persistente e healthcheck do polling                                        |
+| Warnings/errors automáticos             | Erro ambíguo agora é traduzido para uma mensagem útil                                                                   | Canal persistente de lifecycle/recovery e deduplicação de avisos                                          |
+| Threads/fóruns                          | Parsing, roteamento e persistência básica implementados                                                                 | Handoff, bindings após restart e round-trip live em supergrupo Fórum                                      |
+| Sessões nomeadas e troca entre clientes | Ainda não há catálogo nem handlers                                                                                      | Contrato Runtime, comandos Telegram e retomada entre clientes                                             |
 
 **Referências verificadas do Hermes:**
 
@@ -71,7 +71,7 @@ Atualizado após o bloco `restart_interrupted`/`session.interrupted` do recovery
 ### Parcial
 
 - [x] Runtime reidrata requests `executing` como interrupções de restart, emite `session.interrupted` ao subscriber e o Telegram entrega aviso idempotente no chat/tópico correto.
-- [ ] Formalizar `restart_interrupted` como estado de sessão e associar a pendência ao próximo input, sem repetir Tools ambíguas.
+- [x] Runtime expõe `restart_interrupted`/`interrupted_request_id` e associa a interrupção ao primeiro `turn.request` novo via `resumed_by_request_id`, sem replay automático.
 - [x] Delivery ledger Telegram persistido com conteúdo final, chunks, confirmação, fase, tentativas, timestamps, destino, expiração e redelivery sem executar o Runtime.
 - [ ] Delivery ledger: validar todos os crash boundaries da Bot API e adicionar observabilidade externa/expiração apresentada ao usuário quando o estado virar `abandoned`.
 - [ ] Tópicos/fóruns: parsing, roteamento, persistência e restauração local concluídos; handoff, bindings entre processos e round-trip em supergrupo-fórum ainda não validados.
@@ -81,8 +81,8 @@ Atualizado após o bloco `restart_interrupted`/`session.interrupted` do recovery
 
 ### Pendente
 
-- [ ] Retomada persistente de sessões interrompidas no padrão Hermes (`restart_interrupted` → aviso → próximo input continua a sessão).
-- [ ] Delivery ledger final com redelivery at-least-once, prefixo de possível duplicata, tentativas limitadas e expiração.
+- [ ] Retomada automática persistente de sessões interrompidas no padrão Hermes (`restart_interrupted` → aviso → próximo input continua a sessão com segurança comprovada).
+- [x] Delivery ledger final com redelivery at-least-once, prefixo de possível duplicata, tentativas limitadas e expiração; crash boundaries completos da Bot API e aviso de `abandoned` permanecem como validação operacional.
 - [ ] Comando `/retry` seguro e distinto de recuperação de uma operação ambígua.
 - [ ] Lifecycle público do Runtime consumido pelo Telegram: `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`.
 - [ ] Tasks, Workers, progresso e cancelamento.
@@ -94,7 +94,7 @@ Atualizado após o bloco `restart_interrupted`/`session.interrupted` do recovery
 
 #### P0 — não perder trabalho nem deixar o usuário sem resposta
 
-1. **Recovery persistente de sessão:** o Runtime já converte `executing` em interrupção de restart, persiste a razão e emite `session.interrupted`; o Telegram avisa o chat/tópico uma vez. Falta registrar `restart_interrupted` como estado de sessão, o último turno confirmado e a associação explícita ao próximo input, sem repetir Tools ambíguas.
+1. **Recovery persistente de sessão:** concluído o marcador público `restart_interrupted`, o `interrupted_request_id` e a associação do primeiro input novo via `resumed_by_request_id`; o Telegram avisa o chat/tópico uma vez. Falta somente auto-resume seguro equivalente ao Hermes, sem repetir Tools ambíguas.
 2. **Delivery ledger final:** implementado no adapter Telegram com resposta final, chunks, destino, thread, fase (`not_started`, `sending`, `delivered`, `abandoned`), tentativas limitadas, timestamps, expiração e redelivery sem executar o Agent. Falta validar cada crash boundary da Bot API e expor abandono ao usuário.
 3. **Recovery Telegram:** o prompt persistido com `Retomar (confirmar risco)`/`Descartar`, o aviso idempotente de `session.interrupted` e o redelivery prefixado já existem, sem replay silencioso do Agent. Falta consumir `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`.
 4. **Testes de crash boundary:** cobrir queda antes do envio, durante o envio, depois do envio sem confirmação e execução ambígua; provar que não há replay automático de efeito colateral.
