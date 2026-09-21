@@ -382,7 +382,10 @@ export class TelegramAdapter {
     }
     const text = data.title === undefined ? data.content : `${data.title}\n\n${data.content}`;
     try {
-      await this.api.sendMessage(chatId, text);
+      const sent = await this.api.sendMessage(chatId, text);
+      console.info(
+        `Atlas Telegram notification delivered: ${data.notification_id} chat=${chatId} message=${sent.message_id}`,
+      );
     } catch (error) {
       console.error(`Atlas Telegram notification delivery failed: ${safeErrorMessage(error)}`);
     }
