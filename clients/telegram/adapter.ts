@@ -128,6 +128,17 @@ type TelegramState = {
   turns?: TelegramTurnState[];
   pending_approvals?: PendingTelegramApproval[];
   pending_inputs?: PendingTelegramInput[];
+  topics?: TelegramTopicState[];
+};
+
+type TelegramTopicState = {
+  conversationId: string;
+  topicId: string;
+  chatId: number | string;
+  action: TelegramTopicUpdate['action'];
+  name?: string;
+  icon_color?: number;
+  icon_custom_emoji_id?: string;
 };
 
 type TelegramTurnState = {
@@ -164,6 +175,7 @@ export class TelegramAdapter {
   private readonly processingMessageIds = new Map<string, Promise<void>>();
   private readonly mediaGroups = new Map<string, PendingTelegramMediaGroup>();
   private readonly turns = new Map<string, TelegramTurnState>();
+  private readonly topics = new Map<string, TelegramTopicState>();
   private stateWrite: Promise<void> = Promise.resolve();
   private bot: TelegramBot | undefined;
   private running = false;
@@ -412,8 +424,34 @@ export class TelegramAdapter {
     }
     const message = update.message;
     const topicId = String(message.message_thread_id ?? message.message_id);
+    const conversationId = conversationIdForTelegram(message.chat.id, message.message_thread_id);
+    const topicKey = `${String(message.chat.id)}:${topicId}`;
+    const previous = this.topics.get(topicKey);
+    const details = update.details;
+    this.topics.set(topicKey, {
+      conversationId,
+      topicId,
+      chatId: message.chat.id,
+      action: update.action,
+      ...(details?.name === undefined
+        ? previous?.name === undefined
+          ? {}
+          : { name: previous.name }
+        : { name: details.name }),
+      ...(details?.icon_color === undefined
+        ? previous?.icon_color === undefined
+          ? {}
+          : { icon_color: previous.icon_color }
+        : { icon_color: details.icon_color }),
+      ...(details?.icon_custom_emoji_id === undefined
+        ? previous?.icon_custom_emoji_id === undefined
+          ? {}
+          : { icon_custom_emoji_id: previous.icon_custom_emoji_id }
+        : { icon_custom_emoji_id: details.icon_custom_emoji_id }),
+    });
+    await this.persistState();
     const event = await this.options.runtime.topic(
-      conversationIdForTelegram(message.chat.id, message.message_thread_id),
+      conversationId,
       topicId,
       String(message.message_id),
       update.action,
@@ -918,6 +956,20 @@ export class TelegramAdapter {
           }
         }
       }
+      if (Array.isArray(parsed.topics)) {
+        for (const topic of parsed.topics) {
+          if (
+            topic !== null &&
+            typeof topic === 'object' &&
+            typeof topic.conversationId === 'string' &&
+            typeof topic.topicId === 'string' &&
+            (typeof topic.chatId === 'string' || typeof topic.chatId === 'number') &&
+            typeof topic.action === 'string'
+          ) {
+            this.topics.set(`${String(topic.chatId)}:${topic.topicId}`, topic);
+          }
+        }
+      }
       const terminalRequests = new Set(
         [...this.turns.values()]
           .filter((turn) => turn.status === 'terminal')
@@ -977,6 +1029,7 @@ export class TelegramAdapter {
           turns: [...this.turns.values()],
           pending_approvals: [...this.pendingApprovals.values()],
           pending_inputs: [...this.pendingInputs.values()],
+          topics: [...this.topics.values()],
         };
         await writeFile(temporaryPath, JSON.stringify(state), { mode: 0o600 });
         await rename(temporaryPath, this.statePath as string);

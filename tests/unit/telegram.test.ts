@@ -1267,10 +1267,17 @@ test('normaliza reações de usuário e contagens sem criar turno de texto', asy
   });
 });
 
-test('encaminha eventos de tópicos sem criar turnos de texto', async () => {
+test('encaminha eventos de tópicos e restaura o estado após restart', async () => {
   const api = new FakeApi();
   const runtime = new FakeRuntime();
-  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7], allowedChats: [123] });
+  const statePath = join('/tmp', `atlas-telegram-topics-${Date.now()}-${Math.random()}.json`);
+  const adapter = new TelegramAdapter({
+    runtime,
+    api,
+    allowedUsers: [7],
+    allowedChats: [123],
+    statePath,
+  });
 
   const base = {
     chat: { id: 123, type: 'supergroup' as const },
@@ -1313,6 +1320,75 @@ test('encaminha eventos de tópicos sem criar turnos de texto', async () => {
       details: undefined,
     },
   ]);
+  const persisted = JSON.parse(await readFile(statePath, 'utf8')) as {
+    topics?: Array<{
+      conversationId: string;
+      topicId: string;
+      chatId: number | string;
+      action: string;
+      name?: string;
+      icon_color?: number;
+    }>;
+  };
+  assert.deepEqual(persisted.topics, [
+    {
+      conversationId: 'telegram:123:thread:88',
+      topicId: '88',
+      chatId: 123,
+      action: 'closed',
+      name: 'Filmes',
+      icon_color: 123456,
+    },
+  ]);
+
+  const restoredRuntime = new FakeRuntime();
+  const restoredAdapter = new TelegramAdapter({
+    runtime: restoredRuntime,
+    api: new FakeApi(),
+    allowedUsers: [7],
+    allowedChats: [123],
+    statePath,
+  });
+  await restoredAdapter.handleUpdate({
+    update_id: 62,
+    message: {
+      ...base,
+      message_id: 62,
+      forum_topic_reopened: {},
+    },
+  });
+
+  assert.deepEqual(restoredRuntime.topics, [
+    {
+      conversationId: 'telegram:123:thread:88',
+      topicId: '88',
+      messageId: '62',
+      action: 'reopened',
+      source: 'telegram',
+      details: undefined,
+    },
+  ]);
+  const restored = JSON.parse(await readFile(statePath, 'utf8')) as {
+    topics?: Array<{
+      conversationId: string;
+      topicId: string;
+      chatId: number | string;
+      action: string;
+      name?: string;
+      icon_color?: number;
+    }>;
+  };
+  assert.deepEqual(restored.topics, [
+    {
+      conversationId: 'telegram:123:thread:88',
+      topicId: '88',
+      chatId: 123,
+      action: 'reopened',
+      name: 'Filmes',
+      icon_color: 123456,
+    },
+  ]);
+  await rm(statePath, { force: true });
 });
 
 test('encaminha inline queries ao Runtime e responde com artigos', async () => {
