@@ -2006,7 +2006,24 @@ function isValidTelegramUpdate(value: unknown): value is TelegramUpdate {
   if (message !== undefined && isValidTelegramMessage(message)) {
     return true;
   }
-  return isValidTelegramCallback(update.callback_query);
+  return (
+    isValidTelegramCallback(update.callback_query) ||
+    isValidTelegramInlineQuery(update.inline_query)
+  );
+}
+
+function isValidTelegramInlineQuery(value: unknown): value is TelegramInlineQuery {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const query = value as Partial<TelegramInlineQuery>;
+  return (
+    typeof query.id === 'string' &&
+    query.from !== undefined &&
+    Number.isSafeInteger(query.from.id) &&
+    typeof query.query === 'string' &&
+    typeof query.offset === 'string'
+  );
 }
 
 function isValidTelegramMessage(value: unknown): value is TelegramMessage {
