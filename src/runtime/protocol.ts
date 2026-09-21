@@ -108,13 +108,27 @@ export type RuntimeInputResponse = {
   value: string;
 };
 
+export type RuntimeReactionRequest = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'reaction.request';
+  request_id: string;
+  conversation_id: string;
+  message_id: string;
+  action: 'added' | 'removed' | 'changed';
+  reactions: string[];
+  source: string;
+  actor_id?: string;
+};
+
 export type RuntimeRequest =
   | RuntimeTurnRequest
   | RuntimeTurnCancel
   | RuntimeTurnRecover
   | RuntimeCommandRequest
   | RuntimeApprovalResponse
-  | RuntimeInputResponse;
+  | RuntimeInputResponse
+  | RuntimeReactionRequest;
 
 export type RuntimeEventType =
   | 'session.updated'
@@ -137,6 +151,7 @@ export type RuntimeEventType =
   | 'approval.resolved'
   | 'input.requested'
   | 'input.resolved'
+  | 'reaction.completed'
   | 'runtime.restarting'
   | 'runtime.ready'
   | 'operation.resuming'
@@ -392,6 +407,33 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
 
   const request_id = requiredString(request.request_id, 'request_id');
   const conversation_id = requiredString(request.conversation_id, 'conversation_id');
+  if (request.type === 'reaction.request') {
+    const action = requiredString(request.action, 'action');
+    if (!['added', 'removed', 'changed'].includes(action)) {
+      throw new RuntimeProtocolError(`Unsupported reaction action "${action}".`);
+    }
+    if (
+      !Array.isArray(request.reactions) ||
+      request.reactions.some((item) => typeof item !== 'string')
+    ) {
+      throw new RuntimeProtocolError(
+        'Runtime request field "reactions" must be an array of strings.',
+      );
+    }
+    const actorId = optionalString(request.actor_id, 'actor_id');
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'reaction.request',
+      request_id,
+      conversation_id,
+      message_id: requiredString(request.message_id, 'message_id'),
+      action: action as RuntimeReactionRequest['action'],
+      reactions: request.reactions as string[],
+      source: requiredString(request.source, 'source'),
+      ...(actorId === undefined ? {} : { actor_id: actorId }),
+    };
+  }
   if (request.type === 'turn.request') {
     const attachments = parseAttachments(request.attachments);
     const context = parseTurnContext(request.context);

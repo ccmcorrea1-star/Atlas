@@ -39,6 +39,9 @@ import type {
   TelegramFileRef,
   TelegramMediaGroupItem,
   TelegramMessage,
+  TelegramMessageReactionCountUpdated,
+  TelegramMessageReactionUpdated,
+  TelegramReaction,
   TelegramRuntime,
   TelegramUpdate,
 } from './types.js';
@@ -297,6 +300,10 @@ export class TelegramAdapter {
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
     await this.stateLoaded;
+    if (update.message_reaction !== undefined || update.message_reaction_count !== undefined) {
+      await this.handleReactionUpdate(update);
+      return;
+    }
     if (update.callback_query !== undefined) {
       await this.handleCallbackQuery(update.callback_query);
       return;
@@ -349,6 +356,56 @@ export class TelegramAdapter {
     };
     void processMessage().catch(() => undefined);
     await processingPromise;
+  }
+
+  private async handleReactionUpdate(update: TelegramUpdate): Promise<void> {
+    const userReaction = update.message_reaction;
+    const countReaction = update.message_reaction_count;
+    if (userReaction !== undefined) {
+      const message = reactionMessage(userReaction);
+      if (!this.authorization.allows(message)) {
+        return;
+      }
+      const oldReactions = userReaction.old_reaction.map(telegramReactionValue);
+      const newReactions = userReaction.new_reaction.map(telegramReactionValue);
+      const action =
+        oldReactions.length === 0 && newReactions.length > 0
+          ? 'added'
+          : oldReactions.length > 0 && newReactions.length === 0
+            ? 'removed'
+            : 'changed';
+      const event = await this.options.runtime.react(
+        conversationIdForTelegram(userReaction.chat.id),
+        String(userReaction.message_id),
+        action,
+        newReactions,
+        'telegram',
+        userReaction.user === undefined
+          ? userReaction.actor_chat?.id.toString()
+          : String(userReaction.user.id),
+      );
+      if (event.type === 'error') {
+        console.error(`Atlas Telegram reaction failed: ${safeErrorMessage(event.data.message)}`);
+      }
+      return;
+    }
+    if (countReaction === undefined || !this.authorization.allows(reactionMessage(countReaction))) {
+      return;
+    }
+    const event = await this.options.runtime.react(
+      conversationIdForTelegram(countReaction.chat.id),
+      String(countReaction.message_id),
+      'changed',
+      countReaction.reactions.map(
+        (reaction) => `${telegramReactionValue(reaction.type)}:${reaction.total_count}`,
+      ),
+      'telegram',
+    );
+    if (event.type === 'error') {
+      console.error(
+        `Atlas Telegram reaction count failed: ${safeErrorMessage(event.data.message)}`,
+      );
+    }
   }
 
   private async handleMediaGroup(message: TelegramMessage): Promise<void> {
@@ -1390,6 +1447,21 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+}
+
+function telegramReactionValue(reaction: TelegramReaction): string {
+  return reaction.emoji ?? reaction.custom_emoji_id ?? reaction.type;
+}
+
+function reactionMessage(
+  reaction: TelegramMessageReactionUpdated | TelegramMessageReactionCountUpdated,
+): TelegramMessage {
+  const user = 'user' in reaction ? reaction.user : undefined;
+  return {
+    message_id: reaction.message_id,
+    chat: reaction.chat,
+    ...(user === undefined ? {} : { from: user }),
+  };
 }
 
 type TelegramMessageUpdate = {

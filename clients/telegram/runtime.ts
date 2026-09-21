@@ -119,6 +119,33 @@ export class UnixTelegramRuntime implements TelegramRuntime {
     );
   }
 
+  public react(
+    conversationId: string,
+    messageId: string,
+    action: 'added' | 'removed' | 'changed',
+    reactions: string[],
+    source: string,
+    actorId?: string,
+  ): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'reaction.request',
+        request_id: randomUUID(),
+        conversation_id: conversationId,
+        message_id: messageId,
+        action,
+        reactions,
+        source,
+        ...(actorId === undefined ? {} : { actor_id: actorId }),
+      },
+      (event) => event.type === 'reaction.completed' || event.type === 'error',
+      () => undefined,
+      true,
+    );
+  }
+
   private exchange(
     payload: Record<string, unknown>,
     isTerminal: (event: RuntimeEvent) => boolean,

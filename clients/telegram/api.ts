@@ -77,6 +77,8 @@ export class FetchTelegramApi implements TelegramApi {
         'channel_post',
         'edited_channel_post',
         'callback_query',
+        'message_reaction',
+        'message_reaction_count',
       ]),
     });
     if (offset !== undefined) {

@@ -152,6 +152,7 @@ class PartialDeliveryApi extends FakeApi {
 
 class FakeRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
+  public readonly reactions: Array<Record<string, unknown>> = [];
   private activeResolve: ((event: RuntimeEvent) => void) | undefined;
   private activeCallback: ((event: RuntimeEvent) => void) | undefined;
   private approvalResolve: ((event: RuntimeEvent) => void) | undefined;
@@ -272,6 +273,31 @@ class FakeRuntime implements TelegramRuntime {
     };
   }
 
+  public async react(
+    conversationId: string,
+    messageId: string,
+    action: 'added' | 'removed' | 'changed',
+    reactions: string[],
+    source: string,
+    actorId?: string,
+  ): Promise<RuntimeEvent> {
+    this.reactions.push({ conversationId, messageId, action, reactions, source, actorId });
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'reaction.completed',
+      request_id: 'reaction',
+      conversation_id: conversationId,
+      data: {
+        message_id: messageId,
+        action,
+        reactions,
+        source,
+        ...(actorId === undefined ? {} : { actor_id: actorId }),
+      },
+    };
+  }
+
   public async respondApproval(
     conversationId: string,
     approvalId: string,
@@ -324,6 +350,7 @@ class FakeRuntime implements TelegramRuntime {
 
 class ScriptedRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
+  public readonly reactions: Array<Record<string, unknown>> = [];
 
   public constructor(
     private readonly script: (
@@ -354,6 +381,31 @@ class ScriptedRuntime implements TelegramRuntime {
 
   public async command(): Promise<RuntimeEvent> {
     throw new Error('ScriptedRuntime does not implement commands.');
+  }
+
+  public async react(
+    conversationId: string,
+    messageId: string,
+    action: 'added' | 'removed' | 'changed',
+    reactions: string[],
+    source: string,
+    actorId?: string,
+  ): Promise<RuntimeEvent> {
+    this.reactions.push({ conversationId, messageId, action, reactions, source, actorId });
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'reaction.completed',
+      request_id: 'reaction',
+      conversation_id: conversationId,
+      data: {
+        message_id: messageId,
+        action,
+        reactions,
+        source,
+        ...(actorId === undefined ? {} : { actor_id: actorId }),
+      },
+    };
   }
 
   public async respondApproval(): Promise<RuntimeEvent> {
@@ -1037,6 +1089,52 @@ test('processa uma edição como nova revisão e deduplica a mesma revisão', as
   assert.equal(runtime.requests.length, 2);
   assert.equal(runtime.requests[0]?.input, 'texto original');
   assert.equal(runtime.requests[1]?.input, 'texto corrigido');
+});
+
+test('normaliza reações de usuário e contagens sem criar turno de texto', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7], allowedChats: [123] });
+
+  await adapter.handleUpdate({
+    update_id: 50,
+    message_reaction: {
+      chat: { id: 123, type: 'private' },
+      message_id: 51,
+      user: { id: 7, first_name: 'Caio' },
+      date: 1,
+      old_reaction: [],
+      new_reaction: [{ type: 'emoji', emoji: '👍' }],
+    },
+  });
+  await adapter.handleUpdate({
+    update_id: 51,
+    message_reaction_count: {
+      chat: { id: 123, type: 'private' },
+      message_id: 51,
+      date: 2,
+      reactions: [{ type: { type: 'emoji', emoji: '👍' }, total_count: 3 }],
+    },
+  });
+
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(runtime.reactions.length, 2);
+  assert.deepEqual(runtime.reactions[0], {
+    conversationId: 'telegram:123:thread:root',
+    messageId: '51',
+    action: 'added',
+    reactions: ['👍'],
+    source: 'telegram',
+    actorId: '7',
+  });
+  assert.deepEqual(runtime.reactions[1], {
+    conversationId: 'telegram:123:thread:root',
+    messageId: '51',
+    action: 'changed',
+    reactions: ['👍:3'],
+    source: 'telegram',
+    actorId: undefined,
+  });
 });
 
 test('routes status and stop while a turn is active', async () => {

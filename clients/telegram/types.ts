@@ -94,6 +94,29 @@ export type TelegramCallbackQuery = {
   message?: TelegramMessage;
 };
 
+export type TelegramReaction = {
+  type: 'emoji' | 'custom_emoji' | 'paid';
+  emoji?: string;
+  custom_emoji_id?: string;
+};
+
+export type TelegramMessageReactionUpdated = {
+  chat: TelegramChat;
+  message_id: number;
+  user?: TelegramUser;
+  actor_chat?: TelegramChat;
+  date: number;
+  old_reaction: TelegramReaction[];
+  new_reaction: TelegramReaction[];
+};
+
+export type TelegramMessageReactionCountUpdated = {
+  chat: TelegramChat;
+  message_id: number;
+  date: number;
+  reactions: Array<{ type: TelegramReaction; total_count: number }>;
+};
+
 export type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
@@ -101,6 +124,8 @@ export type TelegramUpdate = {
   channel_post?: TelegramMessage;
   edited_channel_post?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  message_reaction?: TelegramMessageReactionUpdated;
+  message_reaction_count?: TelegramMessageReactionCountUpdated;
 };
 
 export type TelegramBot = {
@@ -234,6 +259,14 @@ export type TelegramRuntime = {
       context?: RuntimeTurnContext;
     },
     onEvent: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent>;
+  react(
+    conversationId: string,
+    messageId: string,
+    action: 'added' | 'removed' | 'changed',
+    reactions: string[],
+    source: string,
+    actorId?: string,
   ): Promise<RuntimeEvent>;
   command(conversationId: string, command: 'new' | 'status' | 'stop'): Promise<RuntimeEvent>;
   respondApproval(

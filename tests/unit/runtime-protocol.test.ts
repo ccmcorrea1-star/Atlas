@@ -261,6 +261,36 @@ test('parses locations and venues as structured attachments', () => {
   assert.equal(parsed.attachments?.[1]?.description, 'Praça — Rua A');
 });
 
+test('parses reaction requests as a separate Runtime family', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'reaction.request',
+      request_id: 'reaction-1',
+      conversation_id: 'telegram:123:thread:root',
+      message_id: '51',
+      action: 'added',
+      reactions: ['👍'],
+      source: 'telegram',
+      actor_id: '7',
+    }),
+  );
+
+  assert.deepEqual(parsed, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'reaction.request',
+    request_id: 'reaction-1',
+    conversation_id: 'telegram:123:thread:root',
+    message_id: '51',
+    action: 'added',
+    reactions: ['👍'],
+    source: 'telegram',
+    actor_id: '7',
+  });
+});
+
 test('accepts only commands exposed by the Runtime catalog', () => {
   assert.deepEqual(
     RUNTIME_COMMANDS.map((command) => command.name),

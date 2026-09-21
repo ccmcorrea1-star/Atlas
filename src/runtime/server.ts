@@ -274,6 +274,9 @@ export class AtlasRuntimeServer {
     if (message.type === 'input.respond') {
       return this.handleInputResponse(message, send);
     }
+    if (message.type === 'reaction.request') {
+      return this.handleReaction(message, send);
+    }
 
     const request = message;
     const existing = this.requestLedger.get(request.request_id);
@@ -608,6 +611,24 @@ export class AtlasRuntimeServer {
       status: statusOverride ?? (activeRequestId === undefined ? 'idle' : 'running'),
       ...(activeRequestId === undefined ? {} : { active_request_id: activeRequestId }),
     };
+  }
+
+  private handleReaction(
+    request: Extract<RuntimeRequest, { type: 'reaction.request' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    send(
+      serializeRuntimeMessage(
+        runtimeEvent(request, 'reaction.completed', {
+          message_id: request.message_id,
+          action: request.action,
+          reactions: request.reactions,
+          source: request.source,
+          ...(request.actor_id === undefined ? {} : { actor_id: request.actor_id }),
+        }),
+      ),
+    );
+    return Promise.resolve();
   }
 
   private handleCancel(

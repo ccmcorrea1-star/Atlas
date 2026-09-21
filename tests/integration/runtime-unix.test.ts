@@ -683,6 +683,41 @@ async function startPartialHangingModelServer(): Promise<{
   };
 }
 
+function sendReaction(socketPath: string): Promise<WireMessage> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath, () => {
+      socket.end(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'reaction.request',
+          request_id: 'reaction-integration-request',
+          conversation_id: 'telegram:123:thread:root',
+          message_id: '51',
+          action: 'added',
+          reactions: ['👍'],
+          source: 'telegram',
+          actor_id: '7',
+        })}
+`,
+      );
+    });
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    let buffer = '';
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newlineIndex = buffer.indexOf('\n');
+      if (newlineIndex === -1) {
+        return;
+      }
+      const event = JSON.parse(buffer.slice(0, newlineIndex)) as WireMessage;
+      socket.destroy();
+      resolve(event);
+    });
+  });
+}
+
 function sendTurnAndCancel(
   socketPath: string,
   conversationId: string,
@@ -958,6 +993,34 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
   } finally {
     await runtime.close();
     await model.close();
+  }
+});
+
+test('publishes a typed reaction completion over the public Unix protocol', async () => {
+  const socketPath = `/tmp/atlas-runtime-reaction-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const event = await sendReaction(socketPath);
+    assert.equal(event.type, 'reaction.completed');
+    assert.equal(event.request_id, 'reaction-integration-request');
+    assert.equal(event.conversation_id, 'telegram:123:thread:root');
+    assert.deepEqual(event.data, {
+      message_id: '51',
+      action: 'added',
+      reactions: ['👍'],
+      source: 'telegram',
+      actor_id: '7',
+    });
+  } finally {
+    await runtime.close();
   }
 });
 
