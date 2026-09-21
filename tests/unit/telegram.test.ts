@@ -24,6 +24,7 @@ class FakeApi implements TelegramApi {
   public readonly sent: Array<{ chatId: number | string; text: string }> = [];
   public readonly sentOptions: Array<Record<string, unknown> | undefined> = [];
   public readonly edits: Array<{ chatId: number | string; messageId: number; text: string }> = [];
+  public readonly operations: Array<{ type: 'send' | 'edit'; at: number; text: string }> = [];
   public readonly markupEdits: Array<{ chatId: number | string; messageId: number }> = [];
   public readonly callbackAnswers: Array<{ id: string; text?: string }> = [];
   public readonly downloaded: string[] = [];
@@ -46,6 +47,7 @@ class FakeApi implements TelegramApi {
     text: string,
     options?: { reply_markup?: { inline_keyboard: Array<Array<Record<string, unknown>>> } },
   ): Promise<TelegramSentMessage> {
+    this.operations.push({ type: 'send', at: Date.now(), text });
     this.sent.push({ chatId, text });
     this.sentOptions.push(options as Record<string, unknown> | undefined);
     return { message_id: this.nextMessageId++, chat: { id: chatId, type: 'private' } };
@@ -56,6 +58,7 @@ class FakeApi implements TelegramApi {
     messageId: number,
     text: string,
   ): Promise<void> {
+    this.operations.push({ type: 'edit', at: Date.now(), text });
     this.edits.push({ chatId, messageId, text });
   }
 
@@ -83,6 +86,24 @@ class FakeApi implements TelegramApi {
     this.downloaded.push(filePath);
     await mkdir(join(destination, '..'), { recursive: true });
     await writeFile(destination, 'img');
+  }
+}
+
+class RetryAfterApi extends FakeApi {
+  public failedEditAt: number | undefined;
+  private failNextEdit = true;
+
+  public override async editMessageText(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+  ): Promise<void> {
+    if (this.failNextEdit) {
+      this.failNextEdit = false;
+      this.failedEditAt = Date.now();
+      throw Object.assign(new Error('Too Many Requests'), { retry_after: 0.05 });
+    }
+    await super.editMessageText(chatId, messageId, text);
   }
 }
 
@@ -419,8 +440,8 @@ test('keeps rapid out-of-order snapshots isolated by message_id', async () => {
 
   const edits = lastEdits(api);
   assert.equal(edits.get(100), 'um dois');
-  assert.equal(edits.get(101), 'outro texto');
-  assert.equal(edits.size, 2);
+  assert.ok(api.sent.some((entry) => entry.text === 'outro texto'));
+  assert.equal(edits.size, 1);
 });
 
 test('does not regress a message when completion arrives after deltas', async () => {
@@ -454,11 +475,140 @@ for (const [name, length, expectedChunks] of [
     await adapter.handleUpdate({ update_id: length, message: message({ text: `long ${name}` }) });
 
     const edits = lastEdits(api);
-    assert.equal(edits.size, expectedChunks);
-    assert.equal([...edits.values()].join(''), content);
-    assert.ok([...edits.values()].every((chunk) => Array.from(chunk).length <= 4096));
+    const delivered = [edits.get(100) ?? '', ...api.sent.slice(1).map((entry) => entry.text)].join(
+      '',
+    );
+    assert.equal(delivered, content);
+    assert.equal(edits.size, 1);
+    assert.equal(api.sent.length, expectedChunks);
+    assert.ok(api.sent.slice(1).every((entry) => Array.from(entry.text).length <= 4096));
   });
 }
+
+test('serializes many deltas without losing the complete response', async () => {
+  const api = new FakeApi();
+  const content = Array.from({ length: 120 }, (_, index) => `delta-${index}`).join(' ');
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    for (const [index, delta] of content.split(' ').entries()) {
+      onEvent(
+        runtimeEvent('message.delta', {
+          message_id: 'm1',
+          delta: `${index === 0 ? '' : ' '}${delta}`,
+        }),
+      );
+    }
+    return runtimeEvent('turn.completed', { message_id: 'm1', content });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 20, message: message({ text: 'muitos deltas' }) });
+
+  assert.equal(api.edits.at(-1)?.text, content);
+});
+
+test('keeps an oversized preview in one message until finalization', async () => {
+  const api = new FakeApi();
+  const content = 'x'.repeat(8_193);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: content }));
+    await gate;
+    return runtimeEvent('turn.completed', { message_id: 'm1', content });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const active = adapter.handleUpdate({ update_id: 21, message: message({ text: 'preview' }) });
+
+  await waitFor(1_100);
+  assert.equal(api.sent.length, 1);
+  assert.equal(api.edits[0]?.text, content.slice(0, 4_096));
+  release();
+  await active;
+
+  assert.equal(api.sent.length, 3);
+  assert.equal(
+    api.sent
+      .slice(1)
+      .map((entry) => entry.text)
+      .join(''),
+    content.slice(4_096),
+  );
+});
+
+test('ignores an identical final edit after an intermediate preview', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'igual' }));
+    await waitFor(1_100);
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'igual' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 22, message: message({ text: 'igual' }) });
+
+  assert.deepEqual(
+    api.edits.map((edit) => edit.text),
+    ['igual'],
+  );
+});
+
+test('shares one budget between the initial send, final edit and continuation sends', async () => {
+  const api = new FakeApi();
+  const content = 'y'.repeat(4_097);
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: content }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 23, message: message({ text: 'budget' }) });
+
+  assert.deepEqual(
+    api.operations.map((operation) => operation.type),
+    ['send', 'edit', 'send'],
+  );
+  assert.ok(
+    api.operations.every(
+      (operation, index, all) =>
+        index === 0 || operation.at - (all[index - 1]?.at ?? operation.at) >= 900,
+    ),
+  );
+});
+
+test('waits for retry_after before retrying a flooded edit', async () => {
+  const api = new RetryAfterApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'retry' }));
+    await waitFor(1_100);
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'retry' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 24, message: message({ text: 'flood' }) });
+
+  const successfulEdit = api.operations.find((operation) => operation.type === 'edit');
+  assert.ok(api.failedEditAt !== undefined);
+  assert.ok(successfulEdit !== undefined);
+  assert.ok(successfulEdit.at - api.failedEditAt >= 40);
+  assert.equal(api.edits.at(-1)?.text, 'retry');
+});
+
+test('deduplicates the same Telegram message across different update ids', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (_request, onEvent) => {
+    onEvent(runtimeEvent('message.delta', { message_id: 'm1', delta: 'uma vez' }));
+    return runtimeEvent('turn.completed', { message_id: 'm1', content: 'uma vez' });
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const first = { update_id: 25, message: message({ message_id: 55, text: 'reconnect' }) };
+  const second = { update_id: 26, message: message({ message_id: 55, text: 'reconnect' }) };
+
+  await Promise.all([adapter.handleUpdate(first), adapter.handleUpdate(second)]);
+
+  assert.equal(runtime.requests.length, 1);
+});
 
 test('renders the newest snapshot after a delayed edit', async () => {
   const api = new DelayedEditApi();
@@ -504,7 +654,7 @@ test('resolves approvals through Telegram callback buttons', async () => {
   const runtime = new FakeRuntime();
   const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
   const active = adapter.handleUpdate({ update_id: 1, message: message({ text: 'approval' }) });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await waitFor(1_050);
 
   const approvalMessage = api.sent.find((entry) => entry.text.includes('Aprovação necessária'));
   assert.ok(approvalMessage);

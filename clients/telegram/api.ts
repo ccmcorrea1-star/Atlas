@@ -15,7 +15,20 @@ type TelegramResponse<T> = {
   ok: boolean;
   result?: T;
   description?: string;
+  parameters?: { retry_after?: number };
 };
+
+export class TelegramApiError extends Error {
+  public readonly retry_after?: number;
+
+  public constructor(message: string, retryAfter?: number) {
+    super(message);
+    this.name = 'TelegramApiError';
+    if (retryAfter !== undefined) {
+      this.retry_after = retryAfter;
+    }
+  }
+}
 
 export class FetchTelegramApi implements TelegramApi {
   private readonly apiBase: string;
@@ -177,7 +190,7 @@ export class FetchTelegramApi implements TelegramApi {
     const response = await fetch(`${this.apiBase}/${method}`, { method: 'POST', body: form });
     const payload = (await response.json()) as TelegramResponse<unknown>;
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.description ?? `Telegram API ${method} failed.`);
+      throw telegramError(method, payload);
     }
   }
 
@@ -187,7 +200,7 @@ export class FetchTelegramApi implements TelegramApi {
     });
     const payload = (await response.json()) as TelegramResponse<T>;
     if (!response.ok || !payload.ok || payload.result === undefined) {
-      throw new Error(payload.description ?? `Telegram API ${method} failed.`);
+      throw telegramError(method, payload);
     }
     return payload.result;
   }
@@ -200,10 +213,17 @@ export class FetchTelegramApi implements TelegramApi {
     });
     const payload = (await response.json()) as TelegramResponse<T>;
     if (!response.ok || !payload.ok || payload.result === undefined) {
-      throw new Error(payload.description ?? `Telegram API ${method} failed.`);
+      throw telegramError(method, payload);
     }
     return payload.result;
   }
+}
+
+function telegramError<T>(method: string, payload: TelegramResponse<T>): TelegramApiError {
+  return new TelegramApiError(
+    payload.description ?? `Telegram API ${method} failed.`,
+    payload.parameters?.retry_after,
+  );
 }
 
 export async function readTelegramMedia(path: string): Promise<Uint8Array> {
