@@ -10,25 +10,33 @@ import type {
   RuntimeEvent,
   RuntimeTurnCompletedData,
 } from '../../src/runtime/protocol.js';
-import { RUNTIME_COMMANDS } from '../../src/runtime/protocol.js';
 import { FetchTelegramApi } from './api.js';
 import { TelegramChatBudget } from './budget.js';
 import { TelegramStreamConsumer } from './stream-consumer.js';
 import type { TelegramDeliveryLedger } from './stream-consumer.js';
-import { TELEGRAM_CAPTION_LIMIT, splitTelegramText, truncateTelegramText } from './text.js';
+import {
+  TELEGRAM_CAPTION_LIMIT,
+  renderTelegramMarkdown,
+  splitTelegramText,
+  truncateTelegramText,
+} from './text.js';
 import {
   TelegramAuthorization,
   conversationIdForTelegram,
   groupIsTriggered,
   runtimeCommandFromText,
   stripBotMention,
+  TELEGRAM_COMMANDS,
+  type TelegramCommandName,
 } from './routing.js';
 import type {
   TelegramApi,
   TelegramBot,
+  TelegramBotCommandScope,
   TelegramCallbackQuery,
   TelegramChat,
   TelegramFileRef,
+  TelegramMediaGroupItem,
   TelegramMessage,
   TelegramRuntime,
   TelegramUpdate,
@@ -242,12 +250,24 @@ export class TelegramAdapter {
     if (this.api.setMyCommands === undefined) {
       return;
     }
-    await this.api.setMyCommands(
-      RUNTIME_COMMANDS.map((command) => ({
-        command: command.name,
-        description: command.description,
-      })),
-    );
+    const commands = TELEGRAM_COMMANDS.map((command) => ({
+      command: command.name,
+      description: command.description,
+    }));
+    const scopes: TelegramBotCommandScope[] = [
+      { type: 'default' },
+      { type: 'all_private_chats' },
+      { type: 'all_group_chats' },
+    ];
+    for (const scope of scopes) {
+      await this.api.setMyCommands(commands, scope);
+      if (this.api.getMyCommands !== undefined) {
+        const registered = await this.api.getMyCommands(scope);
+        if (!sameCommandMenu(commands, registered)) {
+          throw new Error(`Telegram command menu verification failed for ${scope.type}.`);
+        }
+      }
+    }
   }
 
   public async stop(): Promise<void> {
@@ -377,8 +397,12 @@ export class TelegramAdapter {
   private async handleCommand(
     message: TelegramMessage,
     conversationId: string,
-    command: 'new' | 'status' | 'stop',
+    command: TelegramCommandName,
   ): Promise<void> {
+    if (command === 'help') {
+      await this.sendText(message.chat.id, formatHelp(), replyOptions(message));
+      return;
+    }
     const event = await this.options.runtime.command(conversationId, command);
     if (event.type !== 'command.completed') {
       await this.sendText(message.chat.id, eventMessage(event), replyOptions(message));
@@ -433,8 +457,8 @@ export class TelegramAdapter {
             : { message_thread_id: message.message_thread_id }),
           reply_to_message_id: message.message_id,
         },
-        sendMessage: (text, options) => this.sendMessage(message.chat.id, text, options),
-        editMessage: (messageId, text) => this.editMessage(message.chat.id, messageId, text),
+        sendMessage: (text, options) => this.sendMessageRaw(message.chat.id, text, options),
+        editMessage: (messageId, text) => this.editMessageRaw(message.chat.id, messageId, text),
         delivery: turn.delivery,
         onDelivery: async (delivery) => {
           turn.delivery = delivery;
@@ -967,12 +991,21 @@ export class TelegramAdapter {
     text: string,
     options: Parameters<TelegramApi['sendMessage']>[2] = {},
   ): Promise<void> {
-    for (const chunk of splitTelegramText(text || ' ')) {
-      await this.sendMessage(chatId, chunk, options);
+    const rendered = renderTelegramMarkdown(text || ' ');
+    for (const chunk of splitTelegramText(rendered)) {
+      await this.sendMessageRaw(chatId, chunk, options);
     }
   }
 
-  private async sendMessage(
+  private sendMessage(
+    chatId: number | string,
+    text: string,
+    options: Parameters<TelegramApi['sendMessage']>[2] = {},
+  ): ReturnType<TelegramApi['sendMessage']> {
+    return this.sendMessageRaw(chatId, renderTelegramMarkdown(text), options);
+  }
+
+  private async sendMessageRaw(
     chatId: number | string,
     text: string,
     options: Parameters<TelegramApi['sendMessage']>[2] = {},
@@ -1014,6 +1047,10 @@ export class TelegramAdapter {
   }
 
   private editMessage(chatId: number | string, messageId: number, text: string): Promise<void> {
+    return this.editMessageRaw(chatId, messageId, renderTelegramMarkdown(text));
+  }
+
+  private editMessageRaw(chatId: number | string, messageId: number, text: string): Promise<void> {
     return this.chatBudgets
       .enqueue(chatId, () =>
         this.api.editMessageText(chatId, messageId, text, { parse_mode: 'MarkdownV2' }),
@@ -1047,8 +1084,37 @@ export class TelegramAdapter {
     attachments: RuntimeAttachment[] | undefined,
     threadId?: number,
   ): Promise<void> {
-    for (const attachment of attachments ?? []) {
-      if (!attachment.uri.startsWith('file://')) {
+    const items = attachments ?? [];
+    let index = 0;
+    while (index < items.length) {
+      const album: TelegramMediaGroupItem[] = [];
+      let albumEnd = index;
+      while (album.length < 10 && albumEnd < items.length) {
+        const item = items[albumEnd];
+        if (item === undefined || !isAlbumAttachment(item) || !item.uri.startsWith('file://')) {
+          break;
+        }
+        album.push({
+          type: item.type === 'image' ? 'photo' : item.type,
+          filePath: fileURLToPath(item.uri),
+          ...(item.file_name === undefined
+            ? {}
+            : { caption: truncateTelegramText(item.file_name, TELEGRAM_CAPTION_LIMIT) }),
+        });
+        albumEnd += 1;
+      }
+      if (album.length >= 2 && this.api.sendMediaGroup !== undefined) {
+        const sendMediaGroup = this.api.sendMediaGroup.bind(this.api);
+        await this.sendMediaWithThreadFallback(chatId, threadId, (options) =>
+          this.chatBudgets.enqueue(chatId, () => sendMediaGroup(chatId, album, options)),
+        );
+        index = albumEnd;
+        continue;
+      }
+
+      const attachment = items[index];
+      index += 1;
+      if (attachment === undefined || !attachment.uri.startsWith('file://')) {
         continue;
       }
       const filePath = fileURLToPath(attachment.uri);
@@ -1060,6 +1126,16 @@ export class TelegramAdapter {
         const sendPhoto = this.api.sendPhoto.bind(this.api);
         await this.sendMediaWithThreadFallback(chatId, threadId, (options) =>
           this.chatBudgets.enqueue(chatId, () => sendPhoto(chatId, filePath, caption, options)),
+        );
+      } else if (attachment.type === 'video' && this.api.sendVideo !== undefined) {
+        const sendVideo = this.api.sendVideo.bind(this.api);
+        await this.sendMediaWithThreadFallback(chatId, threadId, (options) =>
+          this.chatBudgets.enqueue(chatId, () => sendVideo(chatId, filePath, caption, options)),
+        );
+      } else if (attachment.type === 'animation' && this.api.sendAnimation !== undefined) {
+        const sendAnimation = this.api.sendAnimation.bind(this.api);
+        await this.sendMediaWithThreadFallback(chatId, threadId, (options) =>
+          this.chatBudgets.enqueue(chatId, () => sendAnimation(chatId, filePath, caption, options)),
         );
       } else if (attachment.type === 'voice' && this.api.sendVoice !== undefined) {
         const sendVoice = this.api.sendVoice.bind(this.api);
@@ -1120,6 +1196,20 @@ export class TelegramAdapter {
     const photo = message.photo?.at(-1);
     if (photo !== undefined) {
       refs.push({ type: 'image', ref: photo, mediaType: 'image/jpeg' });
+    }
+    if (message.video !== undefined) {
+      refs.push({
+        type: 'video',
+        ref: message.video,
+        mediaType: message.video.mime_type ?? 'video/mp4',
+      });
+    }
+    if (message.animation !== undefined) {
+      refs.push({
+        type: 'animation',
+        ref: message.animation,
+        mediaType: message.animation.mime_type ?? 'video/mp4',
+      });
     }
     if (message.document !== undefined) {
       refs.push({
@@ -1270,6 +1360,35 @@ function parseInputCallback(
 
 function eventMessage(event: RuntimeEvent): string {
   return stringField(event.data.message) || 'O Runtime não concluiu a operação.';
+}
+
+function isAlbumAttachment(
+  attachment: RuntimeAttachment,
+): attachment is RuntimeAttachment & { type: 'image' | 'video' | 'document' } {
+  return (
+    attachment.type === 'image' || attachment.type === 'video' || attachment.type === 'document'
+  );
+}
+
+function sameCommandMenu(
+  expected: Array<{ command: string; description: string }>,
+  actual: Array<{ command: string; description: string }>,
+): boolean {
+  return (
+    expected.length === actual.length &&
+    expected.every(
+      (command, index) =>
+        command.command === actual[index]?.command &&
+        command.description === actual[index]?.description,
+    )
+  );
+}
+
+function formatHelp(): string {
+  return [
+    '*Comandos disponíveis*',
+    ...TELEGRAM_COMMANDS.map((command) => `/${command.name} — ${command.description}`),
+  ].join('\n');
 }
 
 function formatCommandResult(data: RuntimeCommandCompletedData): string {

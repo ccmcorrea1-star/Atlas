@@ -16,11 +16,16 @@ import type {
   TelegramApi,
   TelegramBot,
   TelegramMessage,
+  TelegramMediaGroupItem,
   TelegramRuntime,
   TelegramSentMessage,
   TelegramUpdate,
 } from '../../clients/telegram/types.js';
-import { splitTelegramText, telegramUtf16Length } from '../../clients/telegram/text.js';
+import {
+  splitTelegramText,
+  telegramUtf16Length,
+  renderTelegramMarkdown,
+} from '../../clients/telegram/text.js';
 
 class FakeApi implements TelegramApi {
   public readonly sent: Array<{ chatId: number | string; text: string }> = [];
@@ -31,6 +36,7 @@ class FakeApi implements TelegramApi {
   public readonly callbackAnswers: Array<{ id: string; text?: string }> = [];
   public readonly downloaded: string[] = [];
   public readonly sentAttachments: string[] = [];
+  public readonly sentAlbums: TelegramMediaGroupItem[][] = [];
   private nextMessageId = 100;
 
   public async getMe(): Promise<TelegramBot> {
@@ -66,6 +72,21 @@ class FakeApi implements TelegramApi {
 
   public async sendPhoto(_chatId: number | string, filePath: string): Promise<void> {
     this.sentAttachments.push(`photo:${filePath}`);
+  }
+
+  public async sendVideo(_chatId: number | string, filePath: string): Promise<void> {
+    this.sentAttachments.push(`video:${filePath}`);
+  }
+
+  public async sendAnimation(_chatId: number | string, filePath: string): Promise<void> {
+    this.sentAttachments.push(`animation:${filePath}`);
+  }
+
+  public async sendMediaGroup(
+    _chatId: number | string,
+    items: TelegramMediaGroupItem[],
+  ): Promise<void> {
+    this.sentAlbums.push(items);
   }
 
   public async sendDocument(_chatId: number | string, filePath: string): Promise<void> {
@@ -415,6 +436,7 @@ test('denies access by default and accepts explicit user or chat allowlists', ()
 
 test('derives commands from the Runtime registry and gates groups by mention or reply', () => {
   assert.equal(runtimeCommandFromText('/status@atlas_bot'), 'status');
+  assert.equal(runtimeCommandFromText('/help'), 'help');
   assert.equal(runtimeCommandFromText('/unknown'), undefined);
   const group = message({ chat: { id: -10, type: 'supergroup' }, text: 'oi' });
   assert.equal(groupIsTriggered(group, { id: 42, username: 'atlas_bot' }), false);
@@ -446,6 +468,27 @@ test('derives commands from the Runtime registry and gates groups by mention or 
   );
 });
 
+test('renderiza Markdown comum com escape seguro para MarkdownV2', () => {
+  const rendered = renderTelegramMarkdown('# Título\n\n**forte** e `código`\n\nitem-a');
+  assert.equal(rendered, '*Título*\n\n*forte* e `código`\n\nitem\\-a');
+  assert.equal(
+    renderTelegramMarkdown('[Atlas](https://atlas.local)'),
+    '[Atlas](https://atlas.local)',
+  );
+  assert.equal(renderTelegramMarkdown('> citação'), '> citação');
+});
+
+test('responde /help sem criar uma chamada ao Runtime', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 4, message: message({ text: '/help' }) });
+
+  assert.equal(runtime.requests.length, 0);
+  assert.match(api.sent.at(-1)?.text ?? '', /\/help/iu);
+  assert.match(api.sent.at(-1)?.text ?? '', /\/status/iu);
+});
 test('streams deltas by editing one Telegram message and preserves typed attachments', async () => {
   const api = new FakeApi();
   const runtime = new FakeRuntime();
@@ -460,6 +503,7 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
     message: message({
       text: 'veja',
       photo: [{ file_id: 'photo-1', width: 10, height: 10 }],
+      video: { file_id: 'video-1', mime_type: 'video/mp4' },
     }),
   });
 
@@ -468,6 +512,7 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
   assert.equal(runtime.requests[0]?.conversation_id, 'telegram:123:thread:root');
   const attachments = runtime.requests[0]?.attachments as Array<Record<string, unknown>>;
   assert.equal(attachments[0]?.type, 'image');
+  assert.equal(attachments[1]?.type, 'video');
   assert.equal(
     attachments[0]?.source && (attachments[0].source as Record<string, string>).platform,
     'telegram',
@@ -475,7 +520,56 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
   assert.deepEqual(api.sentAttachments, ['document:/tmp/output.txt']);
 });
 
-test('rematerializes a pending Telegram attachment after Runtime recovery', async () => {
+test('entrega vídeo e animação usando as APIs nativas do Telegram', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async () =>
+    runtimeEvent('turn.completed', {
+      content: 'arquivos prontos',
+      attachments: [
+        {
+          type: 'video',
+          uri: 'file:///tmp/video.mp4',
+          media_type: 'video/mp4',
+          file_name: 'video.mp4',
+        },
+        {
+          type: 'animation',
+          uri: 'file:///tmp/animation.gif',
+          media_type: 'image/gif',
+          file_name: 'animation.gif',
+        },
+      ],
+    }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 5, message: message({ text: 'envie os arquivos' }) });
+
+  assert.deepEqual(api.sentAttachments, ['video:/tmp/video.mp4', 'animation:/tmp/animation.gif']);
+});
+test('agrupa fotos e vídeos em um álbum do Telegram', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async () =>
+    runtimeEvent('turn.completed', {
+      content: 'álbum pronto',
+      attachments: [
+        { type: 'image', uri: 'file:///tmp/photo.jpg', media_type: 'image/jpeg' },
+        { type: 'video', uri: 'file:///tmp/video.mp4', media_type: 'video/mp4' },
+      ],
+    }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({ update_id: 6, message: message({ text: 'envie o álbum' }) });
+
+  assert.deepEqual(api.sentAlbums, [
+    [
+      { type: 'photo', filePath: '/tmp/photo.jpg' },
+      { type: 'video', filePath: '/tmp/video.mp4' },
+    ],
+  ]);
+});
+test('rematerializa um anexo pendente após recuperação do Runtime', async () => {
   const statePath = join('/tmp', `atlas-telegram-attachment-${Date.now()}-${Math.random()}.json`);
   const api = new FakeApi();
   const update = {
@@ -668,7 +762,7 @@ test('serializes many deltas without losing the complete response', async () => 
 
   await adapter.handleUpdate({ update_id: 20, message: message({ text: 'muitos deltas' }) });
 
-  assert.equal(api.edits.at(-1)?.text, content);
+  assert.equal(api.edits.at(-1)?.text, renderTelegramMarkdown(content));
 });
 
 test('keeps an oversized preview in one message until finalization', async () => {
@@ -809,8 +903,10 @@ test('routes status and stop while a turn is active', async () => {
   await adapter.handleUpdate({ update_id: 3, message: message({ message_id: 3, text: '/stop' }) });
   await active;
 
-  assert.ok(api.sent.some((entry) => entry.text.includes('Sessão ativa.')));
-  assert.ok(api.sent.some((entry) => entry.text.includes('Turno cancelado.')));
+  assert.ok(api.sent.some((entry) => entry.text.includes(renderTelegramMarkdown('Sessão ativa.'))));
+  assert.ok(
+    api.sent.some((entry) => entry.text.includes(renderTelegramMarkdown('Turno cancelado.'))),
+  );
   assert.ok(api.edits.some((edit) => edit.text === 'Olá'));
 });
 

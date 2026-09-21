@@ -527,7 +527,7 @@ async function startCrashBoundaryModelServer(): Promise<{
     for await (const chunk of request) {
       chunks.push(Buffer.from(chunk));
     }
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage;
+    const _body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage;
     requestCount += 1;
     if (requestCount === 1) {
       const output = {

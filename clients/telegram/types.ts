@@ -44,6 +44,8 @@ export type TelegramMessage = {
   reply_to_message?: TelegramMessage;
   voice?: TelegramFileRef;
   audio?: TelegramFileRef;
+  video?: TelegramFileRef;
+  animation?: TelegramFileRef;
   photo?: TelegramPhotoSize[];
   document?: TelegramFileRef;
 };
@@ -78,6 +80,30 @@ export type TelegramBot = {
 export type TelegramSentMessage = {
   message_id: number;
   chat: TelegramChat;
+};
+
+export type TelegramBotCommand = {
+  command: string;
+  description: string;
+};
+
+export type TelegramBotCommandScope =
+  | { type: 'default' }
+  | { type: 'all_private_chats' }
+  | { type: 'all_group_chats' }
+  | { type: 'all_chat_administrators' };
+
+export type TelegramMediaInput = {
+  type: 'photo' | 'video' | 'animation' | 'document';
+  media: string;
+  caption?: string;
+  parse_mode?: 'MarkdownV2';
+};
+
+export type TelegramMediaGroupItem = {
+  type: 'photo' | 'video' | 'document';
+  filePath: string;
+  caption?: string;
 };
 
 export type TelegramSendOptions = {
@@ -127,6 +153,23 @@ export type TelegramApi = {
     caption?: string,
     options?: TelegramMediaOptions,
   ): Promise<void>;
+  sendVideo?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendAnimation?(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
+  sendMediaGroup?(
+    chatId: number | string,
+    items: TelegramMediaGroupItem[],
+    options?: TelegramMediaOptions,
+  ): Promise<void>;
   sendAudio?(
     chatId: number | string,
     filePath: string,
@@ -146,7 +189,8 @@ export type TelegramApi = {
     options?: TelegramMediaOptions,
   ): Promise<void>;
   sendChatAction?(chatId: number | string, action: 'typing' | 'upload_document'): Promise<void>;
-  setMyCommands?(commands: Array<{ command: string; description: string }>): Promise<void>;
+  setMyCommands?(commands: TelegramBotCommand[], scope?: TelegramBotCommandScope): Promise<void>;
+  getMyCommands?(scope?: TelegramBotCommandScope): Promise<TelegramBotCommand[]>;
 };
 
 export type TelegramRuntime = {

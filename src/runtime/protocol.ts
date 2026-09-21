@@ -1,7 +1,8 @@
 export const RUNTIME_PROTOCOL = 'atlas-runtime';
 export const RUNTIME_PROTOCOL_VERSION = 1;
 
-export type RuntimeAttachmentType = 'voice' | 'audio' | 'image' | 'document';
+export type RuntimeAttachmentType =
+  'voice' | 'audio' | 'image' | 'video' | 'animation' | 'document';
 
 export type RuntimeAttachment = {
   type: RuntimeAttachmentType;
@@ -272,7 +273,7 @@ function parseAttachments(value: unknown): RuntimeAttachment[] | undefined {
   return value.map((item, index) => {
     const attachment = objectValue(item, `Runtime attachment ${index}`);
     const type = requiredString(attachment.type, `attachments[${index}].type`);
-    if (!['voice', 'audio', 'image', 'document'].includes(type)) {
+    if (!['voice', 'audio', 'image', 'video', 'animation', 'document'].includes(type)) {
       throw new RuntimeProtocolError(`Unsupported attachment type "${type}".`);
     }
 

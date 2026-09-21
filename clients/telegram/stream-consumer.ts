@@ -1,6 +1,6 @@
 import type { RuntimeEvent } from '../../src/runtime/protocol.js';
 import { TelegramChatBudget } from './budget.js';
-import { splitTelegramText, truncateTelegramText } from './text.js';
+import { renderTelegramMarkdown, splitTelegramText, truncateTelegramText } from './text.js';
 import type { TelegramApi, TelegramSendOptions, TelegramSentMessage } from './types.js';
 
 const INITIAL_EDIT_INTERVAL_MS = 1_000;
@@ -193,7 +193,9 @@ export class TelegramStreamConsumer {
       return;
     }
     state.pendingEdit = false;
-    const visible = state.content ? truncateTelegramText(state.content) : state.status || '⏳';
+    const visible = truncateTelegramText(
+      renderTelegramMarkdown(state.content || state.status || '⏳'),
+    );
     if (!visible || visible === state.lastSentText) {
       return;
     }
@@ -266,7 +268,8 @@ export class TelegramStreamConsumer {
     if (!state.content && state.lastSentText === '⏳') {
       return;
     }
-    const chunks = splitTelegramText(state.content || ' ');
+    const renderedContent = renderTelegramMarkdown(state.content);
+    const chunks = splitTelegramText(renderedContent || ' ');
     const delivery = this.states.size === 1 ? this.options.delivery : undefined;
     if (delivery !== undefined && delivery.content !== state.content) {
       delivery.content = state.content;

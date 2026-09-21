@@ -6,7 +6,10 @@ import { Readable, Transform } from 'node:stream';
 import type {
   TelegramApi,
   TelegramBot,
+  TelegramBotCommand,
+  TelegramBotCommandScope,
   TelegramInlineKeyboardMarkup,
+  TelegramMediaGroupItem,
   TelegramMediaOptions,
   TelegramSendOptions,
   TelegramSentMessage,
@@ -150,8 +153,18 @@ export class FetchTelegramApi implements TelegramApi {
     return this.call<boolean>('sendChatAction', { chat_id: chatId, action }).then(() => undefined);
   }
 
-  public setMyCommands(commands: Array<{ command: string; description: string }>): Promise<void> {
-    return this.call<boolean>('setMyCommands', { commands }).then(() => undefined);
+  public setMyCommands(
+    commands: TelegramBotCommand[],
+    scope?: TelegramBotCommandScope,
+  ): Promise<void> {
+    return this.call<boolean>('setMyCommands', {
+      commands,
+      ...(scope === undefined ? {} : { scope }),
+    }).then(() => undefined);
+  }
+
+  public getMyCommands(scope?: TelegramBotCommandScope): Promise<TelegramBotCommand[]> {
+    return this.call<TelegramBotCommand[]>('getMyCommands', scope === undefined ? {} : { scope });
   }
 
   public getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
@@ -212,6 +225,87 @@ export class FetchTelegramApi implements TelegramApi {
     options?: TelegramMediaOptions,
   ): Promise<void> {
     return this.sendMedia('sendPhoto', 'photo', chatId, filePath, caption, options);
+  }
+
+  public sendVideo(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void> {
+    return this.sendMedia('sendVideo', 'video', chatId, filePath, caption, options);
+  }
+
+  public sendAnimation(
+    chatId: number | string,
+    filePath: string,
+    caption?: string,
+    options?: TelegramMediaOptions,
+  ): Promise<void> {
+    return this.sendMedia('sendAnimation', 'animation', chatId, filePath, caption, options);
+  }
+
+  public sendMediaGroup(
+    chatId: number | string,
+    items: TelegramMediaGroupItem[],
+    options: TelegramMediaOptions = {},
+  ): Promise<void> {
+    return this.sendMediaGroupRequest(chatId, items, options);
+  }
+
+  private async sendMediaGroupRequest(
+    chatId: number | string,
+    items: TelegramMediaGroupItem[],
+    options: TelegramMediaOptions,
+  ): Promise<void> {
+    if (items.length < 2 || items.length > 10) {
+      throw new Error('Telegram media groups must contain between 2 and 10 items.');
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const form = new FormData();
+      form.set('chat_id', String(chatId));
+      if (options.message_thread_id !== undefined) {
+        form.set('message_thread_id', String(options.message_thread_id));
+      }
+      if (options.reply_to_message_id !== undefined) {
+        form.set('reply_to_message_id', String(options.reply_to_message_id));
+      }
+      if (options.disable_notification !== undefined) {
+        form.set('disable_notification', String(options.disable_notification));
+      }
+      const media = [] as Array<Record<string, string>>;
+      for (const [index, item] of items.entries()) {
+        const field = `media${index}`;
+        media.push({
+          type: item.type,
+          media: `attach://${field}`,
+          ...(item.caption === undefined
+            ? {}
+            : { caption: truncateTelegramText(item.caption, TELEGRAM_CAPTION_LIMIT) }),
+          ...(options.parse_mode === undefined ? {} : { parse_mode: options.parse_mode }),
+        });
+        form.set(
+          field,
+          new Blob([await readFile(item.filePath)]),
+          item.filePath.split('/').at(-1) ?? field,
+        );
+      }
+      form.set('media', JSON.stringify(media));
+      const response = await fetchTelegram(`${this.apiBase}/sendMediaGroup`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(TELEGRAM_REQUEST_DEADLINE_MS),
+      });
+      const payload = (await response.json()) as TelegramResponse<unknown>;
+      if (response.ok && payload.ok) {
+        return;
+      }
+      const error = telegramError('sendMediaGroup', payload, response.status);
+      if (!shouldRetry(error) || attempt === 4) {
+        throw error;
+      }
+      await sleep(retryAfterMilliseconds(error));
+    }
   }
 
   public sendAudio(

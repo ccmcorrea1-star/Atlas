@@ -1,6 +1,23 @@
 import { RUNTIME_COMMANDS, type RuntimeCommandName } from '../../src/runtime/protocol.js';
 import type { TelegramMessage } from './types.js';
 
+export type TelegramCommandName = RuntimeCommandName | 'help';
+
+export type TelegramCommandDefinition = {
+  name: TelegramCommandName;
+  description: string;
+  available_during_turn: boolean;
+};
+
+export const TELEGRAM_LOCAL_COMMANDS: readonly TelegramCommandDefinition[] = [
+  { name: 'help', description: 'mostra os comandos disponíveis', available_during_turn: true },
+];
+
+export const TELEGRAM_COMMANDS: readonly TelegramCommandDefinition[] = [
+  ...TELEGRAM_LOCAL_COMMANDS,
+  ...RUNTIME_COMMANDS,
+];
+
 export type TelegramAuthorizationConfig = {
   allowedUsers?: Iterable<number | string>;
   allowedChats?: Iterable<number | string>;
@@ -36,14 +53,14 @@ export function conversationIdForTelegram(chatId: number | string, threadId?: nu
   return `telegram:${encodedChat}:thread:${encodedThread}`;
 }
 
-export function runtimeCommandFromText(text: string): RuntimeCommandName | undefined {
+export function runtimeCommandFromText(text: string): TelegramCommandName | undefined {
   const match = /^\/(\w+)(?:@[^\s]+)?(?:\s|$)/u.exec(text.trim());
   if (match === null) {
     return undefined;
   }
   const name = match[1];
-  return RUNTIME_COMMANDS.some((command) => command.name === name)
-    ? (name as RuntimeCommandName)
+  return TELEGRAM_COMMANDS.some((command) => command.name === name)
+    ? (name as TelegramCommandName)
     : undefined;
 }
 
