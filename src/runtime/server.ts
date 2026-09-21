@@ -282,6 +282,9 @@ export class AtlasRuntimeServer {
     if (message.type === 'notification.publish') {
       return this.handleNotificationPublish(message, send);
     }
+    if (message.type === 'inline.request') {
+      return this.handleInline(message, send);
+    }
     if (message.type === 'topic.request') {
       return this.handleTopic(message, send);
     }
@@ -663,6 +666,67 @@ export class AtlasRuntimeServer {
       subscriber(payload);
     }
     return Promise.resolve();
+  }
+
+  private async handleInline(
+    request: Extract<RuntimeRequest, { type: 'inline.request' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    if (request.query.trim().length === 0) {
+      send(
+        serializeRuntimeMessage(
+          runtimeEvent(request, 'inline.completed', {
+            query_id: request.query_id,
+            offset: request.offset,
+            results: [],
+            next_offset: '',
+          }),
+        ),
+      );
+      return;
+    }
+    try {
+      const result = await runAtlas(request.query, {
+        ...this.runOptions,
+        model: this.atlasModel,
+        atlasConfig: this.atlasConfig,
+        conversationId: request.conversation_id,
+      });
+      if (result.interruptions.length > 0) {
+        throw new Error('Inline queries cannot suspend for approval or input.');
+      }
+      const content =
+        typeof result.finalOutput === 'string'
+          ? result.finalOutput
+          : JSON.stringify(result.finalOutput);
+      const text = content ?? '';
+      send(
+        serializeRuntimeMessage(
+          runtimeEvent(request, 'inline.completed', {
+            query_id: request.query_id,
+            offset: request.offset,
+            results:
+              text.length === 0
+                ? []
+                : [
+                    {
+                      id: `${request.query_id}:0`,
+                      title: 'Atlas',
+                      description: text.slice(0, 200),
+                      message_text: text,
+                    },
+                  ],
+            next_offset: '',
+          }),
+        ),
+      );
+    } catch (error) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(error instanceof Error ? error.message : String(error), request),
+        ),
+      );
+    }
   }
 
   private handleTopic(

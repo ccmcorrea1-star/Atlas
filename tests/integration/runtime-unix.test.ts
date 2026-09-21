@@ -774,6 +774,33 @@ function sendTopic(socketPath: string): Promise<WireMessage> {
   });
 }
 
+function sendInline(socketPath: string): Promise<WireMessage> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath, () => {
+      socket.end(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'inline.request',
+          request_id: 'inline-integration-request',
+          conversation_id: 'telegram:inline:123',
+          query_id: 'inline-query-123',
+          user_id: '123',
+          query: '',
+          offset: '',
+          chat_type: 'sender',
+        })}\n`,
+      );
+    });
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    socket.once('data', (chunk: string) => {
+      socket.destroy();
+      resolve(JSON.parse(chunk.trim()) as WireMessage);
+    });
+  });
+}
+
 function sendReaction(socketPath: string): Promise<WireMessage> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath, () => {
@@ -1137,6 +1164,29 @@ test('publishes a typed topic update over the public Unix protocol', async () =>
       action: 'closed',
       source: 'telegram',
     });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('publishes inline results over the public Unix protocol', async () => {
+  const socketPath = `/tmp/atlas-runtime-inline-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-inline-test-key',
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const event = await sendInline(socketPath);
+    assert.equal(event.type, 'inline.completed');
+    assert.equal(event.request_id, 'inline-integration-request');
+    assert.equal(event.conversation_id, 'telegram:inline:123');
+    const data = event.data as { query_id: string; results: Array<{ message_text: string }> };
+    assert.equal(data.query_id, 'inline-query-123');
+    assert.deepEqual(data.results, []);
   } finally {
     await runtime.close();
   }

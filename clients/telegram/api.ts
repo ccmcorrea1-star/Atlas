@@ -9,6 +9,7 @@ import type {
   TelegramBotCommand,
   TelegramBotCommandScope,
   TelegramInlineKeyboardMarkup,
+  TelegramInlineQueryResult,
   TelegramMediaGroupItem,
   TelegramMediaOptions,
   TelegramSendOptions,
@@ -77,6 +78,7 @@ export class FetchTelegramApi implements TelegramApi {
         'channel_post',
         'edited_channel_post',
         'callback_query',
+        'inline_query',
         'message_reaction',
         'message_reaction_count',
       ]),
@@ -151,6 +153,20 @@ export class FetchTelegramApi implements TelegramApi {
     return this.call<boolean>('answerCallbackQuery', {
       callback_query_id: callbackQueryId,
       ...(text === undefined ? {} : { text }),
+    }).then(() => undefined);
+  }
+
+  public answerInlineQuery(
+    inlineQueryId: string,
+    results: TelegramInlineQueryResult[],
+    options: { cache_time?: number; is_personal?: boolean; next_offset?: string } = {},
+  ): Promise<void> {
+    return this.call<boolean>('answerInlineQuery', {
+      inline_query_id: inlineQueryId,
+      results,
+      ...(options.cache_time === undefined ? {} : { cache_time: options.cache_time }),
+      ...(options.is_personal === undefined ? {} : { is_personal: options.is_personal }),
+      ...(options.next_offset === undefined ? {} : { next_offset: options.next_offset }),
     }).then(() => undefined);
   }
 

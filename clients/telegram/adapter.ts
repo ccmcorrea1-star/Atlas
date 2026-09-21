@@ -38,6 +38,8 @@ import type {
   TelegramCallbackQuery,
   TelegramChat,
   TelegramFileRef,
+  TelegramInlineQuery,
+  TelegramInlineQueryResult,
   TelegramMediaGroupItem,
   TelegramMessage,
   TelegramMessageReactionCountUpdated,
@@ -306,6 +308,10 @@ export class TelegramAdapter {
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
     await this.stateLoaded;
+    if (update.inline_query !== undefined) {
+      await this.handleInlineQuery(update.inline_query);
+      return;
+    }
     if (update.message_reaction !== undefined || update.message_reaction_count !== undefined) {
       await this.handleReactionUpdate(update);
       return;
@@ -367,6 +373,32 @@ export class TelegramAdapter {
     };
     void processMessage().catch(() => undefined);
     await processingPromise;
+  }
+
+  private async handleInlineQuery(query: TelegramInlineQuery): Promise<void> {
+    if (!this.authorization.allowsUser(query.from.id)) {
+      await this.api.answerInlineQuery(query.id, [], { cache_time: 0, is_personal: true });
+      return;
+    }
+    const event = await this.options.runtime.inline(
+      query.id,
+      String(query.from.id),
+      query.query,
+      query.offset,
+      query.chat_type,
+    );
+    if (event.type !== 'inline.completed') {
+      await this.api.answerInlineQuery(query.id, [], { cache_time: 0, is_personal: true });
+      return;
+    }
+    const data = event.data as Record<string, unknown>;
+    const results = telegramInlineResults(data.results);
+    const nextOffset = typeof data.next_offset === 'string' ? data.next_offset : '';
+    await this.api.answerInlineQuery(query.id, results, {
+      cache_time: 0,
+      is_personal: true,
+      next_offset: nextOffset,
+    });
   }
 
   private async handleTopicUpdate(update: TelegramTopicUpdate): Promise<void> {
@@ -1504,6 +1536,34 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+}
+
+function telegramInlineResults(value: unknown): TelegramInlineQueryResult[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): TelegramInlineQueryResult[] => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return [];
+    }
+    const result = item as Record<string, unknown>;
+    if (
+      typeof result.id !== 'string' ||
+      typeof result.title !== 'string' ||
+      typeof result.message_text !== 'string'
+    ) {
+      return [];
+    }
+    return [
+      {
+        type: 'article',
+        id: result.id,
+        title: result.title,
+        ...(typeof result.description === 'string' ? { description: result.description } : {}),
+        input_message_content: { message_text: result.message_text },
+      },
+    ];
+  });
 }
 
 function telegramChatIdFromConversation(conversationId: string): number | undefined {

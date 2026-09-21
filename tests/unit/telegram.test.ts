@@ -20,6 +20,7 @@ import type {
   TelegramApi,
   TelegramBot,
   TelegramMessage,
+  TelegramInlineQueryResult,
   TelegramMediaGroupItem,
   TelegramRuntime,
   TelegramSentMessage,
@@ -38,6 +39,11 @@ class FakeApi implements TelegramApi {
   public readonly operations: Array<{ type: 'send' | 'edit'; at: number; text: string }> = [];
   public readonly markupEdits: Array<{ chatId: number | string; messageId: number }> = [];
   public readonly callbackAnswers: Array<{ id: string; text?: string }> = [];
+  public readonly inlineAnswers: Array<{
+    id: string;
+    results: TelegramInlineQueryResult[];
+    options?: { cache_time?: number; is_personal?: boolean; next_offset?: string };
+  }> = [];
   public readonly downloaded: string[] = [];
   public readonly sentAttachments: string[] = [];
   public readonly sentAlbums: TelegramMediaGroupItem[][] = [];
@@ -103,6 +109,14 @@ class FakeApi implements TelegramApi {
 
   public async answerCallbackQuery(id: string, text?: string): Promise<void> {
     this.callbackAnswers.push({ id, ...(text === undefined ? {} : { text }) });
+  }
+
+  public async answerInlineQuery(
+    id: string,
+    results: TelegramInlineQueryResult[],
+    options?: { cache_time?: number; is_personal?: boolean; next_offset?: string },
+  ): Promise<void> {
+    this.inlineAnswers.push({ id, results, options });
   }
 
   public async getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
@@ -311,6 +325,30 @@ class FakeRuntime implements TelegramRuntime {
     };
   }
 
+  public async inline(
+    queryId: string,
+    userId: string,
+    query: string,
+    offset: string,
+    chatType?: string,
+  ): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'inline.completed',
+      request_id: 'inline',
+      conversation_id: `telegram:inline:${userId}`,
+      data: {
+        query_id: queryId,
+        offset,
+        query,
+        ...(chatType === undefined ? {} : { chat_type: chatType }),
+        results: [{ id: 'inline-1', title: 'Atlas', message_text: `Resultado: ${query}` }],
+        next_offset: '',
+      },
+    };
+  }
+
   public async topic(
     conversationId: string,
     topicId: string,
@@ -437,6 +475,30 @@ class ScriptedRuntime implements TelegramRuntime {
         reactions,
         source,
         ...(actorId === undefined ? {} : { actor_id: actorId }),
+      },
+    };
+  }
+
+  public async inline(
+    queryId: string,
+    userId: string,
+    query: string,
+    offset: string,
+    chatType?: string,
+  ): Promise<RuntimeEvent> {
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'inline.completed',
+      request_id: 'inline',
+      conversation_id: `telegram:inline:${userId}`,
+      data: {
+        query_id: queryId,
+        offset,
+        query,
+        ...(chatType === undefined ? {} : { chat_type: chatType }),
+        results: [{ id: 'inline-1', title: 'Atlas', message_text: `Resultado: ${query}` }],
+        next_offset: '',
       },
     };
   }
@@ -1235,6 +1297,39 @@ test('encaminha eventos de tópicos sem criar turnos de texto', async () => {
       details: undefined,
     },
   ]);
+});
+
+test('encaminha inline queries ao Runtime e responde com artigos', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7] });
+
+  await adapter.handleUpdate({
+    update_id: 70,
+    inline_query: {
+      id: 'inline-70',
+      from: { id: 7, first_name: 'Caio' },
+      query: 'filmes recentes',
+      offset: '',
+      chat_type: 'sender',
+    },
+  });
+
+  assert.deepEqual(api.inlineAnswers, [
+    {
+      id: 'inline-70',
+      results: [
+        {
+          type: 'article',
+          id: 'inline-1',
+          title: 'Atlas',
+          input_message_content: { message_text: 'Resultado: filmes recentes' },
+        },
+      ],
+      options: { cache_time: 0, is_personal: true, next_offset: '' },
+    },
+  ]);
+  await adapter.stop();
 });
 
 test('entrega notificações assíncronas no chat da conversa sem criar turno', async () => {

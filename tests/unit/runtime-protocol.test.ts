@@ -291,6 +291,36 @@ test('parses reaction requests as a separate Runtime family', () => {
   });
 });
 
+test('parses inline requests while preserving empty query and offset', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'inline.request',
+      request_id: 'inline-1',
+      conversation_id: 'telegram:inline:7',
+      query_id: 'telegram-query-1',
+      user_id: '7',
+      query: '',
+      offset: '',
+      chat_type: 'sender',
+    }),
+  );
+
+  assert.deepEqual(parsed, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'inline.request',
+    request_id: 'inline-1',
+    conversation_id: 'telegram:inline:7',
+    query_id: 'telegram-query-1',
+    user_id: '7',
+    query: '',
+    offset: '',
+    chat_type: 'sender',
+  });
+});
+
 test('parses topic service events as a separate Runtime family', () => {
   const parsed = parseRuntimeMessage(
     JSON.stringify({

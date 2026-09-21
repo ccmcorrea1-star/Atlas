@@ -132,6 +132,19 @@ export type RuntimeNotificationPublish = RuntimeNotificationData & {
   request_id: string;
 };
 
+export type RuntimeInlineRequest = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'inline.request';
+  request_id: string;
+  conversation_id: string;
+  query_id: string;
+  user_id: string;
+  query: string;
+  offset: string;
+  chat_type?: string;
+};
+
 export type RuntimeTopicRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -169,6 +182,7 @@ export type RuntimeRequest =
   | RuntimeInputResponse
   | RuntimeNotificationSubscribe
   | RuntimeNotificationPublish
+  | RuntimeInlineRequest
   | RuntimeTopicRequest
   | RuntimeReactionRequest;
 
@@ -195,6 +209,7 @@ export type RuntimeEventType =
   | 'input.resolved'
   | 'notification.subscribed'
   | 'notification.created'
+  | 'inline.completed'
   | 'topic.updated'
   | 'reaction.completed'
   | 'runtime.restarting'
@@ -481,6 +496,29 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       source,
       ...(title === undefined ? {} : { title }),
       ...(level === undefined ? {} : { level: level as RuntimeNotificationData['level'] }),
+    };
+  }
+  if (request.type === 'inline.request') {
+    const queryId = requiredString(request.query_id, 'query_id');
+    const userId = requiredString(request.user_id, 'user_id');
+    if (typeof request.query !== 'string') {
+      throw new RuntimeProtocolError('Runtime request field "query" must be a string.');
+    }
+    if (typeof request.offset !== 'string') {
+      throw new RuntimeProtocolError('Runtime request field "offset" must be a string.');
+    }
+    const chatType = optionalString(request.chat_type, 'chat_type');
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'inline.request',
+      request_id,
+      conversation_id,
+      query_id: queryId,
+      user_id: userId,
+      query: request.query,
+      offset: request.offset,
+      ...(chatType === undefined ? {} : { chat_type: chatType }),
     };
   }
   if (request.type === 'topic.request') {

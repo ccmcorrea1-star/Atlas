@@ -37,6 +37,10 @@ export class TelegramAuthorization {
     this.chats = idSet(config.allowedChats);
   }
 
+  public allowsUser(userId: number | string): boolean {
+    return this.config.allowAll === true || this.users.has(String(userId));
+  }
+
   public allows(message: TelegramMessage): boolean {
     if (this.config.allowAll === true) {
       return true;

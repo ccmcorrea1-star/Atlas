@@ -42,6 +42,32 @@ function isTerminalInput(event: RuntimeEvent): boolean {
 export class UnixTelegramRuntime implements TelegramRuntime {
   public constructor(private readonly socketPath: string) {}
 
+  public inline(
+    queryId: string,
+    userId: string,
+    query: string,
+    offset: string,
+    chatType?: string,
+  ): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'inline.request',
+        request_id: randomUUID(),
+        conversation_id: `telegram:inline:${userId}`,
+        query_id: queryId,
+        user_id: userId,
+        query,
+        offset,
+        ...(chatType === undefined ? {} : { chat_type: chatType }),
+      },
+      (event) => event.type === 'inline.completed' || event.type === 'error',
+      () => undefined,
+      true,
+    );
+  }
+
   public topic(
     conversationId: string,
     topicId: string,

@@ -104,6 +104,22 @@ export type TelegramInlineKeyboardMarkup = {
   inline_keyboard: TelegramInlineKeyboardButton[][];
 };
 
+export type TelegramInlineQuery = {
+  id: string;
+  from: TelegramUser;
+  query: string;
+  offset: string;
+  chat_type?: string;
+};
+
+export type TelegramInlineQueryResult = {
+  type: 'article';
+  id: string;
+  title: string;
+  description?: string;
+  input_message_content: { message_text: string };
+};
+
 export type TelegramCallbackQuery = {
   id: string;
   from: TelegramUser;
@@ -141,6 +157,7 @@ export type TelegramUpdate = {
   channel_post?: TelegramMessage;
   edited_channel_post?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  inline_query?: TelegramInlineQuery;
   message_reaction?: TelegramMessageReactionUpdated;
   message_reaction_count?: TelegramMessageReactionCountUpdated;
 };
@@ -218,6 +235,11 @@ export type TelegramApi = {
     replyMarkup: TelegramInlineKeyboardMarkup,
   ): Promise<void>;
   answerCallbackQuery?(callbackQueryId: string, text?: string): Promise<void>;
+  answerInlineQuery(
+    inlineQueryId: string,
+    results: TelegramInlineQueryResult[],
+    options?: { cache_time?: number; is_personal?: boolean; next_offset?: string },
+  ): Promise<void>;
   getFile(fileId: string): Promise<{ file_path: string; file_size?: number }>;
   downloadFile(filePath: string, destination: string, maxBytes?: number): Promise<void>;
   sendPhoto?(
@@ -276,6 +298,13 @@ export type TelegramRuntime = {
       context?: RuntimeTurnContext;
     },
     onEvent: (event: RuntimeEvent) => void,
+  ): Promise<RuntimeEvent>;
+  inline(
+    queryId: string,
+    userId: string,
+    query: string,
+    offset: string,
+    chatType?: string,
   ): Promise<RuntimeEvent>;
   react(
     conversationId: string,
