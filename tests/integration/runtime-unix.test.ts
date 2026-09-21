@@ -748,6 +748,32 @@ function sendNotificationRoundTrip(socketPath: string): Promise<WireMessage> {
   });
 }
 
+function sendTopic(socketPath: string): Promise<WireMessage> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath, () => {
+      socket.end(
+        `${JSON.stringify({
+          protocol: RUNTIME_PROTOCOL,
+          version: RUNTIME_PROTOCOL_VERSION,
+          type: 'topic.request',
+          request_id: 'topic-integration-request',
+          conversation_id: 'telegram:123:thread:88',
+          topic_id: '88',
+          message_id: '60',
+          action: 'closed',
+          source: 'telegram',
+        })}\n`,
+      );
+    });
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    socket.once('data', (chunk: string) => {
+      socket.destroy();
+      resolve(JSON.parse(chunk.trim()) as WireMessage);
+    });
+  });
+}
+
 function sendReaction(socketPath: string): Promise<WireMessage> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath, () => {
@@ -1083,6 +1109,33 @@ test('publishes a typed reaction completion over the public Unix protocol', asyn
       reactions: ['👍'],
       source: 'telegram',
       actor_id: '7',
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('publishes a typed topic update over the public Unix protocol', async () => {
+  const socketPath = `/tmp/atlas-runtime-topic-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas...ey',
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const event = await sendTopic(socketPath);
+    assert.equal(event.type, 'topic.updated');
+    assert.equal(event.request_id, 'topic-integration-request');
+    assert.equal(event.conversation_id, 'telegram:123:thread:88');
+    assert.deepEqual(event.data, {
+      topic_id: '88',
+      message_id: '60',
+      action: 'closed',
+      source: 'telegram',
     });
   } finally {
     await runtime.close();

@@ -153,6 +153,7 @@ class PartialDeliveryApi extends FakeApi {
 class FakeRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
   public readonly reactions: Array<Record<string, unknown>> = [];
+  public readonly topics: Array<Record<string, unknown>> = [];
   private notificationHandler: ((event: RuntimeEvent) => void) | undefined;
   private activeResolve: ((event: RuntimeEvent) => void) | undefined;
   private activeCallback: ((event: RuntimeEvent) => void) | undefined;
@@ -310,6 +311,25 @@ class FakeRuntime implements TelegramRuntime {
     };
   }
 
+  public async topic(
+    conversationId: string,
+    topicId: string,
+    messageId: string,
+    action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden',
+    source: string,
+    details?: { name?: string; icon_color?: number; icon_custom_emoji_id?: string },
+  ): Promise<RuntimeEvent> {
+    this.topics.push({ conversationId, topicId, messageId, action, source, details });
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'topic.updated',
+      request_id: 'topic',
+      conversation_id: conversationId,
+      data: { topic_id: topicId, message_id: messageId, action, source, ...details },
+    };
+  }
+
   public async respondApproval(
     conversationId: string,
     approvalId: string,
@@ -363,6 +383,7 @@ class FakeRuntime implements TelegramRuntime {
 class ScriptedRuntime implements TelegramRuntime {
   public readonly requests: Array<Record<string, unknown>> = [];
   public readonly reactions: Array<Record<string, unknown>> = [];
+  public readonly topics: Array<Record<string, unknown>> = [];
 
   public constructor(
     private readonly script: (
@@ -417,6 +438,25 @@ class ScriptedRuntime implements TelegramRuntime {
         source,
         ...(actorId === undefined ? {} : { actor_id: actorId }),
       },
+    };
+  }
+
+  public async topic(
+    conversationId: string,
+    topicId: string,
+    messageId: string,
+    action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden',
+    source: string,
+    details?: { name?: string; icon_color?: number; icon_custom_emoji_id?: string },
+  ): Promise<RuntimeEvent> {
+    this.topics.push({ conversationId, topicId, messageId, action, source, details });
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'topic.updated',
+      request_id: 'topic',
+      conversation_id: conversationId,
+      data: { topic_id: topicId, message_id: messageId, action, source, ...details },
     };
   }
 
@@ -1147,6 +1187,54 @@ test('normaliza reações de usuário e contagens sem criar turno de texto', asy
     source: 'telegram',
     actorId: undefined,
   });
+});
+
+test('encaminha eventos de tópicos sem criar turnos de texto', async () => {
+  const api = new FakeApi();
+  const runtime = new FakeRuntime();
+  const adapter = new TelegramAdapter({ runtime, api, allowedUsers: [7], allowedChats: [123] });
+
+  const base = {
+    chat: { id: 123, type: 'supergroup' as const },
+    message_thread_id: 88,
+    from: { id: 7, first_name: 'Caio' },
+  };
+  await adapter.handleUpdate({
+    update_id: 60,
+    message: {
+      ...base,
+      message_id: 60,
+      forum_topic_created: { name: 'Filmes', icon_color: 123456 },
+    },
+  });
+  await adapter.handleUpdate({
+    update_id: 61,
+    message: {
+      ...base,
+      message_id: 61,
+      forum_topic_closed: {},
+    },
+  });
+
+  assert.equal(runtime.requests.length, 0);
+  assert.deepEqual(runtime.topics, [
+    {
+      conversationId: 'telegram:123:thread:88',
+      topicId: '88',
+      messageId: '60',
+      action: 'created',
+      source: 'telegram',
+      details: { name: 'Filmes', icon_color: 123456 },
+    },
+    {
+      conversationId: 'telegram:123:thread:88',
+      topicId: '88',
+      messageId: '61',
+      action: 'closed',
+      source: 'telegram',
+      details: undefined,
+    },
+  ]);
 });
 
 test('entrega notificações assíncronas no chat da conversa sem criar turno', async () => {

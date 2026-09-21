@@ -132,6 +132,21 @@ export type RuntimeNotificationPublish = RuntimeNotificationData & {
   request_id: string;
 };
 
+export type RuntimeTopicRequest = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'topic.request';
+  request_id: string;
+  conversation_id: string;
+  topic_id: string;
+  message_id: string;
+  action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden';
+  source: string;
+  name?: string;
+  icon_color?: number;
+  icon_custom_emoji_id?: string;
+};
+
 export type RuntimeReactionRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -154,6 +169,7 @@ export type RuntimeRequest =
   | RuntimeInputResponse
   | RuntimeNotificationSubscribe
   | RuntimeNotificationPublish
+  | RuntimeTopicRequest
   | RuntimeReactionRequest;
 
 export type RuntimeEventType =
@@ -179,6 +195,7 @@ export type RuntimeEventType =
   | 'input.resolved'
   | 'notification.subscribed'
   | 'notification.created'
+  | 'topic.updated'
   | 'reaction.completed'
   | 'runtime.restarting'
   | 'runtime.ready'
@@ -464,6 +481,40 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       source,
       ...(title === undefined ? {} : { title }),
       ...(level === undefined ? {} : { level: level as RuntimeNotificationData['level'] }),
+    };
+  }
+  if (request.type === 'topic.request') {
+    const topicId = requiredString(request.topic_id, 'topic_id');
+    const messageId = requiredString(request.message_id, 'message_id');
+    const action = requiredString(request.action, 'action');
+    const source = requiredString(request.source, 'source');
+    if (!['created', 'edited', 'closed', 'reopened', 'hidden', 'unhidden'].includes(action)) {
+      throw new RuntimeProtocolError(`Unsupported topic action "${action}".`);
+    }
+    const name = optionalString(request.name, 'name');
+    const iconCustomEmojiId = optionalString(request.icon_custom_emoji_id, 'icon_custom_emoji_id');
+    const iconColor = request.icon_color;
+    if (
+      iconColor !== undefined &&
+      (typeof iconColor !== 'number' || !Number.isSafeInteger(iconColor) || iconColor < 0)
+    ) {
+      throw new RuntimeProtocolError(
+        'Runtime request field "icon_color" must be a non-negative integer.',
+      );
+    }
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'topic.request',
+      request_id,
+      conversation_id,
+      topic_id: topicId,
+      message_id: messageId,
+      action: action as RuntimeTopicRequest['action'],
+      source,
+      ...(name === undefined ? {} : { name }),
+      ...(iconColor === undefined ? {} : { icon_color: iconColor }),
+      ...(iconCustomEmojiId === undefined ? {} : { icon_custom_emoji_id: iconCustomEmojiId }),
     };
   }
   if (request.type === 'reaction.request') {

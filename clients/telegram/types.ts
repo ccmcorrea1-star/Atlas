@@ -55,6 +55,17 @@ export type TelegramVenue = {
   google_place_type?: string;
 };
 
+export type TelegramForumTopicCreated = {
+  name: string;
+  icon_color: number;
+  icon_custom_emoji_id?: string;
+};
+
+export type TelegramForumTopicEdited = {
+  name?: string;
+  icon_custom_emoji_id?: string;
+};
+
 export type TelegramMessage = {
   message_id: number;
   chat: TelegramChat;
@@ -75,6 +86,12 @@ export type TelegramMessage = {
   location?: TelegramLocation;
   venue?: TelegramVenue;
   media_group_id?: string;
+  forum_topic_created?: TelegramForumTopicCreated;
+  forum_topic_closed?: Record<string, never>;
+  forum_topic_reopened?: Record<string, never>;
+  forum_topic_edited?: TelegramForumTopicEdited;
+  general_forum_topic_hidden?: Record<string, never>;
+  general_forum_topic_unhidden?: Record<string, never>;
   media_group_messages?: TelegramMessage[];
 };
 
@@ -267,6 +284,14 @@ export type TelegramRuntime = {
     reactions: string[],
     source: string,
     actorId?: string,
+  ): Promise<RuntimeEvent>;
+  topic(
+    conversationId: string,
+    topicId: string,
+    messageId: string,
+    action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden',
+    source: string,
+    details?: { name?: string; icon_color?: number; icon_custom_emoji_id?: string },
   ): Promise<RuntimeEvent>;
   subscribeNotifications?(onEvent: (event: RuntimeEvent) => void): () => void;
   command(conversationId: string, command: 'new' | 'status' | 'stop'): Promise<RuntimeEvent>;

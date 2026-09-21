@@ -318,6 +318,11 @@ export class TelegramAdapter {
     if (messageUpdate === undefined) {
       return;
     }
+    const topicUpdate = telegramTopicUpdate(messageUpdate.message);
+    if (topicUpdate !== undefined) {
+      await this.handleTopicUpdate(topicUpdate);
+      return;
+    }
     const message = messageUpdate.message;
     if (message.from?.is_bot === true) {
       return;
@@ -362,6 +367,25 @@ export class TelegramAdapter {
     };
     void processMessage().catch(() => undefined);
     await processingPromise;
+  }
+
+  private async handleTopicUpdate(update: TelegramTopicUpdate): Promise<void> {
+    if (!this.authorization.allows(update.message)) {
+      return;
+    }
+    const message = update.message;
+    const topicId = String(message.message_thread_id ?? message.message_id);
+    const event = await this.options.runtime.topic(
+      conversationIdForTelegram(message.chat.id, message.message_thread_id),
+      topicId,
+      String(message.message_id),
+      update.action,
+      'telegram',
+      update.details,
+    );
+    if (event.type === 'error') {
+      console.error(`Atlas Telegram topic event failed: ${safeErrorMessage(event.data.message)}`);
+    }
   }
 
   private async handleRuntimeNotification(event: RuntimeEvent): Promise<void> {
@@ -1504,6 +1528,42 @@ function reactionMessage(
     chat: reaction.chat,
     ...(user === undefined ? {} : { from: user }),
   };
+}
+
+type TelegramTopicUpdate = {
+  message: TelegramMessage;
+  action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden';
+  details?: { name?: string; icon_color?: number; icon_custom_emoji_id?: string };
+};
+
+function telegramTopicUpdate(message: TelegramMessage): TelegramTopicUpdate | undefined {
+  if (message.forum_topic_created !== undefined) {
+    return {
+      message,
+      action: 'created',
+      details: message.forum_topic_created,
+    };
+  }
+  if (message.forum_topic_edited !== undefined) {
+    return {
+      message,
+      action: 'edited',
+      details: message.forum_topic_edited,
+    };
+  }
+  if (message.forum_topic_closed !== undefined) {
+    return { message, action: 'closed' };
+  }
+  if (message.forum_topic_reopened !== undefined) {
+    return { message, action: 'reopened' };
+  }
+  if (message.general_forum_topic_hidden !== undefined) {
+    return { message, action: 'hidden' };
+  }
+  if (message.general_forum_topic_unhidden !== undefined) {
+    return { message, action: 'unhidden' };
+  }
+  return undefined;
 }
 
 type TelegramMessageUpdate = {

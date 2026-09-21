@@ -282,6 +282,9 @@ export class AtlasRuntimeServer {
     if (message.type === 'notification.publish') {
       return this.handleNotificationPublish(message, send);
     }
+    if (message.type === 'topic.request') {
+      return this.handleTopic(message, send);
+    }
     if (message.type === 'reaction.request') {
       return this.handleReaction(message, send);
     }
@@ -659,6 +662,28 @@ export class AtlasRuntimeServer {
     for (const subscriber of subscribers) {
       subscriber(payload);
     }
+    return Promise.resolve();
+  }
+
+  private handleTopic(
+    request: Extract<RuntimeRequest, { type: 'topic.request' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    send(
+      serializeRuntimeMessage(
+        runtimeEvent(request, 'topic.updated', {
+          topic_id: request.topic_id,
+          message_id: request.message_id,
+          action: request.action,
+          source: request.source,
+          ...(request.name === undefined ? {} : { name: request.name }),
+          ...(request.icon_color === undefined ? {} : { icon_color: request.icon_color }),
+          ...(request.icon_custom_emoji_id === undefined
+            ? {}
+            : { icon_custom_emoji_id: request.icon_custom_emoji_id }),
+        }),
+      ),
+    );
     return Promise.resolve();
   }
 

@@ -291,6 +291,38 @@ test('parses reaction requests as a separate Runtime family', () => {
   });
 });
 
+test('parses topic service events as a separate Runtime family', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'topic.request',
+      request_id: 'topic-1',
+      conversation_id: 'telegram:123:thread:88',
+      topic_id: '88',
+      message_id: '60',
+      action: 'created',
+      source: 'telegram',
+      name: 'Filmes',
+      icon_color: 123456,
+    }),
+  );
+
+  assert.deepEqual(parsed, {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'topic.request',
+    request_id: 'topic-1',
+    conversation_id: 'telegram:123:thread:88',
+    topic_id: '88',
+    message_id: '60',
+    action: 'created',
+    source: 'telegram',
+    name: 'Filmes',
+    icon_color: 123456,
+  });
+});
+
 test('parses notification subscriptions and publications', () => {
   const subscription = parseRuntimeMessage(
     JSON.stringify({

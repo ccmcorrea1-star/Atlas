@@ -42,6 +42,33 @@ function isTerminalInput(event: RuntimeEvent): boolean {
 export class UnixTelegramRuntime implements TelegramRuntime {
   public constructor(private readonly socketPath: string) {}
 
+  public topic(
+    conversationId: string,
+    topicId: string,
+    messageId: string,
+    action: 'created' | 'edited' | 'closed' | 'reopened' | 'hidden' | 'unhidden',
+    source: string,
+    details?: { name?: string; icon_color?: number; icon_custom_emoji_id?: string },
+  ): Promise<RuntimeEvent> {
+    return this.exchange(
+      {
+        protocol: RUNTIME_PROTOCOL,
+        version: RUNTIME_PROTOCOL_VERSION,
+        type: 'topic.request',
+        request_id: randomUUID(),
+        conversation_id: conversationId,
+        topic_id: topicId,
+        message_id: messageId,
+        action,
+        source,
+        ...details,
+      },
+      (event) => event.type === 'topic.updated' || event.type === 'error',
+      () => undefined,
+      true,
+    );
+  }
+
   public subscribeNotifications(onEvent: (event: RuntimeEvent) => void): () => void {
     let socket: Socket | undefined;
     let retryTimer: NodeJS.Timeout | undefined;
