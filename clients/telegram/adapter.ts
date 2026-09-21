@@ -52,6 +52,9 @@ import type {
 const MAX_TELEGRAM_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const APPROVAL_CALLBACK_PREFIX = 'atlas:approval:';
 const INPUT_CALLBACK_PREFIX = 'atlas:input:';
+const INPUT_PAGE_CALLBACK_PREFIX = 'atlas:input-page:';
+const INPUT_OTHER_VALUE = '__other__';
+const INPUT_PAGE_SIZE = 6;
 
 export type TelegramAdapterOptions = {
   token?: string;
@@ -91,6 +94,8 @@ type PendingTelegramInput = {
   requestId?: string;
   conversationId: string;
   inputId: string;
+  choices: string[];
+  page: number;
   chat: TelegramChat;
   userId?: number;
 };
@@ -905,7 +910,11 @@ export class TelegramAdapter {
             typeof input.inputId === 'string' &&
             input.chat !== undefined
           ) {
-            this.pendingInputs.set(input.token, input);
+            this.pendingInputs.set(input.token, {
+              ...input,
+              choices: Array.isArray(input.choices) ? input.choices : [],
+              page: Number.isInteger(input.page) && input.page >= 0 ? input.page : 0,
+            });
           }
         }
       }
@@ -977,6 +986,11 @@ export class TelegramAdapter {
   }
 
   private async handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> {
+    const page = parseInputPageCallback(query.data);
+    if (page !== undefined) {
+      await this.handleInputPageCallback(query, page);
+      return;
+    }
     const input = parseInputCallback(query.data);
     if (input !== undefined) {
       await this.handleInputCallback(query, input);
@@ -1061,6 +1075,36 @@ export class TelegramAdapter {
     return true;
   }
 
+  private async handleInputPageCallback(
+    query: TelegramCallbackQuery,
+    page: { token: string; page: number },
+  ): Promise<void> {
+    const pending = this.pendingInputs.get(page.token);
+    if (
+      pending === undefined ||
+      (pending.userId !== undefined && pending.userId !== query.from.id) ||
+      String(query.message?.chat.id ?? pending.chat.id) !== String(pending.chat.id)
+    ) {
+      await this.answerCallback(query.id, 'Esta pergunta já expirou.');
+      return;
+    }
+    const pageCount = Math.max(1, Math.ceil(pending.choices.length / INPUT_PAGE_SIZE));
+    pending.page = Math.min(Math.max(page.page, 0), pageCount - 1);
+    if (query.message !== undefined && this.api.editMessageReplyMarkup !== undefined) {
+      const editMarkup = this.api.editMessageReplyMarkup.bind(this.api);
+      await this.chatBudgets.enqueue(query.message.chat.id, () =>
+        editMarkup(query.message!.chat.id, query.message!.message_id, {
+          inline_keyboard: inputKeyboard(pending.token, pending.choices, pending.page)
+            .inline_keyboard,
+        }),
+      );
+      await this.persistState();
+      await this.answerCallback(query.id, 'Página atualizada.');
+      return;
+    }
+    await this.answerCallback(query.id, 'Não foi possível paginar esta pergunta.');
+  }
+
   private async handleInputCallback(
     query: TelegramCallbackQuery,
     input: { token: string; value: string },
@@ -1073,6 +1117,10 @@ export class TelegramAdapter {
       this.options.runtime.respondInput === undefined
     ) {
       await this.answerCallback(query.id, 'Esta pergunta já expirou.');
+      return;
+    }
+    if (input.value === INPUT_OTHER_VALUE) {
+      await this.answerCallback(query.id, 'Digite sua resposta no chat.');
       return;
     }
     const event = await this.options.runtime.respondInput(
@@ -1166,6 +1214,8 @@ export class TelegramAdapter {
       ...(event.request_id === undefined ? {} : { requestId: event.request_id }),
       conversationId,
       inputId,
+      choices,
+      page: 0,
       chat: message.chat,
       userId: message.from?.id,
     });
@@ -1175,14 +1225,7 @@ export class TelegramAdapter {
         ...(choices.length === 0
           ? {}
           : {
-              reply_markup: {
-                inline_keyboard: choices.map((choice) => [
-                  {
-                    text: choice,
-                    callback_data: `${INPUT_CALLBACK_PREFIX}${token}:${encodeURIComponent(choice)}`,
-                  },
-                ]),
-              },
+              reply_markup: inputKeyboard(token, choices, 0),
             }),
       });
       await this.persistState();
@@ -1805,6 +1848,64 @@ function parseApprovalCallback(
     return undefined;
   }
   return { token, approved: action === 'yes' };
+}
+
+function inputKeyboard(
+  token: string,
+  choices: string[],
+  page: number,
+): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
+  const pageCount = Math.max(1, Math.ceil(choices.length / INPUT_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(page, 0), pageCount - 1);
+  const start = currentPage * INPUT_PAGE_SIZE;
+  const buttons = choices.slice(start, start + INPUT_PAGE_SIZE).map((choice) => [
+    {
+      text: choice,
+      callback_data: `${INPUT_CALLBACK_PREFIX}${token}:${encodeURIComponent(choice)}`,
+    },
+  ]);
+  buttons.push([
+    { text: 'Outro', callback_data: `${INPUT_CALLBACK_PREFIX}${token}:${INPUT_OTHER_VALUE}` },
+  ]);
+  if (pageCount > 1) {
+    buttons.push([
+      ...(currentPage > 0
+        ? [
+            {
+              text: '⬅️ Voltar',
+              callback_data: `${INPUT_PAGE_CALLBACK_PREFIX}${token}:${currentPage - 1}`,
+            },
+          ]
+        : []),
+      ...(currentPage < pageCount - 1
+        ? [
+            {
+              text: 'Próxima ➡️',
+              callback_data: `${INPUT_PAGE_CALLBACK_PREFIX}${token}:${currentPage + 1}`,
+            },
+          ]
+        : []),
+    ]);
+  }
+  return { inline_keyboard: buttons };
+}
+
+function parseInputPageCallback(
+  data: string | undefined,
+): { token: string; page: number } | undefined {
+  if (data === undefined || !data.startsWith(INPUT_PAGE_CALLBACK_PREFIX)) {
+    return undefined;
+  }
+  const value = data.slice(INPUT_PAGE_CALLBACK_PREFIX.length);
+  const separator = value.lastIndexOf(':');
+  if (separator <= 0) {
+    return undefined;
+  }
+  const page = Number(value.slice(separator + 1));
+  if (!Number.isInteger(page) || page < 0) {
+    return undefined;
+  }
+  return { token: value.slice(0, separator), page };
 }
 
 function parseInputCallback(

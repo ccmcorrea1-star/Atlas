@@ -37,7 +37,11 @@ class FakeApi implements TelegramApi {
   public readonly sentOptions: Array<Record<string, unknown> | undefined> = [];
   public readonly edits: Array<{ chatId: number | string; messageId: number; text: string }> = [];
   public readonly operations: Array<{ type: 'send' | 'edit'; at: number; text: string }> = [];
-  public readonly markupEdits: Array<{ chatId: number | string; messageId: number }> = [];
+  public readonly markupEdits: Array<{
+    chatId: number | string;
+    messageId: number;
+    inlineKeyboard?: Array<Array<Record<string, unknown>>>;
+  }> = [];
   public readonly callbackAnswers: Array<{ id: string; text?: string }> = [];
   public readonly inlineAnswers: Array<{
     id: string;
@@ -103,8 +107,12 @@ class FakeApi implements TelegramApi {
     this.sentAttachments.push(`document:${filePath}`);
   }
 
-  public async editMessageReplyMarkup(chatId: number | string, messageId: number): Promise<void> {
-    this.markupEdits.push({ chatId, messageId });
+  public async editMessageReplyMarkup(
+    chatId: number | string,
+    messageId: number,
+    replyMarkup?: { inline_keyboard: Array<Array<Record<string, unknown>>> },
+  ): Promise<void> {
+    this.markupEdits.push({ chatId, messageId, inlineKeyboard: replyMarkup?.inline_keyboard });
   }
 
   public async answerCallbackQuery(id: string, text?: string): Promise<void> {
@@ -1409,7 +1417,7 @@ test('resolves approvals through Telegram callback buttons', async () => {
   await active;
 
   assert.deepEqual(api.callbackAnswers, [{ id: 'callback-1', text: 'Aprovado.' }]);
-  assert.deepEqual(api.markupEdits, [{ chatId: 123, messageId: 101 }]);
+  assert.deepEqual(api.markupEdits, [{ chatId: 123, messageId: 101, inlineKeyboard: [] }]);
 });
 
 test('does not restore resolved approval or input callbacks after a bot restart', async () => {
@@ -1476,6 +1484,65 @@ test('does not restore resolved approval or input callbacks after a bot restart'
   } finally {
     await rm(statePath, { force: true });
   }
+});
+
+test('pagina choices extensos e oferece resposta livre em Outro', async () => {
+  const api = new FakeApi();
+  const choices = Array.from({ length: 8 }, (_, index) => `opção-${index + 1}`);
+  const runtime = new ScriptedRuntime(async (request, onEvent) => {
+    onEvent({
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'input.requested',
+      request_id: request.request_id,
+      conversation_id: request.conversation_id,
+      data: { input_id: 'picker-1', prompt: 'Escolha', choices },
+    });
+    return {
+      protocol: 'atlas-runtime',
+      version: 1,
+      type: 'turn.completed',
+      request_id: request.request_id,
+      conversation_id: request.conversation_id,
+      data: { message: 'ok' },
+    };
+  });
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const active = adapter.handleUpdate({ update_id: 40, message: message({ text: 'picker' }) });
+  await waitFor(1_050);
+
+  const inputOptions = api.sentOptions.find((options) => options?.reply_markup !== undefined) as {
+    reply_markup: { inline_keyboard: Array<Array<{ text?: string; callback_data?: string }>> };
+  };
+  const firstKeyboard = inputOptions.reply_markup.inline_keyboard;
+  assert.equal(firstKeyboard.length, 8);
+  const nextCallback = firstKeyboard.at(-1)?.[0]?.callback_data;
+  const otherCallback = firstKeyboard.at(-2)?.[0]?.callback_data;
+  assert.ok(nextCallback?.startsWith('atlas:input-page:'));
+  assert.ok(otherCallback?.endsWith(':__other__'));
+
+  await adapter.handleUpdate({
+    update_id: 41,
+    callback_query: {
+      id: 'picker-next',
+      from: { id: 7 },
+      data: nextCallback,
+      message: { message_id: 101, chat: { id: 123, type: 'private' } },
+    },
+  });
+  assert.equal(api.markupEdits.at(-1)?.inlineKeyboard?.[0]?.[0]?.text, 'opção-7');
+
+  await adapter.handleUpdate({
+    update_id: 42,
+    callback_query: {
+      id: 'picker-other',
+      from: { id: 7 },
+      data: otherCallback,
+      message: { message_id: 101, chat: { id: 123, type: 'private' } },
+    },
+  });
+  assert.ok(api.callbackAnswers.some((answer) => answer.id === 'picker-other'));
+  await active;
 });
 
 test('renders generic Runtime input choices and accepts a Telegram callback', async () => {
