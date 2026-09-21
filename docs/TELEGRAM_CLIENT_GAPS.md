@@ -21,38 +21,97 @@ A referência do Hermes é comportamental. O Atlas não deve copiar a arquitetur
 - Atlas Runtime: `src/runtime/protocol.ts`
 - Requisitos do produto: `docs/APPS.md`
 
+## Comparação Hermes × Atlas
+
+A comparação é comportamental; o Atlas continua mantendo um adapter fino e deixa sessão, Agent, memória, Tasks e execução no Runtime.
+
+| Capacidade observada no Hermes          | Estado atual do Atlas                                                                                                   | Trabalho restante                                                                                                    |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Sessão persistente por chat/thread      | `conversation_id` determinístico e `MemorySession` no Runtime                                                           | Persistir estado `restart_interrupted` e retomar a partir do último turno confirmado após restart                    |
+| Restart com execução em andamento       | Ledger marca requests em `executing` como `ambiguous` e impede replay silencioso                                        | Publicar aviso de restart e associar a sessão interrompida ao próximo input                                          |
+| Próxima mensagem continua a sessão      | Novas mensagens podem executar outra tarefa; o Atlas não perde o agente inteiro                                         | Implementar marcador persistente e fluxo de continuação equivalente ao Hermes                                        |
+| Mensagem chega enquanto há execução     | `interrupt`, `queue` e `steer` são políticas explícitas, com confirmação de busy e preservação do trabalho já concluído | Expor política por conversa, ack de busy e steer/queue no Runtime; hoje o adapter apenas serializa a fila            |
+| Delivery ledger final                   | Atlas possui ledger de chunks/preview durante a entrega Telegram                                                        | Persistir resposta final, destino, thread, estado do envio, tentativas e expiração; redeliver sem reexecutar o Agent |
+| Entrega potencialmente duplicada        | Atlas protege a execução ambígua, mas não rotula redelivery de resposta                                                 | Prefixo visível de recuperação e semântica at-least-once para respostas já produzidas                                |
+| Retry de `/retry`                       | Não há comando equivalente no catálogo Telegram                                                                         | Adicionar somente depois de definir retry seguro no Runtime; não repetir Tools ambíguas automaticamente              |
+| Liveness do gateway/polling             | Serviço pode reiniciar, mas não há watchdog de loop/heartbeat persistente equivalente                                   | Heartbeat, detecção de polling parado, motivo de degradação e recuperação observável                                 |
+| Heartbeat de tarefa longa               | Typing e status intermediários existem                                                                                  | Bubble de progresso/heartbeat persistente e healthcheck do polling                                                   |
+| Warnings/errors automáticos             | Erro ambíguo agora é traduzido para uma mensagem útil                                                                   | Canal persistente de lifecycle/recovery e deduplicação de avisos                                                     |
+| Threads/fóruns                          | Parsing, roteamento e persistência básica implementados                                                                 | Handoff, bindings após restart e round-trip live em supergrupo Fórum                                                 |
+| Sessões nomeadas e troca entre clientes | Ainda não há catálogo nem handlers                                                                                      | Contrato Runtime, comandos Telegram e retomada entre clientes                                                        |
+
+**Referências verificadas do Hermes:**
+
+- [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging): sessão persistente, `restart_interrupted`, delivery ledger, redelivery com aviso e comandos `/retry`/`/resume`.
+- [Fonte do Hermes](https://github.com/NousResearch/hermes-agent): comportamento do adapter Telegram e do gateway.
+- Atlas: `src/runtime/request-ledger.ts`, `src/runtime/server.ts`, `clients/telegram/adapter.ts` e `clients/telegram/stream-consumer.ts`.
+
 ## Checklist de progresso
 
-Atualizado após o commit `9f21f89`.
+Atualizado após `079d752 fix: surface interrupted Telegram turns`.
 
 ### Concluído
 
-- [x] Catálogo de comandos, `/help` e menus por escopo.
+- [x] Catálogo de comandos existente, `/help` e menus por escopo.
 - [x] Mensagens de entrada: texto, voz, áudio, fotos, documentos, vídeos, GIFs, stickers, locations, venues, álbuns, posts de canais e mensagens editadas.
 - [x] Contexto tipado de replies.
 - [x] Reações tipadas de usuário e contagens agregadas.
 - [x] Inline queries, incluindo validação pelo loop real de polling.
-- [x] Notificações assíncronas com assinatura persistente e entrega real na Bot API.
-- [x] Tópicos/fóruns como eventos tipados básicos.
+- [x] Notificações assíncronas básicas com assinatura persistente e entrega real na Bot API.
+- [x] Tópicos/fóruns como eventos tipados, com persistência e restauração do estado local do tópico.
 - [x] Pickers paginados, navegação, `Outro` e respostas tipadas.
 - [x] Renderer MarkdownV2 semântico para listas, tabelas, headings e fences.
 - [x] Streaming, chunking UTF-16, retomada por chunk e retry de flood control.
 - [x] Validação de updates não textuais no polling.
 - [x] Contratos Runtime e provas NDJSON para reações, notificações, tópicos e inline.
+- [x] Proteção contra replay silencioso de requests ambíguos.
+- [x] Erro `ambiguous_execution` tipado e mensagem Telegram explicando a interrupção.
+- [x] Nova tarefa continua executável depois de uma execução ambígua.
 
 ### Parcial
 
-- [ ] Tópicos/fóruns: parsing e roteamento básico concluídos; handoff, bindings persistentes e round-trip em supergrupo-fórum ainda não validados.
-- [ ] Polling: backoff, IPv4 e reconexão concluídos; heartbeat, healthcheck avançado e recuperação de conflitos persistentes ainda pendentes.
-- [ ] Mídia: caminhos principais concluídos; voice bubble, captions avançadas, fallback por URL e alguns casos de documentos ainda pendentes.
+- [ ] Recuperação estilo Hermes: Atlas informa a interrupção, mas ainda não persiste `restart_interrupted` por sessão nem retoma a partir do último turno confirmado no próximo input.
+- [ ] Delivery ledger: Atlas persiste chunks/preview durante a entrega, mas ainda não persiste a resposta final como unidade durável para redelivery após crash sem reexecutar o Agent.
+- [ ] Tópicos/fóruns: parsing, roteamento, persistência e restauração local concluídos; handoff, bindings entre processos e round-trip em supergrupo-fórum ainda não validados.
+- [ ] Polling: backoff, IPv4, reconexão e refresh periódico de identidade concluídos; heartbeat, healthcheck avançado e recuperação de conflitos persistentes ainda pendentes.
+- [ ] Mídia: caminhos principais concluídos; voice bubble Ogg/Opus, captions avançadas, fallback por URL e alguns casos de documentos ainda pendentes.
+- [ ] Lifecycle público do Runtime: eventos existem/parcialmente são publicados, mas ainda não são consumidos pelo Telegram como avisos persistentes de restart/handoff.
 
 ### Pendente
 
-- [ ] Lifecycle público do Runtime: `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed` consumidos pelo Telegram.
+- [ ] Retomada persistente de sessões interrompidas no padrão Hermes (`restart_interrupted` → aviso → próximo input continua a sessão).
+- [ ] Delivery ledger final com redelivery at-least-once, prefixo de possível duplicata, tentativas limitadas e expiração.
+- [ ] Comando `/retry` seguro e distinto de recuperação de uma operação ambígua.
+- [ ] Lifecycle público do Runtime consumido pelo Telegram: `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`.
 - [ ] Tasks, Workers, progresso e cancelamento.
 - [ ] Sessões nomeadas, troca e retomada entre clientes.
 - [ ] Handoff avançado de fóruns e recuperação de tópicos apagados.
 - [ ] Round-trip real de fóruns, dependente de um supergrupo com modo Fórum.
+
+### TODO priorizado
+
+#### P0 — não perder trabalho nem deixar o usuário sem resposta
+
+1. **Recovery persistente de sessão:** no Runtime, registrar `restart_interrupted` por `conversation_id`, o último turno confirmado e a razão da interrupção; no boot, reidratar essa pendência e, no próximo input, continuar sem repetir Tools ambíguas.
+2. **Delivery ledger final:** persistir resposta final, destino, thread, fase (`not_started`, `sending`, `delivered`, `abandoned`), tentativas e timestamps; redeliver resposta produzida sem executar o Agent novamente.
+3. **Recovery Telegram:** consumir `runtime.restarting`, `runtime.ready`, `operation.resuming` e `operation.resumed`; enviar aviso idempotente de interrupção/retomada e prefixar redelivery potencialmente duplicada.
+4. **Testes de crash boundary:** cobrir queda antes do envio, durante o envio, depois do envio sem confirmação e execução ambígua; provar que não há replay automático de efeito colateral.
+
+#### P1 — disponibilidade e operação longa
+
+5. **Busy-input policy:** definir no Runtime `queue`, `interrupt` e `steer`, com ack Telegram e preservação dos resultados já confirmados.
+6. **Liveness:** heartbeat do polling, detecção de loop parado, conflito 409 persistente, shutdown com updates pendentes e motivo observável de degradação.
+7. **Progresso:** heartbeat editável para tarefas longas e renovação de typing sem transformar o typing em prova de que o Agent está saudável.
+8. **Fóruns:** validar handoff entre processos, bindings após restart e round-trip em supergrupo real com modo Fórum.
+9. **Mídia:** voice bubble Ogg/Opus, captions avançadas, fallback de URL e recuperação de formatos rejeitados.
+
+#### P2 — superfície de uso e integração avançada
+
+10. **Tasks/Workers:** listar, consultar progresso, cancelar e receber conclusão fora do turno ativo.
+11. **Sessões nomeadas:** listar, alternar e retomar sessão entre Telegram e outros clientes.
+12. **Comandos:** `/retry`, `/resume`, `/sessions`, modelo/provider e diagnóstico apenas depois dos contratos Runtime correspondentes.
+
+A ordem é deliberada: primeiro preservar execução e entrega; depois manter o gateway observável e utilizável em trabalhos longos; por fim ampliar a superfície de comandos. Não implementar `/retry` como alias de `turn.recover` enquanto a segurança de efeitos ambíguos não estiver definida.
 
 Cada item concluído deve continuar obedecendo aos critérios de aceitação no final deste documento. Commits separados e gates completos são a fonte operacional de verificação; esta seção é o índice resumido.
 
@@ -69,12 +128,12 @@ O Atlas já possui:
 - divisão de respostas acima do limite do Telegram;
 - persistência de offset, updates pendentes e mensagens processadas;
 - deduplicação de mensagens;
-- retomada da entrega após restart;
-- entrada de texto, voz, áudio, foto e documento;
-- entrega de imagem, voz, áudio e documento;
+- retomada de chunks confirmados durante a entrega;
+- entrada de texto, voz, áudio, foto, documento, vídeo, GIF, sticker, location, venue e álbuns;
+- entrega de imagem, voz, áudio, documento, vídeo, animação e álbuns;
 - aprovações por botões inline;
 - respostas de `input.requested`, incluindo escolhas e texto livre;
-- comandos `/new`, `/status` e `/stop`;
+- comandos `/help`, `/new`, `/status` e `/stop`;
 - testes focados do adapter Telegram.
 
 Isso cobre o caminho básico de conversa, mas ainda não cobre a superfície completa esperada de um cliente Telegram do Atlas.
@@ -85,14 +144,13 @@ Isso cobre o caminho básico de conversa, mas ainda não cobre a superfície com
 
 ### 1. Menu e catálogo de comandos
 
-O Hermes deriva seus comandos de um registro central e publica o menu em escopos diferentes do Telegram. O Atlas possui somente três comandos no catálogo do Runtime e atualmente não possui uma superfície de ajuda equivalente.
+O Hermes deriva seus comandos de um registro central e publica o menu em escopos diferentes do Telegram. O Atlas já possui `/help`, `/new`, `/status` e `/stop` derivados de seus catálogos; ainda não possui os comandos Hermes de retry, sessões nomeadas, modelo/provider e retomada.
 
 Implementar:
 
 - corrigir e verificar o registro de `setMyCommands`;
 - publicar comandos nos escopos default, privado e grupo;
 - registrar comandos específicos para fóruns quando necessário;
-- adicionar `/help`;
 - adicionar comandos somente quando existirem no catálogo público do Runtime;
 - manter o parser e o menu derivados do mesmo catálogo;
 - adicionar, conforme contratos do Runtime, comandos de:
@@ -107,9 +165,7 @@ Não copiar automaticamente todos os comandos do Hermes. O Atlas deve expor some
 
 ### 2. Tipos de update e mensagens de entrada
 
-O Atlas atualmente trata `message` e `callback_query`. O Hermes trata uma superfície maior.
-
-Implementar, conforme necessidade do Runtime:
+O Atlas já trata texto, callback, location, venue, vídeo, sticker, animação, álbuns, mensagens editadas, posts de canais, reações, inline queries e contexto estruturado de replies. Esta seção permanece como catálogo histórico; novas famílias devem atualizar tipos, `allowed_updates`, validação e handlers. Os itens abaixo já estão cobertos e ficam como referência de contrato:
 
 - `location` e `venue`;
 - `video`;
@@ -146,11 +202,8 @@ Os anexos devem continuar chegando ao Runtime como anexos tipados. Não usar mar
 
 ### 4. Mídia enviada pelo Atlas
 
-O Atlas envia atualmente imagem, voz, áudio e documento. Falta cobertura equivalente à do Hermes para:
+O Atlas já envia vídeo, animação/GIF e álbuns com as APIs nativas. Restam:
 
-- vídeo nativo;
-- animação/GIF;
-- álbuns com `sendMediaGroup`;
 - fallback de foto para documento quando o Telegram rejeitar as dimensões;
 - imagem por URL com fallback seguro para download/upload;
 - conversão para voice bubble Ogg/Opus;
@@ -160,76 +213,42 @@ O Atlas envia atualmente imagem, voz, áudio e documento. Falta cobertura equiva
 
 ### 5. Formatação e entrega de texto
 
-O Atlas envia MarkdownV2 e tenta texto simples quando o Telegram rejeita a mensagem. O Hermes possui uma camada de formatação mais completa.
-
-Implementar:
-
-- renderer MarkdownV2 seguro;
-- fallback plain-text sem perder o conteúdo;
-- conversão de tabelas para uma representação legível no Telegram;
-- preservação de blocos de código;
-- tratamento de links, títulos, blockquotes e listas;
-- chunking depois da formatação, considerando UTF-16;
-- separação correta de fences de código entre chunks;
-- rich messages quando a Bot API e o Runtime permitirem;
-- edição final formatada sem criar uma mensagem duplicada.
-
-O módulo `clients/telegram/text.ts` atualmente cobre limite, UTF-16, truncamento e divisão, mas não faz renderização semântica.
+O Atlas já possui renderer MarkdownV2 semântico, fallback plain-text, tabelas, fences, chunking pós-formatação, UTF-16 e edição final. Restam apenas casos de rich messages dependentes de contratos futuros.
 
 ### 6. Streaming e entrega final
 
-O Atlas já possui preview editável, throttling e ledger de entrega. O Hermes possui controles adicionais para evitar flood e duplicação.
-
-Avaliar e implementar:
+O Atlas já possui preview editável, throttling, status intermediário, deduplicação de edições, chunking UTF-16, retomada por chunk confirmado, tratamento de eventos terminais e retry de flood control. Restam:
 
 - `sendMessageDraft`, quando suportado pelo contrato e pela Bot API;
-- status progressivo de execução;
-- renovação de typing após cada envio intermediário;
-- preview saturado quando o acumulador passa de 4096 caracteres;
-- deduplicação de edições idênticas;
-- continuação de respostas longas sem regredir o preview;
-- retomada por chunk confirmado;
-- tratamento distinto de `delta`, `completed`, `cancelled` e `error`;
-- retry controlado para flood control;
-- fallback sem criar mensagens duplicadas;
-- edição rica na finalização.
+- delivery ledger final após crash, separado do ledger de chunks;
+- redelivery at-least-once com prefixo visível quando houver possível duplicata;
+- tentativas limitadas, backoff e expiração para respostas não confirmadas;
+- edição rica na finalização quando o Runtime fornecer o contrato.
 
 O evento terminal deve continuar sendo a autoridade para o estado final do turno.
 
 ### 7. Pickers e callbacks interativos
 
-O Atlas suporta aprovação/rejeição e escolhas simples de input. O Hermes possui uma camada de callbacks mais ampla.
-
-Implementar, conforme contratos do Runtime:
+O Atlas já suporta aprovação/rejeição, escolhas paginadas, `Outro`, navegação, autorização e respostas tipadas. Restam pickers de modelo/provider e prompts administrativos dependentes de contratos do Runtime:
 
 - picker de modelos/providers;
-- picker de escolhas paginado;
-- confirmação de comandos;
-- opção `Outro` para respostas livres;
-- paginação, voltar, cancelar e no-op;
-- expiração e limpeza de callbacks;
-- autorização por usuário e chat para cada callback;
-- edição da mensagem original após a escolha;
+- confirmação de comandos administrativos;
+- expiração e limpeza de callbacks em casos não cobertos;
+- edição da mensagem original após a escolha quando ainda não houver contrato;
 - prompts interativos de atualização e operações administrativas.
 
 A lógica de domínio deve permanecer no Runtime. O cliente apenas renderiza e devolve respostas tipadas.
 
 ### 8. Tópicos, fóruns e handoff
 
-O Atlas inclui o `message_thread_id` no `conversation_id`, mas isso cobre somente o roteamento básico.
+O Atlas inclui o `message_thread_id` no `conversation_id` e já persiste/restaura o estado local do tópico. Restam:
 
-Implementar:
-
-- criação de tópicos DM;
-- renomeação de tópicos;
-- persistência do vínculo tópico/sessão;
-- recuperação de tópico após restart;
-- handoff para novo tópico;
-- comandos específicos de fórum;
-- registro preguiçoso do menu por fórum;
+- validação de handoff entre processos;
+- round-trip real em supergrupo com modo Fórum;
+- comandos e menu específicos de fórum, se o Runtime os suportar;
 - fallback para tópico apagado;
 - limpeza de bindings obsoletos;
-- recuperação do reply anchor;
+- recuperação do reply anchor após restart;
 - isolamento correto por tópico e perfil.
 
 A identidade da conversa deve continuar seguindo o formato determinístico:
@@ -240,22 +259,12 @@ telegram:<encoded-chat-id>:thread:<encoded-thread-id-or-root>
 
 ### 9. Contexto de replies
 
-O Hermes preserva mais contexto ao processar uma resposta a outra mensagem.
-
-Implementar:
-
-- leitura do texto/caption da mensagem respondida;
-- materialização da mídia respondida;
-- envio desse contexto como anexo ou metadado tipado;
-- preservação do reply anchor na resposta;
-- fallback quando a mensagem original foi apagada;
-- tratamento de replies dentro de tópicos.
-
+O Atlas já preserva texto/caption, mídia tipada, reply anchor e replies dentro de tópicos. Restam fallback quando a mensagem original foi apagada e validação live de replies em fóruns.
 Não transformar esse contexto em texto artificial sem contrato. Se o Runtime precisar de um novo campo, evoluir primeiro o protocolo.
 
 ### 10. Notificações assíncronas e lifecycle
 
-O Atlas possui `notifyHome()`, mas não existe call site que o utilize. O Runtime também declara eventos de lifecycle que não são consumidos pelo adapter Telegram.
+O Atlas já possui `notification.subscribe`/`notification.publish`, assinatura persistente e entrega básica de notificações. O Runtime já declara eventos de lifecycle, mas o adapter Telegram ainda não os consome como avisos persistentes de restart/handoff.
 
 Implementar primeiro o contrato público do Runtime para:
 
@@ -263,6 +272,8 @@ Implementar primeiro o contrato público do Runtime para:
 - `runtime.ready`;
 - `operation.resuming`;
 - `operation.resumed`;
+- estado `restart_interrupted` por sessão;
+- delivery ledger final e redelivery sem reexecutar o Agent;
 - conclusão de Tasks;
 - mudança de estado de Workers;
 - notificações fora de um turno ativo.
@@ -272,8 +283,8 @@ Depois implementar no cliente:
 - assinatura ou recebimento desses broadcasts;
 - roteamento para `TELEGRAM_HOME_CHAT`;
 - preservação de tópico quando houver destino específico;
-- deduplicação de notificações;
-- renderização de progresso e conclusão.
+- deduplicação de notificações e avisos de recovery;
+- renderização de progresso, retomada, possível duplicata e conclusão.
 
 Um método público sem consumidor não deve ser considerado suporte implementado.
 
@@ -296,34 +307,18 @@ Não armazenar estado de Tasks ou sessões como regra de domínio dentro do adap
 
 ### 12. Presença, reações e eventos de plataforma
 
-O Hermes possui recursos adicionais de presença e eventos.
-
-Avaliar e implementar:
-
-- typing com cooldown e retry;
-- renovação do typing em turnos longos;
-- status online/offline quando aplicável;
-- reações na mensagem;
-- remoção de reações;
-- mensagens editadas como eventos de plataforma;
-- inline queries;
-- observação de mensagens não direcionadas em grupos, caso o Runtime tenha suporte para esse modo.
+O Atlas já cobre typing básico, reações de usuário/contagem, mensagens editadas e inline queries. Restam heartbeat de typing em turnos longos, status de progresso persistente e observação de mensagens não direcionadas em grupos quando o Runtime suportar esse modo.
 
 ### 13. Polling e resiliência operacional
 
-O Atlas possui backoff básico no loop de polling. O Hermes possui uma camada mais completa de recuperação.
+O Atlas já possui backoff, timeout do long polling, preferência IPv4, reconexão, refresh periódico de identidade e tratamento básico de conflitos 409. Restam:
 
-Implementar ou avaliar:
-
-- fallback de IP quando DNS/IPv6 estiver instável;
-- proxy configurável;
 - heartbeat de polling;
-- detecção de polling parado;
+- detecção de polling parado independente do timeout;
 - probe seguro de updates pendentes;
-- tratamento explícito de conflitos 409;
+- recuperação explícita de conflitos persistentes;
 - reconstrução do cliente HTTP após falha de pool;
 - controle de conexões `CLOSE_WAIT`;
-- refresh periódico da identidade do bot;
 - shutdown sem perder updates pendentes;
 - observabilidade sem expor token ou dados sensíveis.
 
@@ -347,7 +342,8 @@ O adapter deve continuar resiliente a falhas transitórias sem mascarar erro de 
 
 - Tasks e Workers;
 - notificações broadcast;
-- lifecycle de restart/handoff;
+- lifecycle de restart/handoff e estado `restart_interrupted`;
+- delivery ledger final e redelivery;
 - lista e troca de sessões;
 - picker de modelos;
 - progresso assíncrono;
