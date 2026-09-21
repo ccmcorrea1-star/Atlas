@@ -48,6 +48,9 @@ export type TelegramMessage = {
   animation?: TelegramFileRef;
   photo?: TelegramPhotoSize[];
   document?: TelegramFileRef;
+  sticker?: TelegramFileRef;
+  media_group_id?: string;
+  media_group_messages?: TelegramMessage[];
 };
 
 export type TelegramInlineKeyboardButton = {
@@ -69,6 +72,9 @@ export type TelegramCallbackQuery = {
 export type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+  channel_post?: TelegramMessage;
+  edited_channel_post?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
 };
 

@@ -71,7 +71,13 @@ export class FetchTelegramApi implements TelegramApi {
   ): Promise<TelegramUpdate[]> {
     const params = new URLSearchParams({
       timeout: String(timeoutSeconds),
-      allowed_updates: JSON.stringify(['message', 'callback_query']),
+      allowed_updates: JSON.stringify([
+        'message',
+        'edited_message',
+        'channel_post',
+        'edited_channel_post',
+        'callback_query',
+      ]),
     });
     if (offset !== undefined) {
       params.set('offset', String(offset));

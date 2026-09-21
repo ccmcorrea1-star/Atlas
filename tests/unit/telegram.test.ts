@@ -569,6 +569,65 @@ test('agrupa fotos e vídeos em um álbum do Telegram', async () => {
     ],
   ]);
 });
+test('agrupa mensagens de um álbum recebido em um único turno', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (request) =>
+    runtimeEvent('turn.completed', {
+      content: `recebidos ${request.attachments?.length ?? 0}`,
+    }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+  const first = {
+    update_id: 7,
+    message: message({
+      message_id: 70,
+      media_group_id: 'album-1',
+      text: 'álbum',
+      photo: [{ file_id: 'photo-a', width: 10, height: 10 }],
+    }),
+  };
+  const second = {
+    update_id: 8,
+    message: message({
+      message_id: 71,
+      media_group_id: 'album-1',
+      text: undefined,
+      photo: [{ file_id: 'photo-b', width: 20, height: 20 }],
+    }),
+  };
+
+  await Promise.all([adapter.handleUpdate(first), adapter.handleUpdate(second)]);
+
+  assert.equal(runtime.requests.length, 1);
+  assert.equal((runtime.requests[0]?.attachments as unknown[]).length, 2);
+});
+
+test('aceita posts de canal e transforma stickers em imagens tipadas', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async (request) =>
+    runtimeEvent('turn.completed', {
+      content: request.attachments?.[0]?.media_type ?? 'sem anexo',
+    }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedChats: [-100] });
+
+  await adapter.handleUpdate({
+    update_id: 9,
+    channel_post: {
+      message_id: 90,
+      chat: { id: -100, type: 'channel' },
+      text: 'sticker',
+      sticker: { file_id: 'sticker-1' },
+    },
+  });
+
+  assert.equal(runtime.requests.length, 1);
+  assert.equal(
+    (runtime.requests[0]?.attachments as Array<{ media_type: string }>)[0]?.media_type,
+    'image/webp',
+  );
+});
+
 test('rematerializa um anexo pendente após recuperação do Runtime', async () => {
   const statePath = join('/tmp', `atlas-telegram-attachment-${Date.now()}-${Math.random()}.json`);
   const api = new FakeApi();

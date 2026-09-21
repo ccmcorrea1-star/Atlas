@@ -93,6 +93,14 @@ type MaterializedAttachments = {
   directory?: string;
 };
 
+type PendingTelegramMediaGroup = {
+  messages: TelegramMessage[];
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 type TelegramAttachmentReference = {
   type: RuntimeAttachment['type'];
   fileId: string;
@@ -139,6 +147,7 @@ export class TelegramAdapter {
   private readonly processingUpdates = new Set<number>();
   private readonly processedMessageIds = new Set<string>();
   private readonly processingMessageIds = new Map<string, Promise<void>>();
+  private readonly mediaGroups = new Map<string, PendingTelegramMediaGroup>();
   private readonly turns = new Map<string, TelegramTurnState>();
   private stateWrite: Promise<void> = Promise.resolve();
   private bot: TelegramBot | undefined;
@@ -289,7 +298,7 @@ export class TelegramAdapter {
       await this.handleCallbackQuery(update.callback_query);
       return;
     }
-    const message = update.message;
+    const message = telegramMessageFromUpdate(update);
     if (message === undefined || message.from?.is_bot === true) {
       return;
     }
@@ -317,7 +326,9 @@ export class TelegramAdapter {
     this.processingMessageIds.set(messageKey, processingPromise);
     const processMessage = async (): Promise<void> => {
       try {
-        await this.handleMessage(message);
+        await (message.media_group_id === undefined
+          ? this.handleMessage(message)
+          : this.handleMediaGroup(message));
         this.rememberProcessedMessage(messageKey);
         resolveProcessing?.();
       } catch (error) {
@@ -331,6 +342,53 @@ export class TelegramAdapter {
     };
     void processMessage().catch(() => undefined);
     await processingPromise;
+  }
+
+  private async handleMediaGroup(message: TelegramMessage): Promise<void> {
+    const groupId = message.media_group_id;
+    if (groupId === undefined) {
+      await this.handleMessage(message);
+      return;
+    }
+    const key = `${String(message.chat.id)}:${message.message_thread_id ?? 'root'}:${groupId}`;
+    const existing = this.mediaGroups.get(key);
+    if (existing !== undefined) {
+      existing.messages.push(message);
+      return existing.promise;
+    }
+
+    let resolveGroup!: () => void;
+    let rejectGroup!: (error: unknown) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveGroup = resolve;
+      rejectGroup = reject;
+    });
+    const pending: PendingTelegramMediaGroup = {
+      messages: [message],
+      promise,
+      resolve: resolveGroup,
+      reject: rejectGroup,
+      timer: setTimeout(() => {
+        void this.flushMediaGroup(key);
+      }, 75),
+    };
+    this.mediaGroups.set(key, pending);
+    return promise;
+  }
+
+  private async flushMediaGroup(key: string): Promise<void> {
+    const pending = this.mediaGroups.get(key);
+    if (pending === undefined) {
+      return;
+    }
+    this.mediaGroups.delete(key);
+    clearTimeout(pending.timer);
+    try {
+      await this.handleMessage(mergeTelegramMediaGroup(pending.messages));
+      pending.resolve();
+    } catch (error) {
+      pending.reject(error);
+    }
   }
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
@@ -501,6 +559,9 @@ export class TelegramAdapter {
       }
     };
 
+    const typingTimer = setInterval(() => {
+      void this.sendChatAction(message.chat.id).catch(() => undefined);
+    }, 4_000);
     try {
       void this.sendChatAction(message.chat.id).catch(() => undefined);
       const terminal = await this.options.runtime.runTurn(
@@ -516,6 +577,7 @@ export class TelegramAdapter {
       turn.status = 'terminal';
       await this.persistState();
     } finally {
+      clearInterval(typingTimer);
       await this.clearPendingApprovals(conversationId);
       if (this.activeTurns.get(conversationId) === active) {
         this.activeTurns.delete(conversationId);
@@ -574,16 +636,15 @@ export class TelegramAdapter {
     } catch (error) {
       if (isPermanentUpdateError(error)) {
         this.pendingUpdates.delete(update.update_id);
-        if (update.message !== undefined && this.authorization.allows(update.message)) {
+        const message = telegramMessageFromUpdate(update);
+        if (message !== undefined && this.authorization.allows(message)) {
           await this.sendText(
-            update.message.chat.id,
+            message.chat.id,
             `Não foi possível processar esta mensagem: ${safeErrorMessage(error)}`,
           ).catch(() => undefined);
         }
         this.rememberProcessedMessage(
-          update.message === undefined
-            ? `update:${update.update_id}`
-            : telegramMessageKey(update.message),
+          message === undefined ? `update:${update.update_id}` : telegramMessageKey(message),
         );
         await this.persistState();
       } else {
@@ -1179,44 +1240,53 @@ export class TelegramAdapter {
       ref: TelegramFileRef;
       mediaType: string;
     }> = [];
-    if (message.voice !== undefined) {
-      refs.push({
-        type: 'voice',
-        ref: message.voice,
-        mediaType: message.voice.mime_type ?? 'audio/ogg',
-      });
-    }
-    if (message.audio !== undefined) {
-      refs.push({
-        type: 'audio',
-        ref: message.audio,
-        mediaType: message.audio.mime_type ?? 'audio/mpeg',
-      });
-    }
-    const photo = message.photo?.at(-1);
-    if (photo !== undefined) {
-      refs.push({ type: 'image', ref: photo, mediaType: 'image/jpeg' });
-    }
-    if (message.video !== undefined) {
-      refs.push({
-        type: 'video',
-        ref: message.video,
-        mediaType: message.video.mime_type ?? 'video/mp4',
-      });
-    }
-    if (message.animation !== undefined) {
-      refs.push({
-        type: 'animation',
-        ref: message.animation,
-        mediaType: message.animation.mime_type ?? 'video/mp4',
-      });
-    }
-    if (message.document !== undefined) {
-      refs.push({
-        type: 'document',
-        ref: message.document,
-        mediaType: message.document.mime_type ?? 'application/octet-stream',
-      });
+    for (const item of message.media_group_messages ?? [message]) {
+      if (item.voice !== undefined) {
+        refs.push({
+          type: 'voice',
+          ref: item.voice,
+          mediaType: item.voice.mime_type ?? 'audio/ogg',
+        });
+      }
+      if (item.audio !== undefined) {
+        refs.push({
+          type: 'audio',
+          ref: item.audio,
+          mediaType: item.audio.mime_type ?? 'audio/mpeg',
+        });
+      }
+      const photo = item.photo?.at(-1);
+      if (photo !== undefined) {
+        refs.push({ type: 'image', ref: photo, mediaType: 'image/jpeg' });
+      }
+      if (item.video !== undefined) {
+        refs.push({
+          type: 'video',
+          ref: item.video,
+          mediaType: item.video.mime_type ?? 'video/mp4',
+        });
+      }
+      if (item.animation !== undefined) {
+        refs.push({
+          type: 'animation',
+          ref: item.animation,
+          mediaType: item.animation.mime_type ?? 'video/mp4',
+        });
+      }
+      if (item.sticker !== undefined) {
+        refs.push({
+          type: 'image',
+          ref: item.sticker,
+          mediaType: item.sticker.mime_type ?? 'image/webp',
+        });
+      }
+      if (item.document !== undefined) {
+        refs.push({
+          type: 'document',
+          ref: item.document,
+          mediaType: item.document.mime_type ?? 'application/octet-stream',
+        });
+      }
     }
 
     if (refs.length === 0) {
@@ -1292,6 +1362,29 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+}
+
+function telegramMessageFromUpdate(update: TelegramUpdate): TelegramMessage | undefined {
+  return (
+    update.message ?? update.edited_message ?? update.channel_post ?? update.edited_channel_post
+  );
+}
+
+function mergeTelegramMediaGroup(messages: TelegramMessage[]): TelegramMessage {
+  const ordered = [...messages].sort((left, right) => left.message_id - right.message_id);
+  const first = ordered[0] as TelegramMessage;
+  const texts = ordered
+    .map((message) => message.text)
+    .filter((value): value is string => Boolean(value));
+  const captions = ordered
+    .map((message) => message.caption)
+    .filter((value): value is string => Boolean(value));
+  return {
+    ...first,
+    ...(texts.length === 0 ? {} : { text: texts.join('\n') }),
+    ...(captions.length === 0 ? {} : { caption: captions.join('\n') }),
+    media_group_messages: ordered,
+  };
 }
 
 function attachmentReferences(attachments: RuntimeAttachment[]): TelegramAttachmentReference[] {
@@ -1432,7 +1525,9 @@ function isValidTelegramUpdate(value: unknown): value is TelegramUpdate {
   if (!Number.isSafeInteger(update.update_id)) {
     return false;
   }
-  if (update.message !== undefined && isValidTelegramMessage(update.message)) {
+  const message =
+    update.message ?? update.edited_message ?? update.channel_post ?? update.edited_channel_post;
+  if (message !== undefined && isValidTelegramMessage(message)) {
     return true;
   }
   return isValidTelegramCallback(update.callback_query);
