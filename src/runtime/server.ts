@@ -13,6 +13,7 @@ import {
   runAtlas,
   resetAtlasConversation,
   type AtlasApprovalDecision,
+  type AtlasInputResponse,
   type AtlasRunEvent,
   type AtlasRunOptions,
 } from '../index.js';
@@ -30,6 +31,7 @@ import {
   type RuntimeCommandCompletedData,
   type RuntimeCommandRequest,
   type RuntimeEvent,
+  type RuntimeInputRequestedData,
   type RuntimeRequest,
   type RuntimeSession,
   type RuntimeSessionUpdatedData,
@@ -38,7 +40,12 @@ import {
 } from './protocol.js';
 import { OperationStore, type HostOperation } from '../host/operations.js';
 import { UnixSocketServer } from './transport/unix/server.js';
-import { RuntimeRequestLedger, requestFingerprint } from './request-ledger.js';
+import {
+  RuntimeRequestLedger,
+  requestFingerprint,
+  type RuntimeRequestRecord,
+  type RuntimeRequestSuspension,
+} from './request-ledger.js';
 
 export const DEFAULT_RUNTIME_SOCKET_PATH = '/tmp/atlas-runtime.sock';
 
@@ -60,6 +67,15 @@ type PendingApprovalGroup = {
   approvalIds: Set<string>;
   decisions: Map<string, AtlasApprovalDecision>;
   resolve: ((decisions: AtlasApprovalDecision[]) => void) | undefined;
+  reject: ((error: Error) => void) | undefined;
+  abortCleanup: (() => void) | undefined;
+};
+
+type PendingInput = {
+  request: RuntimeTurnRequest;
+  input: RuntimeInputRequestedData;
+  value: string | undefined;
+  resolve: ((value: string) => void) | undefined;
   reject: ((error: Error) => void) | undefined;
   abortCleanup: (() => void) | undefined;
 };
@@ -180,6 +196,7 @@ export class AtlasRuntimeServer {
   private readonly activeTurns = new Map<string, Map<string, AbortController>>();
   private readonly recoveryPromises = new Map<string, Promise<HostOperation>>();
   private readonly pendingApprovals = new Map<string, PendingApprovalGroup>();
+  private readonly pendingInputs = new Map<string, PendingInput>();
   private readonly requestLedger: RuntimeRequestLedger;
   private readonly requestSubscribers = new Map<string, Set<(payload: string) => void>>();
 
@@ -220,7 +237,7 @@ export class AtlasRuntimeServer {
     await this.requestLedger.load();
     await this.transport.listen();
     await this.schedulePendingRecovery();
-    for (const record of this.requestLedger.running()) {
+    for (const record of this.requestLedger.recoverable()) {
       void this.launchTurnRequest(record.request, record, () => undefined).catch(() => undefined);
     }
   }
@@ -244,6 +261,9 @@ export class AtlasRuntimeServer {
 
     if (message.type === 'turn.cancel') {
       return this.handleCancel(message, send);
+    }
+    if (message.type === 'turn.recover') {
+      return this.handleRecovery(message, send);
     }
     if (message.type === 'command.request') {
       return this.handleCommand(message, send);
@@ -272,7 +292,18 @@ export class AtlasRuntimeServer {
       for (const event of existing.events) {
         send(serializeRuntimeMessage(event));
       }
-      if (existing.state === 'completed') {
+      if (existing.state === 'terminal') {
+        return Promise.resolve();
+      }
+      if (existing.state === 'ambiguous') {
+        send(
+          serializeRuntimeMessage(
+            runtimeErrorEvent(
+              'This request has ambiguous execution state and requires explicit recovery.',
+              request,
+            ),
+          ),
+        );
         return Promise.resolve();
       }
       const subscribers = this.requestSubscribers.get(request.request_id) ?? new Set();
@@ -300,6 +331,14 @@ export class AtlasRuntimeServer {
         return;
       }
       record.events.push(event);
+      if (
+        event.type === 'turn.completed' ||
+        event.type === 'turn.cancelled' ||
+        event.type === 'error'
+      ) {
+        this.requestLedger.complete(record);
+        void this.requestLedger.persist();
+      }
       for (const subscriber of subscribers) {
         subscriber(payload);
       }
@@ -309,9 +348,14 @@ export class AtlasRuntimeServer {
     conversationTurns.set(request.request_id, controller);
     this.activeTurns.set(request.conversation_id, conversationTurns);
     const previous = this.conversationQueues.get(request.conversation_id) ?? Promise.resolve();
-    const current = previous
-      .catch(() => undefined)
-      .then(() => this.handleTurn(request, publish, controller.signal))
+    const accepted = this.requestLedger.persist();
+    const current = accepted
+      .then(() => previous.catch(() => undefined))
+      .then(async () => {
+        this.requestLedger.markExecuting(record);
+        await this.requestLedger.persist();
+        await this.handleTurn(request, publish, controller.signal, record);
+      })
       .catch((error) => {
         // A fila nao pode deixar uma falha inesperada sem um evento terminal.
         publish(
@@ -345,7 +389,7 @@ export class AtlasRuntimeServer {
       }
     };
     void current.then(clearQueue, clearQueue);
-    return this.requestLedger.persist().then(() => current);
+    return current;
   }
 
   private async handleCommand(
@@ -435,11 +479,36 @@ export class AtlasRuntimeServer {
     request: Extract<RuntimeRequest, { type: 'input.respond' }>,
     send: (payload: string) => void,
   ): Promise<void> {
-    send(
-      serializeRuntimeMessage(
-        runtimeErrorEvent(`No input is currently waiting for "${request.input_id}".`, request),
-      ),
+    const pending = this.pendingInputs.get(request.input_id);
+    if (pending === undefined || pending.request.conversation_id !== request.conversation_id) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`No input is currently waiting for "${request.input_id}".`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+    if (pending.value !== undefined) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`Input "${request.input_id}" was already resolved.`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+
+    pending.value = request.value;
+    const resolvedPayload = serializeRuntimeMessage(
+      runtimeEvent(pending.request, 'input.resolved', {
+        input_id: request.input_id,
+        value: request.value,
+      }),
     );
+    send(resolvedPayload);
+    for (const subscriber of this.requestSubscribers.get(pending.request.request_id) ?? []) {
+      subscriber(resolvedPayload);
+    }
+    pending.resolve?.(request.value);
     return Promise.resolve();
   }
 
@@ -489,6 +558,43 @@ export class AtlasRuntimeServer {
     group.abortCleanup = undefined;
   }
 
+  private waitForInput(
+    request: RuntimeTurnRequest,
+    input: RuntimeInputRequestedData,
+    abortSignal: AbortSignal,
+  ): Promise<string> {
+    const pending: PendingInput = {
+      request,
+      input,
+      value: undefined,
+      resolve: undefined,
+      reject: undefined,
+      abortCleanup: undefined,
+    };
+    this.pendingInputs.set(input.input_id, pending);
+    return new Promise<string>((resolve, reject) => {
+      pending.resolve = (value) => {
+        this.pendingInputs.delete(input.input_id);
+        pending.abortCleanup?.();
+        pending.abortCleanup = undefined;
+        resolve(value);
+      };
+      pending.reject = (error) => {
+        this.pendingInputs.delete(input.input_id);
+        pending.abortCleanup?.();
+        pending.abortCleanup = undefined;
+        reject(error);
+      };
+      const onAbort = () =>
+        pending.reject?.(new Error('Input was cancelled with the active turn.'));
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      pending.abortCleanup = () => abortSignal.removeEventListener('abort', onAbort);
+      if (abortSignal.aborted) {
+        onAbort();
+      }
+    });
+  }
+
   private sessionSnapshot(
     conversationId: string,
     statusOverride?: RuntimeSession['status'],
@@ -521,10 +627,45 @@ export class AtlasRuntimeServer {
     return Promise.resolve();
   }
 
+  private handleRecovery(
+    request: Extract<RuntimeRequest, { type: 'turn.recover' }>,
+    send: (payload: string) => void,
+  ): Promise<void> {
+    const record = this.requestLedger.get(request.request_id);
+    if (record === undefined || record.request.conversation_id !== request.conversation_id) {
+      send(serializeRuntimeMessage(runtimeErrorEvent('No recoverable request exists.', request)));
+      return Promise.resolve();
+    }
+    if (record.state !== 'ambiguous') {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(`Request "${request.request_id}" is not ambiguous.`, request),
+        ),
+      );
+      return Promise.resolve();
+    }
+    if (!request.confirm) {
+      send(
+        serializeRuntimeMessage(
+          runtimeErrorEvent(
+            'Explicit recovery requires confirm=true because execution may have produced side effects.',
+            request,
+          ),
+        ),
+      );
+      return Promise.resolve();
+    }
+    record.state = 'accepted';
+    record.suspension = undefined;
+    record.events = [];
+    return this.launchTurnRequest(record.request, record, send);
+  }
+
   private async handleTurn(
     request: RuntimeTurnRequest,
     send: (payload: string) => void,
     abortSignal: AbortSignal,
+    record: RuntimeRequestRecord,
   ): Promise<void> {
     const publish = (message: RuntimeEvent) => {
       send(serializeRuntimeMessage(message));
@@ -538,7 +679,7 @@ export class AtlasRuntimeServer {
     if (operation !== undefined) {
       const completedRecovery = await this.completedOperation(request);
       if (completedRecovery !== undefined) {
-        await this.publishRecoveredOperation(request, completedRecovery, publish, true);
+        await this.publishRecoveredOperation(request, completedRecovery, publish);
         return;
       }
       await this.operationStore?.update(operation.operation_id, { state: 'resuming' });
@@ -558,9 +699,12 @@ export class AtlasRuntimeServer {
       return;
     }
     const input = request.input;
+    const recoveringSuspension = record.suspension;
     const sessionData: RuntimeSessionUpdatedData = this.sessionData;
-    publish(runtimeEvent(request, 'session.updated', sessionData));
-    publish(runtimeEvent(request, 'turn.started'));
+    if (recoveringSuspension === undefined) {
+      publish(runtimeEvent(request, 'session.updated', sessionData));
+      publish(runtimeEvent(request, 'turn.started'));
+    }
 
     let messageId: string | undefined;
     const messageContents = new Map<string, string>();
@@ -577,11 +721,14 @@ export class AtlasRuntimeServer {
       if (abortSignal.aborted) {
         throw new Error('turn cancelled by client');
       }
-      let resumeState: string | undefined;
+      let resumeState: string | undefined = recoveringSuspension?.checkpoint;
       let approvalDecisions: readonly AtlasApprovalDecision[] | undefined;
+      let inputResponses: readonly AtlasInputResponse[] | undefined;
       let result: Awaited<ReturnType<typeof runAtlas>>;
       for (;;) {
         const requestedApprovals = new Set<string>();
+        const requestedInputs = new Map<string, RuntimeInputRequestedData>();
+        const inputWaits = new Map<string, Promise<string>>();
         result = await runAtlas(input, {
           ...this.runOptions,
           abortSignal,
@@ -594,6 +741,7 @@ export class AtlasRuntimeServer {
             : {}),
           ...(resumeState === undefined ? {} : { resumeState }),
           ...(approvalDecisions === undefined ? {} : { approvalDecisions }),
+          ...(inputResponses === undefined ? {} : { inputResponses }),
           onEvent: (event) => {
             messageId = eventMessageId(event) ?? messageId;
             if (event.type === 'message.delta') {
@@ -605,6 +753,15 @@ export class AtlasRuntimeServer {
               messageContents.set(event.messageId, event.content);
             } else if (event.type === 'approval.requested') {
               requestedApprovals.add(event.approvalId);
+            } else if (event.type === 'input.requested') {
+              const inputData: RuntimeInputRequestedData = {
+                input_id: event.inputId,
+                prompt: event.prompt,
+                ...(event.choices === undefined ? {} : { choices: event.choices }),
+                ...(event.placeholder === undefined ? {} : { placeholder: event.placeholder }),
+              };
+              requestedInputs.set(event.inputId, inputData);
+              inputWaits.set(event.inputId, this.waitForInput(request, inputData, abortSignal));
             }
             publish(atlasEvent(request, event));
           },
@@ -612,11 +769,31 @@ export class AtlasRuntimeServer {
         if (result.interruptions.length === 0) {
           break;
         }
-        if (requestedApprovals.size !== result.interruptions.length) {
+        if (requestedApprovals.size + requestedInputs.size !== result.interruptions.length) {
           throw new Error('Runtime received an approval without a stable identifier.');
         }
+        const checkpoint = result.state.toString();
+        const suspension: RuntimeRequestSuspension =
+          requestedInputs.size > 0
+            ? {
+                kind: 'input',
+                ids: [...requestedInputs.keys()],
+                checkpoint,
+                input: requestedInputs.values().next().value,
+              }
+            : { kind: 'approval', ids: [...requestedApprovals], checkpoint };
+        this.requestLedger.suspend(record, suspension);
+        await this.requestLedger.persist();
         approvalDecisions = await this.waitForApprovals(request, requestedApprovals, abortSignal);
-        resumeState = result.state.toString();
+        inputResponses = await Promise.all(
+          [...inputWaits.entries()].map(async ([inputId, pending]) => ({
+            inputId,
+            value: await pending,
+          })),
+        );
+        this.requestLedger.markExecuting(record);
+        await this.requestLedger.persist();
+        resumeState = checkpoint;
       }
       if (abortSignal.aborted) {
         publishCancelled();
@@ -838,6 +1015,13 @@ function atlasEvent(request: RuntimeTurnRequest, event: AtlasRunEvent): RuntimeE
         approval_id: event.approvalId,
         tool_name: event.toolName,
         reason: event.reason,
+      });
+    case 'input.requested':
+      return runtimeEvent(request, 'input.requested', {
+        input_id: event.inputId,
+        prompt: event.prompt,
+        ...(event.choices === undefined ? {} : { choices: event.choices }),
+        ...(event.placeholder === undefined ? {} : { placeholder: event.placeholder }),
       });
   }
 }

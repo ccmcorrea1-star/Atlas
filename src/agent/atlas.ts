@@ -111,6 +111,7 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   // Estado serializado usado para retomar uma execução interrompida por approval.
   resumeState?: string;
   approvalDecisions?: readonly AtlasApprovalDecision[];
+  inputResponses?: readonly AtlasInputResponse[];
   onEvent?: (event: AtlasRunEvent) => void | Promise<void>;
 };
 
@@ -118,6 +119,11 @@ export type AtlasApprovalDecision = {
   approvalId: string;
   approved: boolean;
   comment?: string;
+};
+
+export type AtlasInputResponse = {
+  inputId: string;
+  value: string;
 };
 
 // Eventos publicos permitem observar a execucao sem expor tipos do Agent SDK.
@@ -188,6 +194,13 @@ export type AtlasRunEvent =
       approvalId: string;
       toolName: string;
       reason: string;
+    }
+  | {
+      type: 'input.requested';
+      inputId: string;
+      prompt: string;
+      choices?: string[];
+      placeholder?: string;
     };
 
 // Cada runtime agrupa um Runner reutilizavel e as sessoes das suas conversas.
@@ -335,6 +348,38 @@ function executionTool(
       };
       const result = await capabilityRuntime.execute(id, 'local', arguments_, executionOptions);
       return JSON.stringify(result);
+    },
+  };
+}
+
+function inputTool(inputResponses: ReadonlyMap<string, string>): FunctionTool {
+  return {
+    type: 'function',
+    name: 'request_input',
+    description: 'solicita ao usuario uma informacao necessaria para continuar',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'pergunta exibida ao usuario' },
+        choices: { type: 'array', items: { type: 'string' } },
+        placeholder: { type: 'string' },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    } as FunctionTool['parameters'],
+    strict: false,
+    needsApproval: async () => true,
+    isEnabled: async () => true,
+    invoke: async (_runContext, _input, details) => {
+      const inputId = details?.toolCall?.callId;
+      if (inputId === undefined) {
+        throw new Error('request_input did not receive a stable identifier.');
+      }
+      const value = inputResponses.get(inputId);
+      if (value === undefined) {
+        throw new Error(`Input "${inputId}" was not resolved.`);
+      }
+      return value;
     },
   };
 }
@@ -541,6 +586,7 @@ function createAtlasAgent(
   discoveryRuntime: CapabilityRuntime,
   skillDiscovery: SkillDiscovery,
   definitions: readonly ToolDefinition[],
+  inputResponses: ReadonlyMap<string, string>,
   onOutput?: (
     capabilityId: string,
     executionId: string,
@@ -569,6 +615,7 @@ function createAtlasAgent(
       ...definitions.map((definition) =>
         capabilityFunctionTool(definition, executionRuntime, onOutput),
       ),
+      inputTool(inputResponses),
       listToolsTool(discoveryRuntime),
       discoveryTool(discoveryRuntime),
       skillTool(skillDiscovery),
@@ -592,6 +639,30 @@ function approvalReason(item: RunToolApprovalItem, toolName: string): string {
   return arguments_ === undefined
     ? `A ferramenta ${toolName} solicitou aprovação.`
     : `A ferramenta ${toolName} solicitou aprovação para executar esta chamada.`;
+}
+
+function inputRequest(item: RunToolApprovalItem): {
+  inputId: string;
+  prompt: string;
+  choices?: string[];
+  placeholder?: string;
+} {
+  const raw = parseObjectInput(item.arguments ?? '{}', 'request_input');
+  const prompt = stringValue(raw.prompt) ?? 'Additional input is required.';
+  const choices = Array.isArray(raw.choices)
+    ? raw.choices.filter((choice): choice is string => typeof choice === 'string')
+    : undefined;
+  const placeholder = stringValue(raw.placeholder);
+  const inputId = approvalIdentifier(item);
+  if (inputId === undefined) {
+    throw new Error('Runtime received an input request without a stable identifier.');
+  }
+  return {
+    inputId,
+    prompt,
+    ...(choices === undefined ? {} : { choices }),
+    ...(placeholder === undefined ? {} : { placeholder }),
+  };
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -996,6 +1067,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     onEvent,
     model: requestedModel,
     coreTools = true,
+    inputResponses: requestedInputResponses,
     ...providerOptions
   } = options;
   const runtime = getAtlasRuntime(providerOptions, atlasConfig);
@@ -1016,6 +1088,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
     capabilityRuntime,
     skillDiscovery,
     definitions,
+    new Map((requestedInputResponses ?? []).map((response) => [response.inputId, response.value])),
     onEvent === undefined
       ? undefined
       : async (capabilityId, executionId, channel, delta) => {
@@ -1058,6 +1131,15 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
           });
         }
       }
+      for (const response of requestedInputResponses ?? []) {
+        const item = resumeState
+          ?.getInterruptions()
+          .find((interruption) => approvalIdentifier(interruption) === response.inputId);
+        if (item === undefined || resumeState === undefined) {
+          throw new Error(`Input "${response.inputId}" was not found in the run state.`);
+        }
+        resumeState.approve(item);
+      }
 
       const runInput = resumeState ?? agentInput;
       if (!onEvent) {
@@ -1087,6 +1169,10 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
       for (const interruption of streamedResult.interruptions) {
         const approvalId = approvalIdentifier(interruption);
         if (approvalId === undefined) {
+          continue;
+        }
+        if (interruption.name === 'request_input') {
+          await onEvent({ type: 'input.requested', ...inputRequest(interruption) });
           continue;
         }
         const toolName = interruption.name ?? 'ferramenta';

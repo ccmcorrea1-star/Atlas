@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createConnection } from 'node:net';
 import { createServer } from 'node:http';
+import { rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 
@@ -458,6 +459,120 @@ async function startDirectToolStreamingModelServer(): Promise<{
   };
 }
 
+async function startInputStreamingModelServer(): Promise<{
+  baseURL: string;
+  requests: WireMessage[];
+  close: () => Promise<void>;
+}> {
+  const requests: WireMessage[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage;
+    requests.push(body);
+    const output =
+      requests.length === 1
+        ? {
+            id: 'input-call',
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'input-call',
+            name: 'request_input',
+            arguments: JSON.stringify({
+              prompt: 'Qual ambiente?',
+              choices: ['local', 'remote'],
+            }),
+          }
+        : undefined;
+    const events = output ? functionCallStream(output) : messageStream('Ambiente: remote');
+
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of events) {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+    response.end();
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Input model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    requests,
+    close: () =>
+      new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+      }),
+  };
+}
+
+async function startCrashBoundaryModelServer(): Promise<{
+  baseURL: string;
+  close: () => Promise<void>;
+}> {
+  let requestCount = 0;
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as WireMessage;
+    requestCount += 1;
+    if (requestCount === 1) {
+      const output = {
+        id: 'side-effect-call',
+        type: 'function_call',
+        status: 'completed',
+        call_id: 'side-effect-call',
+        name: 'shell_exec',
+        arguments: JSON.stringify({ command: 'touch crash-boundary', cwd: '/tmp' }),
+      };
+      const events = functionCallStream(output);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const event of events) {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+      response.end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    request.on('aborted', () => response.destroy());
+  });
+
+  const port = await new Promise<number>((resolvePort, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Crash boundary model server did not receive a TCP address.'));
+        return;
+      }
+      resolvePort(address.port);
+    });
+  });
+
+  return {
+    baseURL: `http://127.0.0.1:${port}/zen/go/v1`,
+    close: () => {
+      server.closeAllConnections();
+      return new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+      });
+    },
+  };
+}
+
 async function startFailingStreamingModelServer(): Promise<{
   baseURL: string;
   close: () => Promise<void>;
@@ -754,9 +869,9 @@ function sendTurn(
   socketPath: string,
   conversationId: string,
   input = 'execute node --version',
+  requestId = 'tui-integration-request',
 ): Promise<WireMessage[]> {
   return new Promise((resolveTurn, rejectTurn) => {
-    const requestId = 'tui-integration-request';
     const socket = createConnection(socketPath, () => {
       socket.write(
         `${JSON.stringify({
@@ -846,6 +961,97 @@ test('connects the public Unix protocol to runAtlas and returns the real respons
   }
 });
 
+test('suspends and resumes a real Runtime turn through input.respond', async () => {
+  const model = await startInputStreamingModelServer();
+  const socketPath = `/tmp/atlas-runtime-input-${randomUUID()}.sock`;
+  const runtime = new AtlasRuntimeServer({
+    socketPath,
+    runOptions: {
+      apiKey: 'atlas-runtime-input-key',
+      baseURL: model.baseURL,
+      capabilityRuntime,
+    },
+  });
+
+  try {
+    await runtime.listen();
+    const events = await new Promise<WireMessage[]>((resolveTurn, rejectTurn) => {
+      const socket = createConnection(socketPath, () => {
+        socket.write(
+          `${JSON.stringify({
+            protocol: RUNTIME_PROTOCOL,
+            version: RUNTIME_PROTOCOL_VERSION,
+            type: 'turn.request',
+            request_id: 'input-integration-request',
+            conversation_id: 'input-integration-conversation',
+            input: 'pergunte o ambiente',
+          })}\n`,
+        );
+      });
+      const events: WireMessage[] = [];
+      let buffer = '';
+      let inputSent = false;
+      socket.once('error', rejectTurn);
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf('\n');
+          if (!line) {
+            continue;
+          }
+          const event = JSON.parse(line) as WireMessage;
+          events.push(event);
+          if (event.type === 'input.requested' && !inputSent) {
+            inputSent = true;
+            const responseSocket = createConnection(socketPath, () => {
+              responseSocket.end(
+                `${JSON.stringify({
+                  protocol: RUNTIME_PROTOCOL,
+                  version: RUNTIME_PROTOCOL_VERSION,
+                  type: 'input.respond',
+                  request_id: 'input-response-request',
+                  conversation_id: 'input-integration-conversation',
+                  input_id: 'input-call',
+                  value: 'remote',
+                })}\n`,
+              );
+            });
+            responseSocket.once('error', rejectTurn);
+          }
+          if (event.type === 'turn.completed' || event.type === 'error') {
+            socket.destroy();
+            resolveTurn(events);
+            return;
+          }
+        }
+      });
+    });
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'session.updated',
+        'turn.started',
+        'input.requested',
+        'input.resolved',
+        'message.delta',
+        'message.completed',
+        'context.updated',
+        'turn.completed',
+      ],
+    );
+    assert.equal(model.requests.length, 2);
+    assert.match(JSON.stringify(model.requests[1]?.input), /remote/);
+  } finally {
+    await runtime.close();
+    await model.close();
+  }
+});
+
 test('reconciles a repeated turn.request without executing the model twice', async () => {
   const model = await startStreamingModelServer();
   const socketPath = `/tmp/atlas-runtime-idempotent-${randomUUID()}.sock`;
@@ -866,6 +1072,84 @@ test('reconciles a repeated turn.request without executing the model twice', asy
     assert.equal(model.requests.length, 1);
   } finally {
     await runtime.close();
+    await model.close();
+  }
+});
+
+test('does not replay an ambiguous request after a crash boundary with a side effect', async () => {
+  const model = await startCrashBoundaryModelServer();
+  const directory = `/tmp/atlas-runtime-crash-${randomUUID()}`;
+  const socketPath = `${directory}.sock`;
+  const ledgerPath = `${directory}.requests.json`;
+  const request = {
+    protocol: RUNTIME_PROTOCOL,
+    version: RUNTIME_PROTOCOL_VERSION,
+    type: 'turn.request' as const,
+    request_id: 'crash-boundary-request',
+    conversation_id: 'crash-boundary-conversation',
+    input: 'execute side effect',
+  };
+  let sideEffects = 0;
+  const effectRuntime: CapabilityRuntime = {
+    ...shellCapabilityRuntime,
+    execute: async (id, target, arguments_) => {
+      sideEffects += 1;
+      return shellCapabilityRuntime.execute(id, target, arguments_);
+    },
+  };
+
+  const firstRuntime = new AtlasRuntimeServer({
+    socketPath,
+    requestLedgerPath: ledgerPath,
+    runOptions: {
+      apiKey: 'atlas-crash-boundary-key',
+      baseURL: model.baseURL,
+      capabilityRuntime: effectRuntime,
+    },
+  });
+  let turnSocket: ReturnType<typeof createConnection> | undefined;
+  let secondRuntime: AtlasRuntimeServer | undefined;
+  try {
+    await firstRuntime.listen();
+    await new Promise<void>((resolve, reject) => {
+      turnSocket = createConnection(socketPath, () => {
+        turnSocket?.write(`${JSON.stringify(request)}\n`);
+      });
+      turnSocket.once('error', reject);
+      turnSocket.setEncoding('utf8');
+      turnSocket.on('data', (chunk: string) => {
+        if (chunk.includes('execution.completed')) {
+          resolve();
+        }
+      });
+    });
+    await firstRuntime.close();
+    assert.equal(sideEffects, 1);
+    secondRuntime = new AtlasRuntimeServer({
+      socketPath,
+      requestLedgerPath: ledgerPath,
+      runOptions: {
+        apiKey: 'atlas-crash-boundary-key',
+        baseURL: model.baseURL,
+        capabilityRuntime: effectRuntime,
+      },
+    });
+    await secondRuntime.listen();
+    const events = await sendTurn(
+      socketPath,
+      request.conversation_id,
+      request.input,
+      request.request_id,
+    );
+    assert.equal(events.at(-1)?.type, 'error');
+    assert.match(String((events.at(-1)?.data as WireMessage).message), /ambiguous/);
+    assert.equal(sideEffects, 1);
+  } finally {
+    turnSocket?.destroy();
+    await firstRuntime.close();
+    await secondRuntime?.close();
+    await rm(directory, { recursive: true, force: true });
+    await rm(ledgerPath, { force: true });
     await model.close();
   }
 });

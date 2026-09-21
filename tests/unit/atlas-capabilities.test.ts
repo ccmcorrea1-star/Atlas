@@ -149,7 +149,7 @@ const materializedToolNames = [
   'web_search',
   'web_fetch',
 ];
-const baseToolNames = ['list_tools', 'discover', 'skill', 'describe', 'execute'];
+const baseToolNames = ['request_input', 'list_tools', 'discover', 'skill', 'describe', 'execute'];
 
 test('materializes core capabilities as direct tools from the registry', async () => {
   const definition: ToolDefinition = {

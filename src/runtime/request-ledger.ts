@@ -2,17 +2,27 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import type { RuntimeEvent, RuntimeTurnRequest } from './protocol.js';
+import type { RuntimeEvent, RuntimeInputRequestedData, RuntimeTurnRequest } from './protocol.js';
+
+export type RuntimeRequestState = 'accepted' | 'executing' | 'suspended' | 'ambiguous' | 'terminal';
+
+export type RuntimeRequestSuspension = {
+  kind: 'approval' | 'input';
+  ids: string[];
+  checkpoint: string;
+  input?: RuntimeInputRequestedData;
+};
 
 export type RuntimeRequestRecord = {
   request: RuntimeTurnRequest;
   fingerprint: string;
-  state: 'running' | 'completed';
+  state: RuntimeRequestState;
   events: RuntimeEvent[];
+  suspension?: RuntimeRequestSuspension;
 };
 
 type RequestLedgerFile = {
-  version: 1;
+  version: 2;
   requests: RuntimeRequestRecord[];
 };
 
@@ -27,7 +37,8 @@ export class RuntimeRequestLedger {
       const parsed = JSON.parse(
         await readFile(this.filePath, 'utf8'),
       ) as Partial<RequestLedgerFile>;
-      if (parsed.version !== 1 || !Array.isArray(parsed.requests)) {
+      const legacy = (parsed as { version?: unknown }).version === 1;
+      if ((!legacy && parsed.version !== 2) || !Array.isArray(parsed.requests)) {
         throw new Error(`Invalid Runtime request ledger at ${this.filePath}.`);
       }
       for (const record of parsed.requests) {
@@ -35,10 +46,26 @@ export class RuntimeRequestLedger {
           record !== null &&
           typeof record === 'object' &&
           typeof record.request?.request_id === 'string' &&
-          (record.state === 'running' || record.state === 'completed') &&
+          (record.state === 'accepted' ||
+            record.state === 'executing' ||
+            record.state === 'suspended' ||
+            record.state === 'ambiguous' ||
+            record.state === 'terminal' ||
+            (legacy &&
+              ((record.state as unknown) === 'running' ||
+                (record.state as unknown) === 'completed'))) &&
           Array.isArray(record.events)
         ) {
-          this.records.set(record.request.request_id, record);
+          this.records.set(record.request.request_id, {
+            ...record,
+            state: legacy
+              ? (record.state as unknown) === 'completed'
+                ? 'terminal'
+                : 'ambiguous'
+              : record.state === 'executing'
+                ? 'ambiguous'
+                : record.state,
+          });
         }
       }
     } catch (error) {
@@ -53,22 +80,42 @@ export class RuntimeRequestLedger {
   }
 
   public running(): RuntimeRequestRecord[] {
-    return [...this.records.values()].filter((record) => record.state === 'running');
+    return [...this.records.values()].filter((record) => record.state === 'accepted');
+  }
+
+  public recoverable(): RuntimeRequestRecord[] {
+    return [...this.records.values()].filter(
+      (record) => record.state === 'accepted' || record.state === 'suspended',
+    );
   }
 
   public accept(request: RuntimeTurnRequest): RuntimeRequestRecord {
     const record: RuntimeRequestRecord = {
       request,
       fingerprint: requestFingerprint(request),
-      state: 'running',
+      state: 'accepted',
       events: [],
     };
     this.records.set(request.request_id, record);
     return record;
   }
 
+  public markExecuting(record: RuntimeRequestRecord): void {
+    record.state = 'executing';
+  }
+
+  public suspend(record: RuntimeRequestRecord, suspension: RuntimeRequestSuspension): void {
+    record.state = 'suspended';
+    record.suspension = suspension;
+  }
+
   public complete(record: RuntimeRequestRecord): void {
-    record.state = 'completed';
+    record.state = 'terminal';
+    delete record.suspension;
+  }
+
+  public markAmbiguous(record: RuntimeRequestRecord): void {
+    record.state = 'ambiguous';
   }
 
   public persist(): Promise<void> {
@@ -79,7 +126,7 @@ export class RuntimeRequestLedger {
         const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
         await writeFile(
           temporaryPath,
-          `${JSON.stringify({ version: 1, requests: [...this.records.values()] } satisfies RequestLedgerFile)}\n`,
+          `${JSON.stringify({ version: 2, requests: [...this.records.values()] } satisfies RequestLedgerFile)}\n`,
           { encoding: 'utf8', mode: 0o600 },
         );
         await rename(temporaryPath, this.filePath);

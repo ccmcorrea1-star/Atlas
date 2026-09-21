@@ -54,6 +54,15 @@ export type RuntimeTurnCancel = {
   conversation_id: string;
 };
 
+export type RuntimeTurnRecover = {
+  protocol: typeof RUNTIME_PROTOCOL;
+  version: typeof RUNTIME_PROTOCOL_VERSION;
+  type: 'turn.recover';
+  request_id: string;
+  conversation_id: string;
+  confirm: boolean;
+};
+
 export type RuntimeCommandRequest = {
   protocol: typeof RUNTIME_PROTOCOL;
   version: typeof RUNTIME_PROTOCOL_VERSION;
@@ -87,6 +96,7 @@ export type RuntimeInputResponse = {
 export type RuntimeRequest =
   | RuntimeTurnRequest
   | RuntimeTurnCancel
+  | RuntimeTurnRecover
   | RuntimeCommandRequest
   | RuntimeApprovalResponse
   | RuntimeInputResponse;
@@ -342,6 +352,19 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       type: 'turn.cancel',
       request_id,
       conversation_id,
+    };
+  }
+  if (request.type === 'turn.recover') {
+    if (typeof request.confirm !== 'boolean') {
+      throw new RuntimeProtocolError('Runtime request field "confirm" must be a boolean.');
+    }
+    return {
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.recover',
+      request_id,
+      conversation_id,
+      confirm: request.confirm,
     };
   }
   if (request.type === 'command.request') {
