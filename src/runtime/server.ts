@@ -557,7 +557,7 @@ export class AtlasRuntimeServer {
       }
       return;
     }
-    const input = operation === undefined ? request.input : resumeInput(operation);
+    const input = request.input;
     const sessionData: RuntimeSessionUpdatedData = this.sessionData;
     publish(runtimeEvent(request, 'session.updated', sessionData));
     publish(runtimeEvent(request, 'turn.started'));
@@ -644,31 +644,11 @@ export class AtlasRuntimeServer {
         // A UI recebe somente o contexto da última chamada do modelo.
         ...(context === undefined ? {} : { context }),
       };
-      if (operation !== undefined) {
-        await this.operationStore?.update(operation.operation_id, {
-          state: 'resumed',
-          result: {
-            content: completedData.content,
-            ...(messageId === undefined ? {} : { message_id: messageId }),
-          },
-        });
-        publish(
-          runtimeEvent(request, 'operation.resumed', {
-            operation_id: operation.operation_id,
-          }),
-        );
-      }
       publish(runtimeEvent(request, 'turn.completed', completedData));
     } catch (error) {
       if (abortSignal.aborted) {
         publishCancelled();
         return;
-      }
-      if (operation !== undefined) {
-        await this.operationStore?.update(operation.operation_id, {
-          state: 'failed',
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
       publish(runtimeErrorEvent(error instanceof Error ? error.message : String(error), request));
     }
