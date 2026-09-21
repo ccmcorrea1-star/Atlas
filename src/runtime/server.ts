@@ -536,24 +536,26 @@ export class AtlasRuntimeServer {
     }
     const operation = await this.pendingOperation(request);
     if (operation !== undefined) {
+      const completedRecovery = await this.completedOperation(request);
+      if (completedRecovery !== undefined) {
+        await this.publishRecoveredOperation(request, completedRecovery, publish, true);
+        return;
+      }
       await this.operationStore?.update(operation.operation_id, { state: 'resuming' });
       publish(
         runtimeEvent(request, 'operation.resuming', {
           operation_id: operation.operation_id,
         }),
       );
-      const recovery = this.recoveryPromises.get(operation.operation_id);
-      if (recovery !== undefined) {
-        try {
-          const recovered = await recovery;
-          await this.publishRecoveredOperation(request, recovered, publish, true);
-        } catch (error) {
-          publish(
-            runtimeErrorEvent(error instanceof Error ? error.message : String(error), request),
-          );
-        }
-        return;
+      const recovery =
+        this.recoveryPromises.get(operation.operation_id) ?? this.recoverOperation(operation);
+      try {
+        const recovered = await recovery;
+        await this.publishRecoveredOperation(request, recovered, publish, true);
+      } catch (error) {
+        publish(runtimeErrorEvent(error instanceof Error ? error.message : String(error), request));
       }
+      return;
     }
     const input = operation === undefined ? request.input : resumeInput(operation);
     const sessionData: RuntimeSessionUpdatedData = this.sessionData;
