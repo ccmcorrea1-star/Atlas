@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "runtime": "tsx src/runtime/server.ts",
+    "telegram": "tsx clients/telegram/main.ts",
     "build": "npm run build:runtime && npm run build:web-search && npm run build:web-browser && npm run build:web-crawl && npm run build:native",
     "build:runtime": "tsc",
     "build:native": "node scripts/build-native.mjs all",

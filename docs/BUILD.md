@@ -67,6 +67,19 @@ Depois de compilar o cliente TUI, inicie o Runtime com:
 atlas server run
 ```
 
+## Cliente Telegram
+
+Inicie o Runtime em um processo e o bot em outro:
+
+```bash
+npm run runtime
+TELEGRAM_BOT_TOKEN=... TELEGRAM_ALLOWED_USERS=... npm run telegram
+```
+
+O bot também aceita `TELEGRAM_ALLOWED_CHATS`, `TELEGRAM_HOME_CHAT`,
+`ATLAS_RUNTIME_SOCKET` e `TELEGRAM_STATE_PATH`. Sem uma allowlist explícita, o
+acesso permanece bloqueado por padrão.
+
 O comando usa `npm run runtime` por padrão. Para usar outro launcher, defina
 `ATLAS_RUNTIME_PROGRAM` e, opcionalmente, `ATLAS_RUNTIME_ARGS` e
 `ATLAS_RUNTIME_CWD` para o diretório de trabalho do Runtime.
