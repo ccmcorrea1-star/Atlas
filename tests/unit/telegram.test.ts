@@ -657,6 +657,13 @@ test('renderiza Markdown comum com escape seguro para MarkdownV2', () => {
     '[Atlas](https://atlas.local)',
   );
   assert.equal(renderTelegramMarkdown('> citação'), '> citação');
+  assert.equal(
+    renderTelegramMarkdown(
+      '1) primeiro\n2. segundo\n10) décimo\n\n| Nome | Valor |\n| --- | --- |\n| Atlas | local |',
+    ),
+    '1\\. primeiro\n2\\. segundo\n10\\. décimo\n\n*Nome — Valor*\n• Atlas — local',
+  );
+  assert.equal(renderTelegramMarkdown('```\n# não é título\n```'), '```\n# não é título\n```');
 });
 
 test('responde /help sem criar uma chamada ao Runtime', async () => {

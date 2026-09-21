@@ -65,7 +65,7 @@ export function renderTelegramMarkdown(text: string): string {
   source = source.replace(
     /```([^\n]*)\n([\s\S]*?)```/gu,
     (_match, language: string, body: string) => {
-      const header = language.trim() ? `${language.trim()}\n` : '';
+      const header = language.trim() ? `${language.trim()}\n` : '\n';
       return protect(`\`\`\`${header}${escapeCode(body)}\`\`\``);
     },
   );
@@ -101,20 +101,33 @@ function normalizeMarkdownLayout(text: string): string {
   const lines = text.replace(/\r\n?/gu, '\n').split('\n');
   const result: string[] = [];
   let inTable = false;
-  for (const line of lines) {
-    if (/^\s*\|?.+\|.+\|?\s*$/u.test(line) && /\|/u.test(line)) {
-      const cells = line
-        .split('|')
-        .map((cell) => cell.trim())
-        .filter(Boolean);
-      if (cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell))) {
-        inTable = true;
-        continue;
-      }
-      if (inTable) {
-        result.push(`• ${cells.join(' — ')}`);
-        continue;
-      }
+  let inFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (/^\s*```/u.test(line)) {
+      inFence = !inFence;
+      result.push(line);
+      continue;
+    }
+    if (inFence) {
+      result.push(line);
+      continue;
+    }
+    const tableCells = parseTableCells(line);
+    const nextTableCells = parseTableCells(lines[index + 1] ?? '');
+    if (
+      tableCells !== undefined &&
+      nextTableCells !== undefined &&
+      isTableSeparator(nextTableCells)
+    ) {
+      result.push(`**${tableCells.join(' — ')}**`);
+      inTable = true;
+      index += 1;
+      continue;
+    }
+    if (tableCells !== undefined && inTable) {
+      result.push(`• ${tableCells.join(' — ')}`);
+      continue;
     }
     inTable = false;
     const heading = /^\s*#{1,6}\s+(.*)$/u.exec(line);
@@ -122,9 +135,14 @@ function normalizeMarkdownLayout(text: string): string {
       result.push(`**${heading[1]}**`);
       continue;
     }
-    const bullet = /^\s*[-+*]\s+(.*)$/u.exec(line);
+    const ordered = /^(\s*)\d+[.)]\s+(.*)$/u.exec(line);
+    if (ordered !== null) {
+      result.push(`${ordered[1]}${ordered[0].trimStart().replace(/^(\d+)[.)]/u, '$1.')}`);
+      continue;
+    }
+    const bullet = /^(\s*)[-+*]\s+(.*)$/u.exec(line);
     if (bullet !== null) {
-      result.push(`• ${bullet[1]}`);
+      result.push(`${bullet[1]}• ${bullet[2]}`);
       continue;
     }
     const quote = /^\s*>\s?(.*)$/u.exec(line);
@@ -135,6 +153,21 @@ function normalizeMarkdownLayout(text: string): string {
     result.push(line);
   }
   return result.join('\n');
+}
+
+function parseTableCells(line: string): string[] | undefined {
+  if (!/^\s*\|?.+\|.+\|?\s*$/u.test(line) || !/\|/u.test(line)) {
+    return undefined;
+  }
+  const cells = line
+    .split('|')
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+  return cells.length > 1 ? cells : undefined;
+}
+
+function isTableSeparator(cells: string[]): boolean {
+  return cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
 }
 
 function escapeInline(value: string): string {
