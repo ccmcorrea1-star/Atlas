@@ -187,6 +187,43 @@ test('parses typed attachments without encoding them in input text', () => {
   assert.equal(parsed.input, 'Analise o arquivo.');
 });
 
+test('parses typed reply context without altering the user input', () => {
+  const parsed = parseRuntimeMessage(
+    JSON.stringify({
+      protocol: RUNTIME_PROTOCOL,
+      version: RUNTIME_PROTOCOL_VERSION,
+      type: 'turn.request',
+      request_id: 'request-2',
+      conversation_id: 'conversation-1',
+      input: 'responda a isso',
+      context: {
+        reply_to: {
+          source: 'telegram',
+          message_id: '42',
+          author: 'Caio',
+          text: 'mensagem anterior',
+          media: ['photo'],
+        },
+      },
+    }),
+  );
+
+  assert.equal(parsed.type, 'turn.request');
+  if (parsed.type !== 'turn.request') {
+    return;
+  }
+  assert.deepEqual(parsed.context, {
+    reply_to: {
+      source: 'telegram',
+      message_id: '42',
+      author: 'Caio',
+      text: 'mensagem anterior',
+      media: ['photo'],
+    },
+  });
+  assert.equal(parsed.input, 'responda a isso');
+});
+
 test('accepts only commands exposed by the Runtime catalog', () => {
   assert.deepEqual(
     RUNTIME_COMMANDS.map((command) => command.name),

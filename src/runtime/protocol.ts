@@ -13,6 +13,18 @@ export type RuntimeAttachment = {
   source?: Record<string, string>;
 };
 
+export type RuntimeMessageContext = {
+  source: string;
+  message_id?: string;
+  author?: string;
+  text?: string;
+  media?: string[];
+};
+
+export type RuntimeTurnContext = {
+  reply_to?: RuntimeMessageContext;
+};
+
 export type RuntimeCommandName = 'new' | 'status' | 'stop';
 
 export type RuntimeCommandDefinition = {
@@ -45,6 +57,7 @@ export type RuntimeTurnRequest = {
   conversation_id: string;
   input: string;
   attachments?: RuntimeAttachment[];
+  context?: RuntimeTurnContext;
 };
 
 export type RuntimeTurnCancel = {
@@ -312,6 +325,41 @@ function parseAttachments(value: unknown): RuntimeAttachment[] | undefined {
   });
 }
 
+function parseTurnContext(value: unknown): RuntimeTurnContext | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const context = objectValue(value, 'Runtime turn context');
+  const reply = context.reply_to;
+  if (reply === undefined) {
+    return {};
+  }
+  const replyObject = objectValue(reply, 'Runtime turn context.reply_to');
+  const media = replyObject.media;
+  if (
+    media !== undefined &&
+    (!Array.isArray(media) || media.some((item) => typeof item !== 'string'))
+  ) {
+    throw new RuntimeProtocolError(
+      'Runtime turn context.reply_to.media must be an array of strings.',
+    );
+  }
+  const optionalFields = ['message_id', 'author', 'text'] as const;
+  const parsed: RuntimeMessageContext = {
+    source: requiredString(replyObject.source, 'context.reply_to.source'),
+  };
+  for (const field of optionalFields) {
+    const valueForField = replyObject[field];
+    if (valueForField !== undefined) {
+      parsed[field] = requiredString(valueForField, `context.reply_to.${field}`);
+    }
+  }
+  if (media !== undefined) {
+    parsed.media = media as string[];
+  }
+  return { reply_to: parsed };
+}
+
 export function parseRuntimeMessage(payload: string): RuntimeRequest {
   let value: unknown;
   try {
@@ -336,6 +384,7 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
   const conversation_id = requiredString(request.conversation_id, 'conversation_id');
   if (request.type === 'turn.request') {
     const attachments = parseAttachments(request.attachments);
+    const context = parseTurnContext(request.context);
     return {
       protocol: RUNTIME_PROTOCOL,
       version: RUNTIME_PROTOCOL_VERSION,
@@ -344,6 +393,7 @@ export function parseRuntimeMessage(payload: string): RuntimeRequest {
       conversation_id,
       input: requiredString(request.input, 'input'),
       ...(attachments === undefined ? {} : { attachments }),
+      ...(context === undefined ? {} : { context }),
     };
   }
   if (request.type === 'turn.cancel') {

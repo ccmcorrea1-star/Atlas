@@ -7,6 +7,7 @@ import {
   type RuntimeAttachment,
   type RuntimeCommandName,
   type RuntimeEvent,
+  type RuntimeTurnContext,
 } from '../../src/runtime/protocol.js';
 import type { TelegramRuntime } from './types.js';
 
@@ -15,6 +16,7 @@ type RuntimeTurnPayload = {
   conversation_id: string;
   input: string;
   attachments?: RuntimeAttachment[];
+  context?: RuntimeTurnContext;
 };
 
 function isTerminalTurn(event: RuntimeEvent): boolean {

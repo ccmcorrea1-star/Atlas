@@ -739,6 +739,9 @@ export class AtlasRuntimeServer {
           ...(resumeState === undefined && request.attachments !== undefined
             ? { attachments: request.attachments }
             : {}),
+          ...(resumeState === undefined && request.context !== undefined
+            ? { context: request.context }
+            : {}),
           ...(resumeState === undefined ? {} : { resumeState }),
           ...(approvalDecisions === undefined ? {} : { approvalDecisions }),
           ...(inputResponses === undefined ? {} : { inputResponses }),

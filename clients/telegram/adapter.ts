@@ -9,6 +9,7 @@ import type {
   RuntimeCommandCompletedData,
   RuntimeEvent,
   RuntimeTurnCompletedData,
+  RuntimeTurnContext,
 } from '../../src/runtime/protocol.js';
 import { FetchTelegramApi } from './api.js';
 import { TelegramChatBudget } from './budget.js';
@@ -125,6 +126,7 @@ type TelegramTurnState = {
   chatId: number | string;
   threadId?: number;
   input: string;
+  context?: RuntimeTurnContext;
   attachment_refs?: TelegramAttachmentReference[];
   attachments?: RuntimeAttachment[];
   replyMessageId?: number;
@@ -433,12 +435,13 @@ export class TelegramAdapter {
         existing?.input ??
         (stripBotMention(text, botUsername) ||
           (attachments.length > 0 ? 'Analise os anexos.' : ''));
+      const context = existing?.context ?? telegramReplyContext(message);
       if (!input) {
         await this.removeMaterializedDirectory(materialized.directory);
         return;
       }
       try {
-        await this.handleTurn(message, conversationId, input, attachments);
+        await this.handleTurn(message, conversationId, input, attachments, context);
       } finally {
         await this.removeMaterializedDirectory(materialized.directory);
       }
@@ -475,6 +478,7 @@ export class TelegramAdapter {
     conversationId: string,
     input: string,
     attachments: RuntimeAttachment[],
+    context?: RuntimeTurnContext,
   ): Promise<void> {
     const messageKey = telegramMessageKey(message);
     let turn = this.turns.get(messageKey);
@@ -486,6 +490,7 @@ export class TelegramAdapter {
         chatId: message.chat.id,
         ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
         input,
+        ...(context === undefined ? {} : { context }),
         ...(attachments.length === 0 ? {} : { attachment_refs: attachmentReferences(attachments) }),
         status: 'pending',
       };
@@ -570,6 +575,7 @@ export class TelegramAdapter {
           conversation_id: conversationId,
           input,
           ...(attachments.length === 0 ? {} : { attachments }),
+          ...(context === undefined ? {} : { context }),
         },
         (event) => void onEvent(event),
       );
@@ -1362,6 +1368,38 @@ export class TelegramAdapter {
     }
     return { attachments, directory };
   }
+}
+
+function telegramReplyContext(message: TelegramMessage): RuntimeTurnContext | undefined {
+  const reply = message.reply_to_message;
+  if (reply === undefined) {
+    return undefined;
+  }
+  const media = [
+    ...(reply.voice === undefined ? [] : ['voice']),
+    ...(reply.audio === undefined ? [] : ['audio']),
+    ...(reply.photo === undefined ? [] : ['photo']),
+    ...(reply.video === undefined ? [] : ['video']),
+    ...(reply.animation === undefined ? [] : ['animation']),
+    ...(reply.document === undefined ? [] : ['document']),
+    ...(reply.sticker === undefined ? [] : ['sticker']),
+  ];
+  const author = reply.from;
+  return {
+    reply_to: {
+      source: 'telegram',
+      message_id: String(reply.message_id),
+      ...(author === undefined
+        ? {}
+        : {
+            author: author.username ?? author.first_name ?? String(author.id),
+          }),
+      ...(reply.text === undefined && reply.caption === undefined
+        ? {}
+        : { text: reply.text ?? reply.caption }),
+      ...(media.length === 0 ? {} : { media }),
+    },
+  };
 }
 
 function telegramMessageFromUpdate(update: TelegramUpdate): TelegramMessage | undefined {

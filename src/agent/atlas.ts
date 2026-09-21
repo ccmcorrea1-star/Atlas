@@ -28,7 +28,7 @@ import {
   stableSerialize,
 } from '../capabilities/execution-hooks.js';
 import type { AtlasConfig } from '../config/index.js';
-import type { RuntimeAttachment } from '../runtime/protocol.js';
+import type { RuntimeAttachment, RuntimeTurnContext } from '../runtime/protocol.js';
 import {
   createCapabilityRuntime,
   type CapabilityDiscoveryRequest,
@@ -103,6 +103,8 @@ export type AtlasRunOptions = OpenCodeGoProviderOptions & {
   conversationId?: string;
   // Anexos chegam tipados ao Agent, sem marcadores textuais de plataforma.
   attachments?: RuntimeAttachment[];
+  // Contexto tipado da mensagem respondida, quando o canal o fornece.
+  context?: RuntimeTurnContext;
   capabilityRuntime?: CapabilityRuntime;
   // Configuração global também alimenta os adapters das capabilities.
   atlasConfig?: AtlasConfig;
@@ -1023,13 +1025,28 @@ function getConversationId(options: AtlasRunOptions): string {
 function inputWithAttachments(
   input: string,
   attachments?: readonly RuntimeAttachment[],
+  context?: RuntimeTurnContext,
 ): string | AgentInputItem[] {
-  if (attachments === undefined || attachments.length === 0) {
+  if ((attachments === undefined || attachments.length === 0) && context?.reply_to === undefined) {
     return input;
   }
 
-  const content: Array<Record<string, unknown>> = [{ type: 'input_text', text: input }];
-  for (const attachment of attachments) {
+  const content: Array<Record<string, unknown>> = [];
+  const reply = context?.reply_to;
+  if (reply !== undefined) {
+    const replyLines = [
+      `[Mensagem respondida via ${reply.source}]`,
+      ...(reply.message_id === undefined ? [] : [`ID: ${reply.message_id}`]),
+      ...(reply.author === undefined ? [] : [`Autor: ${reply.author}`]),
+      ...(reply.text === undefined ? [] : [`Conteúdo: ${reply.text}`]),
+      ...(reply.media === undefined || reply.media.length === 0
+        ? []
+        : [`Mídia: ${reply.media.join(', ')}`]),
+    ];
+    content.push({ type: 'input_text', text: replyLines.join('\n') });
+  }
+  content.push({ type: 'input_text', text: input });
+  for (const attachment of attachments ?? []) {
     if (attachment.type === 'image') {
       content.push({ type: 'input_image', image: attachment.uri });
     } else if (attachment.type === 'voice' || attachment.type === 'audio') {
@@ -1061,6 +1078,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
   const {
     conversationId: _conversationId,
     attachments,
+    context,
     capabilityRuntime: requestedCapabilityRuntime,
     atlasConfig,
     abortSignal,
@@ -1109,7 +1127,7 @@ export async function runAtlas(input: string, options: AtlasRunOptions = {}) {
 
   runtime.sessions.set(sessionId, session);
 
-  const agentInput = inputWithAttachments(input, attachments);
+  const agentInput = inputWithAttachments(input, attachments, context);
   return withOpenCodeGoAbortSignal(abortSignal, () =>
     withOpenCodeGoSession(sessionId, async () => {
       const resumeState =

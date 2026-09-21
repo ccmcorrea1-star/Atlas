@@ -1,4 +1,8 @@
-import type { RuntimeAttachment, RuntimeEvent } from '../../src/runtime/protocol.js';
+import type {
+  RuntimeAttachment,
+  RuntimeEvent,
+  RuntimeTurnContext,
+} from '../../src/runtime/protocol.js';
 
 export type TelegramChatType = 'private' | 'group' | 'supergroup' | 'channel';
 
@@ -206,6 +210,7 @@ export type TelegramRuntime = {
       conversation_id: string;
       input: string;
       attachments?: RuntimeAttachment[];
+      context?: RuntimeTurnContext;
     },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent>;

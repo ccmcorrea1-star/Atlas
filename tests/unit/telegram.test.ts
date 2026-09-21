@@ -11,7 +11,11 @@ import {
   groupIsTriggered,
   runtimeCommandFromText,
 } from '../../clients/telegram/index.js';
-import type { RuntimeAttachment, RuntimeEvent } from '../../src/runtime/protocol.js';
+import type {
+  RuntimeAttachment,
+  RuntimeEvent,
+  RuntimeTurnContext,
+} from '../../src/runtime/protocol.js';
 import type {
   TelegramApi,
   TelegramBot,
@@ -159,6 +163,7 @@ class FakeRuntime implements TelegramRuntime {
       conversation_id: string;
       input: string;
       attachments?: RuntimeAttachment[];
+      context?: RuntimeTurnContext;
     },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent> {
@@ -327,6 +332,7 @@ class ScriptedRuntime implements TelegramRuntime {
         conversation_id: string;
         input: string;
         attachments?: RuntimeAttachment[];
+        context?: RuntimeTurnContext;
       },
       onEvent: (event: RuntimeEvent) => void,
     ) => Promise<RuntimeEvent>,
@@ -338,6 +344,7 @@ class ScriptedRuntime implements TelegramRuntime {
       conversation_id: string;
       input: string;
       attachments?: RuntimeAttachment[];
+      context?: RuntimeTurnContext;
     },
     onEvent: (event: RuntimeEvent) => void,
   ): Promise<RuntimeEvent> {
@@ -518,6 +525,38 @@ test('streams deltas by editing one Telegram message and preserves typed attachm
     'telegram',
   );
   assert.deepEqual(api.sentAttachments, ['document:/tmp/output.txt']);
+});
+
+test('envia o contexto tipado da mensagem respondida ao Runtime', async () => {
+  const api = new FakeApi();
+  const runtime = new ScriptedRuntime(async () =>
+    runtimeEvent('turn.completed', { content: 'contexto recebido' }),
+  );
+  const adapter = new TelegramAdapter({ api, runtime, allowedUsers: [7] });
+
+  await adapter.handleUpdate({
+    update_id: 20,
+    message: message({
+      message_id: 21,
+      text: 'continue',
+      reply_to_message: message({
+        message_id: 20,
+        text: 'mensagem original',
+        from: { id: 8, username: 'ana' },
+        photo: [{ file_id: 'photo-reply', width: 10, height: 10 }],
+      }),
+    }),
+  });
+
+  assert.deepEqual(runtime.requests[0]?.context, {
+    reply_to: {
+      source: 'telegram',
+      message_id: '20',
+      author: 'ana',
+      text: 'mensagem original',
+      media: ['photo'],
+    },
+  });
 });
 
 test('entrega vídeo e animação usando as APIs nativas do Telegram', async () => {

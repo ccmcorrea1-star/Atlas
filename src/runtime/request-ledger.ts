@@ -141,5 +141,6 @@ export function requestFingerprint(request: RuntimeTurnRequest): string {
     conversation_id: request.conversation_id,
     input: request.input,
     attachments: request.attachments ?? [],
+    context: request.context ?? {},
   });
 }
